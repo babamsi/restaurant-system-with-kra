@@ -29,6 +29,7 @@ const initialRecipes: Recipe[] = [
   {
     id: 1,
     name: "Grilled Chicken with Rice",
+    image: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSVhtBlSl70N394EBCAS2pz1oyvw3NEAB-zxQ&s",
     category: "Main Course",
     description: "Tender grilled chicken breast served with basmati rice and steamed vegetables",
     yield_per_batch: 8,
@@ -78,6 +79,7 @@ const initialRecipes: Recipe[] = [
   {
     id: 2,
     name: "Vegetable Stir Fry",
+    image: "https://s.lightorangebean.com/media/20240914144639/Thai-Vegetable-Stir-Fry-with-Lime-and-Ginger_done.png",
     category: "Vegetarian",
     description: "Fresh mixed vegetables stir-fried with aromatic spices",
     yield_per_batch: 10,

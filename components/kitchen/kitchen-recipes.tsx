@@ -38,7 +38,7 @@ export function KitchenRecipes() {
       prepTime: "20 mins",
       servings: 3,
       ingredients: 10,
-      image: "/vegetable-stir-fry.png",
+      image: "https://s.lightorangebean.com/media/20240914144639/Thai-Vegetable-Stir-Fry-with-Lime-and-Ginger_done.png",
       status: "Available",
     },
     {

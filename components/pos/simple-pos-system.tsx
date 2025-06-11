@@ -59,6 +59,7 @@ export function SimplePOSSystem() {
     {
       id: "meal-2",
       name: "Vegetable Stir Fry",
+      image: "https://s.lightorangebean.com/media/20240914144639/Thai-Vegetable-Stir-Fry-with-Lime-and-Ginger_done.png",
       type: "meal",
       category: "Vegetarian",
       price: 12.0,

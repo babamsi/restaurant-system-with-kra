@@ -8,8 +8,9 @@ import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Search, ShoppingCart, Plus, Minus, Clock } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { mockMenuItems, mockRecipes } from "@/data/mock-data"
-import type { MenuItem, RecipeWithAvailability } from "@/data/mock-data"
+import { mockMenuItems, mockRecipes } from "@/data/unified-mock-data"
+import type { MenuItem } from "@/types/unified-system"
+import type { Recipe } from "@/types/operational"
 
 interface CartItem {
   id: string
@@ -18,13 +19,13 @@ interface CartItem {
   quantity: number
   portionSize: string
   category: string
-  prep_time?: number
+  prep_time_minutes?: number
 }
 
 export function EnhancedPOSMenu() {
   const { toast } = useToast()
   const [menuItems] = useState<MenuItem[]>(mockMenuItems)
-  const [recipes] = useState<RecipeWithAvailability[]>(mockRecipes)
+  const [recipes] = useState<Recipe[]>(mockRecipes)
   const [cart, setCart] = useState<CartItem[]>([])
   const [searchTerm, setSearchTerm] = useState("")
   const [selectedCategory, setSelectedCategory] = useState("All")
@@ -37,10 +38,10 @@ export function EnhancedPOSMenu() {
   }
 
   const getItemPrice = (item: MenuItem, portionSize: string) => {
-    if (item.linked_recipe_id === 0) return item.price // Beverages don't have portion sizes
+    if (!item.linked_recipe_id) return item.price // Beverages don't have portion sizes
 
     const recipe = recipes.find((r) => r.id === item.linked_recipe_id)
-    if (!recipe) return item.price
+    if (!recipe || !recipe.portion_sizes) return item.price
 
     switch (portionSize) {
       case "small":
@@ -53,7 +54,7 @@ export function EnhancedPOSMenu() {
   }
 
   const addToCart = (item: MenuItem, portionSize = "regular") => {
-    if (item.linked_recipe_id > 0) {
+    if (item.linked_recipe_id) {
       const availability = getRecipeAvailability(item.linked_recipe_id)
       if (availability <= 0) {
         toast({
@@ -75,7 +76,7 @@ export function EnhancedPOSMenu() {
       quantity: 1,
       portionSize: portionSize,
       category: item.category,
-      prep_time: recipe?.prep_time,
+      prep_time_minutes: recipe?.prep_time_minutes,
     }
 
     setCart((prev) => [...prev, cartItem])
@@ -133,39 +134,38 @@ export function EnhancedPOSMenu() {
   })
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      <div className="lg:col-span-2">
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4">
+      <div className="md:col-span-2 space-y-4">
         <Card>
           <CardHeader>
-            <CardTitle>Menu Items</CardTitle>
-            <div className="flex gap-4">
-              <div className="relative flex-1">
-                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <div className="flex justify-between items-center">
+              <CardTitle>Menu Items</CardTitle>
+              <div className="flex gap-2">
                 <Input
-                  placeholder="Search menu items..."
-                  className="pl-8"
+                  placeholder="Search items..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-64"
                 />
+                <Select value={selectedCategory} onValueChange={setSelectedCategory}>
+                  <SelectTrigger className="w-40">
+                    <SelectValue placeholder="Category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {categories.map((category) => (
+                      <SelectItem key={category} value={category}>
+                        {category}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
-              <Select value={selectedCategory} onValueChange={setSelectedCategory}>
-                <SelectTrigger className="w-40">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {categories.map((category) => (
-                    <SelectItem key={category} value={category}>
-                      {category}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
             </div>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {filteredItems.map((item) => {
-                const availability = item.linked_recipe_id > 0 ? getRecipeAvailability(item.linked_recipe_id) : 999
+                const availability = item.linked_recipe_id ? getRecipeAvailability(item.linked_recipe_id) : 999
                 const recipe = recipes.find((r) => r.id === item.linked_recipe_id)
                 const isAvailable = availability > 0
 
@@ -178,7 +178,7 @@ export function EnhancedPOSMenu() {
                             <h3 className="font-medium">{item.name}</h3>
                             <p className="text-sm text-muted-foreground">{item.description}</p>
                             <div className="flex gap-1 mt-1">
-                              {item.tags.map((tag) => (
+                              {item.tags?.map((tag) => (
                                 <Badge key={tag} variant="outline" className="text-xs">
                                   {tag}
                                 </Badge>
@@ -190,50 +190,38 @@ export function EnhancedPOSMenu() {
                             {recipe && (
                               <div className="flex items-center gap-1 text-xs text-muted-foreground">
                                 <Clock className="h-3 w-3" />
-                                {recipe.prep_time}m
+                                {recipe.prep_time_minutes}m
                               </div>
                             )}
                           </div>
                         </div>
-
-                        {availability < 999 && (
-                          <div className="text-xs">
-                            <Badge variant={isAvailable ? "default" : "destructive"}>
-                              {availability} portions available
-                            </Badge>
-                          </div>
-                        )}
-
-                        {item.linked_recipe_id > 0 && isAvailable ? (
+                        {isAvailable && (
                           <div className="flex gap-2">
                             <Button
-                              size="sm"
                               variant="outline"
+                              size="sm"
                               onClick={() => addToCart(item, "small")}
                               className="flex-1"
                             >
-                              Small ${getItemPrice(item, "small").toFixed(2)}
-                            </Button>
-                            <Button size="sm" onClick={() => addToCart(item, "regular")} className="flex-1">
-                              Regular ${getItemPrice(item, "regular").toFixed(2)}
+                              Small
                             </Button>
                             <Button
-                              size="sm"
                               variant="outline"
+                              size="sm"
+                              onClick={() => addToCart(item, "regular")}
+                              className="flex-1"
+                            >
+                              Regular
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
                               onClick={() => addToCart(item, "large")}
                               className="flex-1"
                             >
-                              Large ${getItemPrice(item, "large").toFixed(2)}
+                              Large
                             </Button>
                           </div>
-                        ) : item.linked_recipe_id === 0 ? (
-                          <Button size="sm" onClick={() => addToCart(item)} className="w-full">
-                            Add to Cart - ${item.price.toFixed(2)}
-                          </Button>
-                        ) : (
-                          <Button size="sm" disabled className="w-full">
-                            Out of Stock
-                          </Button>
                         )}
                       </div>
                     </CardContent>
@@ -245,74 +233,59 @@ export function EnhancedPOSMenu() {
         </Card>
       </div>
 
-      {/* Cart */}
-      <div>
+      <div className="space-y-4">
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <ShoppingCart className="h-5 w-5" />
-              Cart ({calculateTotalItems()})
-            </CardTitle>
+            <div className="flex justify-between items-center">
+              <CardTitle>Cart</CardTitle>
+              <Badge variant="outline" className="text-sm">
+                {calculateTotalItems()} items
+              </Badge>
+            </div>
           </CardHeader>
-          <CardContent className="space-y-4">
-            {cart.length === 0 ? (
-              <p className="text-muted-foreground text-center py-4">Cart is empty</p>
-            ) : (
-              <>
-                <div className="space-y-2 max-h-60 overflow-y-auto">
-                  {cart.map((item) => (
-                    <div key={item.id} className="flex justify-between items-center p-2 border rounded">
-                      <div className="flex-1">
-                        <p className="font-medium text-sm">{item.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {item.portionSize} - ${item.price.toFixed(2)}
-                          {item.prep_time && (
-                            <span className="ml-2 flex items-center gap-1">
-                              <Clock className="h-3 w-3" />
-                              {item.prep_time}m
-                            </span>
-                          )}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          className="h-6 w-6"
-                          onClick={() => updateQuantity(item.id, item.quantity - 1)}
-                        >
-                          <Minus className="h-3 w-3" />
-                        </Button>
-                        <span className="w-8 text-center text-sm">{item.quantity}</span>
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          className="h-6 w-6"
-                          onClick={() => updateQuantity(item.id, item.quantity + 1)}
-                        >
-                          <Plus className="h-3 w-3" />
-                        </Button>
-                        <span className="font-medium ml-2">${(item.price * item.quantity).toFixed(2)}</span>
-                        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => removeFromCart(item.id)}>
-                          ×
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="border-t pt-4">
-                  <div className="flex justify-between items-center mb-4">
-                    <span className="font-medium">Total:</span>
-                    <span className="text-xl font-bold">${calculateTotal().toFixed(2)}</span>
+          <CardContent>
+            <div className="space-y-4">
+              {cart.map((item) => (
+                <div key={item.id} className="flex justify-between items-center">
+                  <div>
+                    <p className="font-medium">{item.name}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {item.portionSize} - ${item.price.toFixed(2)}
+                    </p>
                   </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={() => updateQuantity(item.id, item.quantity - 1)}
+                    >
+                      <Minus className="h-4 w-4" />
+                    </Button>
+                    <span className="w-8 text-center">{item.quantity}</span>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={() => updateQuantity(item.id, item.quantity + 1)}
+                    >
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
 
-                  <Button onClick={processOrder} className="w-full">
+              {cart.length > 0 && (
+                <div className="pt-4 border-t">
+                  <div className="flex justify-between items-center mb-4">
+                    <span className="font-medium">Total</span>
+                    <span className="font-bold">${calculateTotal().toFixed(2)}</span>
+                  </div>
+                  <Button className="w-full" onClick={processOrder}>
+                    <ShoppingCart className="mr-2 h-4 w-4" />
                     Process Order
                   </Button>
                 </div>
-              </>
-            )}
+              )}
+            </div>
           </CardContent>
         </Card>
       </div>

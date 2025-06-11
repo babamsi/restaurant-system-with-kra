@@ -62,6 +62,7 @@ const foodItems: FoodItem[] = [
     price: 9.99,
     stock: 38,
     category: "Vegetarian",
+    image: "https://s.lightorangebean.com/media/20240914144639/Thai-Vegetable-Stir-Fry-with-Lime-and-Ginger_done.png",
     portionSizes: {
       half: { price: 6.99, available: 38 },
       full: { price: 9.99, available: 38 },

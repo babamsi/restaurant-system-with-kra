@@ -271,6 +271,7 @@ export const useCompletePOSStore = create<POSState>()(
               prep_time_minutes: recipe.prep_time_minutes,
               nutrition: recipe.nutrition_per_portion,
               inventory_deduction: undefined, // Recipes handle their own ingredient deduction
+              image: recipe.image || `/images/recipes/${recipe.name.toLowerCase().replace(/\s+/g, '-')}.jpg`,
             })
           }
         })
@@ -295,6 +296,7 @@ export const useCompletePOSStore = create<POSState>()(
                   ingredient_id: ingredient.id,
                   quantity_per_unit: ingredient.customer_unit_size || 1,
                 },
+                image: ingredient.image || `/images/ingredients/${ingredient.name.toLowerCase().replace(/\s+/g, '-')}.jpg`,
               })
             }
           }

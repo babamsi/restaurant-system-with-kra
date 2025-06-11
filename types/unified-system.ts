@@ -91,6 +91,14 @@ export interface MenuItem {
     ingredient_id: number
     quantity_per_unit: number
   }
+  image?: string
+  linked_recipe_id?: number
+  tags?: string[]
+  portion_sizes?: {
+    small: { multiplier: number; price_adjustment: number }
+    regular: { multiplier: number; price_adjustment: number }
+    large: { multiplier: number; price_adjustment: number }
+  }
 }
 
 export interface CartItem {

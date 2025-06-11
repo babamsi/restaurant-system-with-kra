@@ -38,6 +38,7 @@ import { useToast } from "@/hooks/use-toast"
 import { useCompletePOSStore } from "@/stores/complete-pos-store"
 import { useOrdersStore } from "@/stores/orders-store"
 import { useUnifiedKitchenStore } from "@/stores/unified-kitchen-store"
+import Image from "next/image"
 
 export function CorrectedPOSSystem() {
   const { toast } = useToast()
@@ -103,9 +104,9 @@ export function CorrectedPOSSystem() {
     return matchesSearch && matchesCategory
   })
 
-  const handleAddToCart = (menuItem: any, quantity = 1) => {
+  const handleAddToCart = (menuItem: MenuItem, portionSize = "regular") => {
     // For individual ingredients, use a default serving size
-    let actualQuantity = quantity
+    let actualQuantity = 1
     let displayText = ""
 
     if (menuItem.type === "individual") {
@@ -115,15 +116,15 @@ export function CorrectedPOSSystem() {
         ml: 200, // 200ml default serving
       }
 
-      const unit = menuItem.display_unit || menuItem.unit || "g"
+      const unit = menuItem.unit || "g"
       actualQuantity = defaultServings[unit] || 100
       displayText = `${actualQuantity}${unit} of ${menuItem.name}`
     } else {
-      displayText = `${quantity} ${menuItem.name}`
+      displayText = `${portionSize} ${menuItem.name}`
     }
 
     if (menuItem.available_quantity < actualQuantity) {
-      const unit = menuItem.display_unit || menuItem.unit || ""
+      const unit = menuItem.unit || ""
       toast({
         title: "Insufficient Stock",
         description: `Only ${Math.floor(menuItem.available_quantity)}${unit} available`,
@@ -132,7 +133,7 @@ export function CorrectedPOSSystem() {
       return
     }
 
-    addToCart(menuItem, actualQuantity)
+    addToCart(menuItem, actualQuantity, portionSize)
 
     toast({
       title: "Added to Cart",
@@ -389,14 +390,23 @@ export function CorrectedPOSSystem() {
                     : "No items match your current search criteria."}
                 </p>
               </div>
-            ) : viewMode === "grid" ? (
+            ) : (
               <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
                 {filteredMenuItems.map((item) => (
                   <Card key={item.id} className="cursor-pointer hover:shadow-lg transition-all duration-200 group">
                     <CardContent className="p-4">
                       <div className="aspect-square bg-muted rounded-lg mb-3 relative overflow-hidden">
                         <div className="absolute inset-0 bg-gradient-to-br from-primary/20 to-secondary/20 flex items-center justify-center">
-                          <span className="text-2xl">{item.type === "recipe" ? "🍽️" : "🥘"}</span>
+                          {item.image ? (
+                            <Image
+                              src={item.image}
+                              alt={item.name}
+                              fill
+                              className="object-cover"
+                            />
+                          ) : (
+                            <span className="text-2xl">{item.type === "recipe" ? "🍽️" : "🥘"}</span>
+                          )}
                         </div>
                         <div className="absolute top-2 right-2">
                           <Badge variant="secondary" className="text-xs">
@@ -428,7 +438,7 @@ export function CorrectedPOSSystem() {
                             {item.type === "individual" ? (
                               <>
                                 ${(item.price * 100).toFixed(2)}
-                                <span className="text-xs text-muted-foreground">/100{item.display_unit}</span>
+                                <span className="text-xs text-muted-foreground">/100{item.unit}</span>
                               </>
                             ) : (
                               `$${item.price.toFixed(2)}`
@@ -436,7 +446,7 @@ export function CorrectedPOSSystem() {
                           </span>
                           <Badge variant="secondary" className="text-xs">
                             {item.type === "individual"
-                              ? `${Math.floor(item.available_quantity)}${item.display_unit}`
+                              ? `${Math.floor(item.available_quantity)}${item.unit}`
                               : `${item.available_quantity} available`}
                           </Badge>
                         </div>
@@ -449,74 +459,47 @@ export function CorrectedPOSSystem() {
                           </div>
                         </div>
 
-                        <Button
-                          size="sm"
-                          className="w-full"
-                          onClick={() => handleAddToCart(item, 1)}
-                          disabled={item.available_quantity === 0}
-                        >
-                          <Plus className="h-4 w-4 mr-1" />
-                          {item.type === "individual" ? `Add 100${item.display_unit}` : "Add to Cart"}
-                        </Button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {filteredMenuItems.map((item) => (
-                  <Card key={item.id} className="cursor-pointer hover:shadow-md transition-all duration-200">
-                    <CardContent className="p-4">
-                      <div className="flex items-center gap-4">
-                        <div className="w-16 h-16 bg-muted rounded-lg flex items-center justify-center flex-shrink-0">
-                          <span className="text-xl">{item.type === "recipe" ? "🍽️" : "🥘"}</span>
-                        </div>
-
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-start justify-between mb-1">
-                            <h3 className="font-semibold">{item.name}</h3>
-                            <div className="flex items-center gap-2">
-                              <span className="font-bold text-primary">
-                                {item.type === "individual" ? (
-                                  <>
-                                    ${(item.price * 100).toFixed(2)}
-                                    <span className="text-xs text-muted-foreground">/100{item.display_unit}</span>
-                                  </>
-                                ) : (
-                                  `$${item.price.toFixed(2)}`
-                                )}
-                              </span>
-                            </div>
+                        {item.type === "recipe" && item.portion_sizes ? (
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="flex-1"
+                              onClick={() => handleAddToCart(item, "small")}
+                              disabled={item.available_quantity === 0}
+                            >
+                              Small
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="flex-1"
+                              onClick={() => handleAddToCart(item, "regular")}
+                              disabled={item.available_quantity === 0}
+                            >
+                              Regular
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="flex-1"
+                              onClick={() => handleAddToCart(item, "large")}
+                              disabled={item.available_quantity === 0}
+                            >
+                              Large
+                            </Button>
                           </div>
-                          <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                            {item.type === "recipe" && item.prep_time_minutes && (
-                              <span className="flex items-center gap-1">
-                                <Clock className="h-3 w-3" />
-                                {item.prep_time_minutes}m
-                              </span>
-                            )}
-                            <span>
-                              Stock:{" "}
-                              {item.type === "individual"
-                                ? `${Math.floor(item.available_quantity)}${item.display_unit}`
-                                : `${item.available_quantity} available`}
-                            </span>
-                            <span className="flex items-center gap-1">
-                              <Activity className="h-3 w-3" />
-                              {item.nutrition.calories} cal, {item.nutrition.protein}g protein
-                            </span>
-                          </div>
-                        </div>
-
-                        <Button
-                          size="sm"
-                          onClick={() => handleAddToCart(item, 1)}
-                          disabled={item.available_quantity === 0}
-                        >
-                          <Plus className="h-4 w-4 mr-1" />
-                          {item.type === "individual" ? `Add 100${item.display_unit}` : "Add to Cart"}
-                        </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            className="w-full"
+                            onClick={() => handleAddToCart(item)}
+                            disabled={item.available_quantity === 0}
+                          >
+                            <Plus className="h-4 w-4 mr-1" />
+                            {item.type === "individual" ? `Add 100${item.unit}` : "Add to Cart"}
+                          </Button>
+                        )}
                       </div>
                     </CardContent>
                   </Card>
@@ -567,16 +550,21 @@ export function CorrectedPOSSystem() {
                         <div className="flex-1">
                           <h4 className="font-medium text-sm">
                             {item.name}
-                            {item.type === "individual" && item.display_unit && (
+                            {item.type === "individual" && item.unit && (
                               <span className="text-xs text-muted-foreground ml-1">
                                 ({item.quantity}
-                                {item.display_unit})
+                                {item.unit})
+                              </span>
+                            )}
+                            {item.type === "recipe" && item.portionSize && (
+                              <span className="text-xs text-muted-foreground ml-1">
+                                ({item.portionSize})
                               </span>
                             )}
                           </h4>
                           <p className="text-xs text-muted-foreground">
                             {item.type === "individual"
-                              ? `$${(item.unit_price * 100).toFixed(2)} per 100${item.display_unit}`
+                              ? `$${(item.unit_price * 100).toFixed(2)} per 100${item.unit}`
                               : `$${item.unit_price.toFixed(2)} per item`}
                           </p>
                           <div className="text-xs text-muted-foreground mt-1">
@@ -599,7 +587,7 @@ export function CorrectedPOSSystem() {
                             <Minus className="h-3 w-3" />
                           </Button>
                           <span className="w-12 text-center text-sm">
-                            {item.type === "individual" ? `${item.quantity}${item.display_unit}` : item.quantity}
+                            {item.type === "individual" ? `${item.quantity}${item.unit}` : item.quantity}
                           </span>
                           <Button
                             variant="outline"
@@ -990,3 +978,5 @@ export function CorrectedPOSSystem() {
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
         </DialogContent>\
       </Dialog>
+      </div>
+  )}

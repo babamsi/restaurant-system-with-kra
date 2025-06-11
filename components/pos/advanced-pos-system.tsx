@@ -104,6 +104,7 @@ const foodItems: FoodItem[] = [
     description: "Fresh seasonal vegetables stir-fried with aromatic spices and jasmine rice",
     prepTime: 12,
     rating: 4.4,
+    image: "https://s.lightorangebean.com/media/20240914144639/Thai-Vegetable-Stir-Fry-with-Lime-and-Ginger_done.png",
     isPopular: false,
     portionSizes: {
       half: { price: 6.99, available: 38, calories: 280 },

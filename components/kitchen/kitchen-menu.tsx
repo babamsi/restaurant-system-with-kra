@@ -34,7 +34,7 @@ export function KitchenMenu() {
       category: "Salads",
       price: 8.99,
       available: 15,
-      image: "/grilled-chicken-salad.png",
+      image: "",
       status: "Available",
     },
     {
@@ -43,7 +43,7 @@ export function KitchenMenu() {
       category: "Main Course",
       price: 7.99,
       available: 12,
-      image: "/vegetable-stir-fry.png",
+      image: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQOFhcbP5r6JkEyqPApLr71n6U7GbJTGz8e8w&s",
       status: "Available",
     },
     {

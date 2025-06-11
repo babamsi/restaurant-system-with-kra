@@ -382,6 +382,7 @@ export const mockRecipes: RecipeWithAvailability[] = [
     id: 4,
     name: "Vegetable Stir Fry",
     category: "Main Course",
+    image: "https://s.lightorangebean.com/media/20240914144639/Thai-Vegetable-Stir-Fry-with-Lime-and-Ginger_done.png",
     default_yield: 1,
     ingredients: [
       {
@@ -651,6 +652,7 @@ export const mockMenuItems: MenuItem[] = [
     id: 4,
     name: "Vegetable Stir Fry",
     price: 9.99,
+    image: "https://s.lightorangebean.com/media/20240914144639/Thai-Vegetable-Stir-Fry-with-Lime-and-Ginger_done.png",
     category: "Main Course",
     linked_recipe_id: 4,
     tags: ["Vegetarian", "Vegan", "Healthy"],
@@ -795,7 +797,7 @@ export const mockOrders: Order[] = [
     tableNumber: "Table 20D",
     customerName: "Lisa Thompson",
     items: [
-      { id: "item11", name: "Vegetable Stir Fry", quantity: 1, portionSize: "large", price: 11.99 },
+      { id: "item11", name: "Vegetable Stir Fry", quantity: 1, portionSize: "large", image: "https://s.lightorangebean.com/media/20240914144639/Thai-Vegetable-Stir-Fry-with-Lime-and-Ginger_done.png", price: 11.99 },
       { id: "item12", name: "Garden Fresh Salad", quantity: 1, portionSize: "small", price: 4.99 },
       { id: "item13", name: "Iced Tea", quantity: 1, price: 2.99 },
     ],
@@ -821,11 +823,16 @@ export const mockOrders: Order[] = [
   },
 ]
 
-export const supplierNames: Record<number, string> = {
-  1: "Premium Meats Co.",
-  2: "Ocean Fresh Seafood",
-  3: "Golden Grain Suppliers",
-  4: "Farm Fresh Produce",
-  5: "Dairy Valley Co-op",
-  6: "Gourmet Pantry Ltd.",
-}
+export const supplierNames = [{
+  id: 1,
+  name: "Premium Meats Co.",
+},
+{
+  id: 2,
+  name: "Ocean Fresh Seafood",
+},
+{
+  id: 3,
+  name: "Golden Grain Suppliers",
+},
+]

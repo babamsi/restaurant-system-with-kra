@@ -677,7 +677,7 @@ export function SynchronizedInventoryManager() {
                       <Label htmlFor="ingredient-category">Category *</Label>
                       <Select
                         value={newIngredient.category}
-                        onValueChange={(value) => setNewIngredient({ ...newIngredient, category: value, supplier_id: "" })}
+                        onValueChange={(value) => setNewIngredient({ ...newIngredient, category: value })}
                       >
                         <SelectTrigger>
                           <SelectValue placeholder="Select category" />
@@ -761,13 +761,12 @@ export function SynchronizedInventoryManager() {
               </Tabs>
 
               <div className="grid gap-2">
-                <Label htmlFor="supplier">Supplier</Label>
+                <Label htmlFor="supplier">Supplier *</Label>
                 <Select
                   value={newIngredient.supplier_id}
                   onValueChange={(value) =>
                     setNewIngredient((prev) => ({ ...prev, supplier_id: value }))
                   }
-                  disabled={!newIngredient.category}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Select supplier" />

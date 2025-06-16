@@ -205,7 +205,7 @@ export default function SuppliersPage() {
                                 >
                                   <CheckCircle className="h-4 w-4 mr-2" />
                                   Mark as Paid
-                                </Button>
+          </Button>
                               )}
                             </TableCell>
                           </TableRow>
@@ -329,8 +329,8 @@ export default function SuppliersPage() {
                     </div>
                   </RadioGroup>
                 </div>
-              </div>
-            </div>
+        </div>
+      </div>
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowPaymentDialog(false)}>

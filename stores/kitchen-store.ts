@@ -7,6 +7,7 @@ export interface KitchenStorage {
   quantity: number
   unit: string
   lastUpdated: Date
+  usedGrams?: number // Track used grams for ingredients with GM amounts
 }
 
 export interface BatchIngredient {
@@ -22,9 +23,9 @@ export interface Batch {
   id: string
   name: string
   ingredients: BatchIngredient[]
-  status: "preparing" | "ready" | "completed" | "finished"
+  status: "draft" | "preparing" | "ready" | "completed" | "finished"
   notes?: string
-  startTime: string
+  startTime?: string
   endTime?: string
   yield?: number
   yieldUnit?: string
@@ -67,6 +68,7 @@ export const useKitchenStore = create<KitchenStore>((set, get) => ({
             quantity,
             unit,
             lastUpdated: new Date(),
+            usedGrams: 0,
           },
         ],
       }

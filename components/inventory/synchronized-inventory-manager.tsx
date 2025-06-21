@@ -12,11 +12,9 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Plus, Save, Edit, AlertTriangle, Package, TrendingUp, Bell, CheckCircle, History, Receipt, Trash2, Edit2, Upload, Search, Filter, X } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { useSynchronizedInventoryStore } from "@/stores/synchronized-inventory-store"
-import { useSupplierStore } from "@/stores/supplier-store"
+import { useSuppliers } from "@/hooks/use-suppliers"
 import { supplierNames } from "@/data/mock-data"
 import type { BaseIngredient } from "@/types/operational"
-import type { InventoryLog } from "@/stores/synchronized-inventory-store"
 import { ReceiptUploadDialog } from "./receipt-upload-dialog"
 import type { ReceiptItem } from "./receipt-upload-dialog"
 import {
@@ -32,58 +30,96 @@ import {
 import { ReceiptList } from "./receipt-list"
 import { BulkInventoryUpdate } from "./bulk-inventory-update"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { inventoryService } from "@/lib/inventory-service"
+import { SupplierSelector } from "@/components/suppliers/supplier-selector"
+
+// Database ingredient type
+interface DatabaseIngredient {
+  id: string
+  name: string
+  description: string | null
+  category: string
+  unit: string
+  supplier_id: string | null
+  current_stock: number
+  minimum_stock: number
+  maximum_stock: number | null
+  reorder_point: number
+  cost_per_unit: number
+  selling_price: number | null
+  markup_percentage: number | null
+  calories_per_unit: number | null
+  protein_per_unit: number | null
+  carbs_per_unit: number | null
+  fat_per_unit: number | null
+  fiber_per_unit: number | null
+  sodium_per_unit: number | null
+  is_sellable_individually: boolean
+  is_cooked: boolean
+  is_active: boolean
+  is_perishable: boolean
+  expiry_date: string | null
+  barcode: string | null
+  sku: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+  suppliers?: { name: string; contact_person: string | null }
+}
+
+// System log type
+interface SystemLog {
+  id: string
+  type: string
+  action: string
+  details: string
+  status: string
+  entity_type: string | null
+  entity_id: string | null
+  user_id: string | null
+  created_at: string
+}
 
 export function SynchronizedInventoryManager() {
   const { toast } = useToast()
-  const {
-    ingredients,
-    addIngredient,
-    updateIngredient,
-    updateStock,
-    updateCost,
-    getLowStockItems,
-    getOutOfStockItems,
-    getTotalValue,
-    getIngredientLogs,
-    deleteIngredient,
-  } = useSynchronizedInventoryStore()
-
-  const { suppliers: allSuppliers, getSuppliersByCategory } = useSupplierStore()
+  const { suppliers: allSuppliers, getSupplierById } = useSuppliers()
+  
+  // State for database operations
+  const [ingredients, setIngredients] = useState<DatabaseIngredient[]>([])
+  const [loading, setLoading] = useState(true)
   const [isAddingIngredient, setIsAddingIngredient] = useState(false)
-  const [editingIngredient, setEditingIngredient] = useState<BaseIngredient | null>(null)
+  const [editingIngredient, setEditingIngredient] = useState<DatabaseIngredient | null>(null)
   const [editQuantity, setEditQuantity] = useState("")
   const [newCost, setNewCost] = useState("")
   const [notifications, setNotifications] = useState<string[]>([])
   const [showLogs, setShowLogs] = useState(false)
-  const [selectedIngredientLogs, setSelectedIngredientLogs] = useState<InventoryLog[]>([])
+  const [selectedIngredientLogs, setSelectedIngredientLogs] = useState<SystemLog[]>([])
   const [showReceiptUpload, setShowReceiptUpload] = useState(false)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
-  const [ingredientToDelete, setIngredientToDelete] = useState<BaseIngredient | null>(null)
+  const [ingredientToDelete, setIngredientToDelete] = useState<DatabaseIngredient | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
   const [selectedCategory, setSelectedCategory] = useState<string>("all")
   const [selectedSupplier, setSelectedSupplier] = useState<string>("all")
   const [selectedStatus, setSelectedStatus] = useState<string>("all")
 
   // New ingredient form state
-  const [newIngredient, setNewIngredient] = useState<Partial<BaseIngredient>>({
+  const [newIngredient, setNewIngredient] = useState<Partial<DatabaseIngredient>>({
     name: "",
     category: "",
     unit: "",
     cost_per_unit: 0,
-    available_quantity: 0,
-    threshold: 10,
+    current_stock: 0,
+    reorder_point: 10,
     description: "",
     supplier_id: "",
   })
 
   // Get suppliers for the selected category
-  const categorySuppliers = newIngredient.category
-    ? getSuppliersByCategory(newIngredient.category)
-    : allSuppliers
+  const categorySuppliers = allSuppliers.filter(supplier => supplier.status === 'active')
 
   // Get unique categories and supplier IDs for filters
-  const categories = Array.from(new Set(ingredients.map(i => i.category)))
-  const supplierIds = Array.from(new Set(ingredients.map(i => i.supplier_id)))
+  const categories = Array.from(new Set(ingredients.map(i => i.category || 'Uncategorized')))
+  const supplierIds = Array.from(new Set(ingredients.map(i => i.supplier_id).filter(Boolean) as string[]))
 
   // Filter ingredients based on all criteria
   const filteredIngredients = ingredients.filter(ingredient => {
@@ -91,36 +127,61 @@ export function SynchronizedInventoryManager() {
     const matchesCategory = selectedCategory === "all" || !selectedCategory || ingredient.category === selectedCategory
     const matchesSupplier = selectedSupplier === "all" || !selectedSupplier || ingredient.supplier_id === selectedSupplier
     const matchesStatus = selectedStatus === "all" || !selectedStatus || (
-      selectedStatus === "out_of_stock" && ingredient.available_quantity === 0 ||
-      selectedStatus === "low_stock" && ingredient.available_quantity <= ingredient.threshold ||
-      selectedStatus === "in_stock" && ingredient.available_quantity > ingredient.threshold
+      selectedStatus === "out_of_stock" && ingredient.current_stock === 0 ||
+      selectedStatus === "low_stock" && ingredient.current_stock <= ingredient.reorder_point ||
+      selectedStatus === "in_stock" && ingredient.current_stock > ingredient.reorder_point
     )
 
     return matchesSearch && matchesCategory && matchesSupplier && matchesStatus
   })
 
-  // Subscribe to store changes
-  useEffect(() => {
-    const unsubscribe = useSynchronizedInventoryStore.subscribe(
-      (state: { ingredients: BaseIngredient[] }) => state.ingredients,
-      (ingredients: BaseIngredient[]) => {
-        // Update notifications when ingredients change
-        const lowStock = getLowStockItems()
-        const outOfStock = getOutOfStockItems()
-
-        const newNotifications = [
-          ...lowStock.map((item: BaseIngredient) => `${item.name} is running low (${item.available_quantity} ${item.unit} remaining)`),
-          ...outOfStock.map((item: BaseIngredient) => `${item.name} is out of stock`),
-        ]
-
-        setNotifications(newNotifications)
+  // Load ingredients from database
+  const loadIngredients = async () => {
+    try {
+      setLoading(true)
+      const result = await inventoryService.getIngredients()
+      if (result.success) {
+        setIngredients(result.data)
+        updateNotifications(result.data)
+      } else {
+        toast({
+          title: "Error Loading Ingredients",
+          description: result.error || "Failed to load ingredients",
+          variant: "destructive",
+        })
       }
-    )
+    } catch (error) {
+      toast({
+        title: "Error Loading Ingredients",
+        description: "Failed to load ingredients from database",
+        variant: "destructive",
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
 
-    return () => unsubscribe()
+  // Update notifications based on current ingredients
+  const updateNotifications = (currentIngredients: DatabaseIngredient[]) => {
+    const lowStock = currentIngredients.filter(
+      item => item.current_stock <= item.reorder_point && item.current_stock > 0
+    )
+    const outOfStock = currentIngredients.filter(item => item.current_stock === 0)
+
+    const newNotifications = [
+      ...lowStock.map((item) => `${item.name} is running low (${item.current_stock} ${item.unit} remaining)`),
+      ...outOfStock.map((item) => `${item.name} is out of stock`),
+    ]
+
+    setNotifications(newNotifications)
+  }
+
+  // Load ingredients on component mount
+  useEffect(() => {
+    loadIngredients()
   }, [])
 
-  const handleAddIngredient = () => {
+  const handleAddIngredient = async () => {
     if (!newIngredient.name || !newIngredient.category || !newIngredient.unit || !newIngredient.supplier_id) {
       toast({
         title: "Missing Information",
@@ -130,31 +191,59 @@ export function SynchronizedInventoryManager() {
       return
     }
 
-    addIngredient({
-      name: newIngredient.name,
-      category: newIngredient.category,
-      unit: newIngredient.unit,
-      cost_per_unit: newIngredient.cost_per_unit || 0,
-      available_quantity: newIngredient.available_quantity || 0,
-      threshold: newIngredient.threshold || 10,
-      description: newIngredient.description || "",
-      supplier_id: newIngredient.supplier_id,
-    })
+    try {
+      console.log(newIngredient)
+      const result = await inventoryService.createIngredient({
+        name: newIngredient.name,
+        category: newIngredient.category,
+        unit: newIngredient.unit,
+        supplier_id: newIngredient.supplier_id,
+        current_stock: newIngredient.current_stock || 0,
+        minimum_stock: newIngredient.reorder_point || 10,
+        reorder_point: newIngredient.reorder_point || 10,
+        cost_per_unit: newIngredient.cost_per_unit || 0,
+        is_active: true,
+        is_sellable_individually: true,
+      })
 
-    setIsAddingIngredient(false)
-    setNewIngredient({
-      name: "",
-      category: "",
-      unit: "",
-      cost_per_unit: 0,
-      available_quantity: 0,
-      threshold: 10,
-      description: "",
-      supplier_id: "",
-    })
+      if (result.success) {
+        toast({
+          title: "Ingredient Added",
+          description: `${newIngredient.name} has been added to inventory.`,
+        })
+        
+        // Reset form
+        setIsAddingIngredient(false)
+        setNewIngredient({
+          name: "",
+          category: "",
+          unit: "",
+          cost_per_unit: 0,
+          current_stock: 0,
+          reorder_point: 10,
+          description: "",
+          supplier_id: "",
+        })
+        
+        // Reload ingredients
+        await loadIngredients()
+      } else {
+        toast({
+          title: "Error Adding Ingredient",
+          description: result.error || "Failed to add ingredient",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      toast({
+        title: "Error Adding Ingredient",
+        description: "Failed to add ingredient to database",
+        variant: "destructive",
+      })
+    }
   }
 
-  const handleCostUpdate = (ingredient: BaseIngredient) => {
+  const handleCostUpdate = async (ingredient: DatabaseIngredient) => {
     const updatedCost = Number.parseFloat(newCost)
     if (isNaN(updatedCost) || updatedCost <= 0) {
       toast({
@@ -165,31 +254,62 @@ export function SynchronizedInventoryManager() {
       return
     }
 
-    updateCost(ingredient.id, updatedCost)
-
-    toast({
-      title: "Cost Updated",
-      description: `Updated cost for ${ingredient.name} to $${updatedCost.toFixed(2)}/${ingredient.unit}. Kitchen recipes will reflect new costs.`,
-    })
-
-    setEditingIngredient(null)
-    setNewCost("")
+    try {
+      const result = await inventoryService.updateCost(ingredient.id, updatedCost)
+      if (result.success) {
+        toast({
+          title: "Cost Updated",
+          description: `Updated cost for ${ingredient.name} to $${updatedCost.toFixed(2)}/${ingredient.unit}.`,
+        })
+        setEditingIngredient(null)
+        setNewCost("")
+        await loadIngredients()
+      } else {
+        toast({
+          title: "Error Updating Cost",
+          description: result.error || "Failed to update cost",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      toast({
+        title: "Error Updating Cost",
+        description: "Failed to update cost in database",
+        variant: "destructive",
+      })
+    }
   }
 
-  const handleStockUpdate = (ingredientId: string, quantity: number, type: "add" | "subtract") => {
-    updateStock(ingredientId, quantity, type, "manual-adjustment")
-
-    const ingredient = ingredients.find((i) => i.id === ingredientId)
-    toast({
-      title: "Stock Updated",
-      description: `${ingredient?.name} stock ${type === "add" ? "increased" : "decreased"} by ${quantity} ${ingredient?.unit}. Recipe availability updated automatically.`,
-    })
+  const handleStockUpdate = async (ingredientId: string, quantity: number, type: "add" | "subtract") => {
+    try {
+      const result = await inventoryService.updateStock(ingredientId, quantity, type, "manual-adjustment")
+      if (result.success) {
+        const ingredient = ingredients.find((i) => i.id === ingredientId)
+        toast({
+          title: "Stock Updated",
+          description: `${ingredient?.name} stock ${type === "add" ? "increased" : "decreased"} by ${quantity} ${ingredient?.unit}.`,
+        })
+        await loadIngredients()
+      } else {
+        toast({
+          title: "Error Updating Stock",
+          description: result.error || "Failed to update stock",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      toast({
+        title: "Error Updating Stock",
+        description: "Failed to update stock in database",
+        variant: "destructive",
+      })
+    }
   }
 
-  const getStockStatus = (ingredient: BaseIngredient) => {
-    if (ingredient.available_quantity === 0) {
+  const getStockStatus = (ingredient: DatabaseIngredient) => {
+    if (ingredient.current_stock === 0) {
       return { status: "Out of Stock", variant: "destructive" as const, icon: AlertTriangle }
-    } else if (ingredient.available_quantity <= ingredient.threshold) {
+    } else if (ingredient.current_stock <= ingredient.reorder_point) {
       return {
         status: "Low Stock",
         variant: "outline" as const,
@@ -201,68 +321,108 @@ export function SynchronizedInventoryManager() {
     }
   }
 
-  const lowStockCount = getLowStockItems().length
-  const outOfStockCount = getOutOfStockItems().length
+  const lowStockCount = ingredients.filter(
+    item => item.current_stock <= item.reorder_point && item.current_stock > 0
+  ).length
+  const outOfStockCount = ingredients.filter(item => item.current_stock === 0).length
 
-  const handleViewLogs = (ingredientId: string) => {
-    const logs = getIngredientLogs(ingredientId)
-    setSelectedIngredientLogs(logs)
-    setShowLogs(true)
-  }
-
-  const handleProcessReceipt = (items: ReceiptItem[]) => {
-    items.forEach((item) => {
-      if (item.matches) {
-        // Update existing ingredient
-        updateStock(
-          item.matches.id,
-          item.quantity,
-          "add",
-          "receipt-upload"
-        )
-        if (item.cost_per_unit !== item.matches.cost_per_unit) {
-          updateCost(item.matches.id, item.cost_per_unit)
-        }
+  const handleViewLogs = async (ingredientId: string) => {
+    try {
+      const result = await inventoryService.getIngredientLogs(ingredientId)
+      if (result.success) {
+        setSelectedIngredientLogs(result.data)
+        setShowLogs(true)
       } else {
-        // Add new ingredient
-        addIngredient({
-          name: item.name,
-          category: "Uncategorized", // Default category
-          unit: item.unit,
-          cost_per_unit: item.cost_per_unit,
-          available_quantity: item.quantity,
-          threshold: Math.ceil(item.quantity * 0.2), // Default threshold as 20% of initial quantity
-          description: `Added from receipt upload on ${new Date().toLocaleDateString()}`,
-          supplier_id: "", // Assuming no supplier for default category
+        toast({
+          title: "Error Loading Logs",
+          description: result.error || "Failed to load logs",
+          variant: "destructive",
         })
       }
-    })
-
-    toast({
-      title: "Receipt Processed",
-      description: "Inventory has been updated with the receipt items.",
-    })
+    } catch (error) {
+      toast({
+        title: "Error Loading Logs",
+        description: "Failed to load logs from database",
+        variant: "destructive",
+      })
+    }
   }
 
-  const handleDeleteClick = (ingredient: BaseIngredient) => {
+  const handleProcessReceipt = async (items: ReceiptItem[]) => {
+    try {
+      for (const item of items) {
+        if (item.matches) {
+          // Update existing ingredient
+          await inventoryService.updateStock(
+            item.matches.id,
+            item.quantity,
+            "add",
+            "receipt-upload"
+          )
+          if (item.cost_per_unit !== item.matches.cost_per_unit) {
+            await inventoryService.updateCost(item.matches.id, item.cost_per_unit)
+          }
+        } else {
+          // Add new ingredient - you'll need to implement this based on your category/unit mapping
+          toast({
+            title: "New Ingredient",
+            description: `Please add ${item.name} manually as it's not in the system.`,
+            variant: "destructive",
+          })
+        }
+      }
+
+      toast({
+        title: "Receipt Processed",
+        description: "Inventory has been updated with the receipt items.",
+      })
+      
+      await loadIngredients()
+    } catch (error) {
+      toast({
+        title: "Error Processing Receipt",
+        description: "Failed to process receipt",
+        variant: "destructive",
+      })
+    }
+  }
+
+  const handleDeleteClick = (ingredient: DatabaseIngredient) => {
     setIngredientToDelete(ingredient)
     setShowDeleteDialog(true)
   }
 
-  const handleConfirmDelete = () => {
-    if (ingredientToDelete) {
-      deleteIngredient(ingredientToDelete.id)
+  const handleConfirmDelete = async () => {
+    if (!ingredientToDelete) return
+
+    try {
+      const result = await inventoryService.deleteIngredient(ingredientToDelete.id)
+      if (result.success) {
+        toast({
+          title: "Ingredient Deleted",
+          description: `${ingredientToDelete.name} has been removed from inventory.`,
+        })
+        setShowDeleteDialog(false)
+        setIngredientToDelete(null)
+        await loadIngredients()
+      } else {
+        toast({
+          title: "Error Deleting Ingredient",
+          description: result.error || "Failed to delete ingredient",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
       toast({
-        title: "Ingredient Deleted",
-        description: `${ingredientToDelete.name} has been removed from inventory.`,
+        title: "Error Deleting Ingredient",
+        description: "Failed to delete ingredient from database",
+        variant: "destructive",
       })
-      setShowDeleteDialog(false)
-      setIngredientToDelete(null)
     }
   }
 
   const getSupplierName = (supplierId: string) => {
-    const supplier = allSuppliers.find((s) => s.id === supplierId)
+    const supplier = getSupplierById(supplierId)
     return supplier ? supplier.name : "Unknown Supplier"
   }
 
@@ -271,6 +431,24 @@ export function SynchronizedInventoryManager() {
     setSelectedCategory("all")
     setSelectedSupplier("all")
     setSelectedStatus("all")
+  }
+
+  // Calculate total inventory value
+  const getTotalValue = () => {
+    return ingredients.reduce((sum, ingredient) => 
+      sum + (ingredient.current_stock * ingredient.cost_per_unit), 0
+    )
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
+          <p>Loading ingredients...</p>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -353,7 +531,7 @@ export function SynchronizedInventoryManager() {
 
       {/* Bulk Update and Receipt List */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <BulkInventoryUpdate />
+        <BulkInventoryUpdate onInventoryUpdated={loadIngredients} />
         <ReceiptList />
       </div>
 
@@ -480,7 +658,7 @@ export function SynchronizedInventoryManager() {
                 <Input
                   value={editingIngredient?.name || ""}
                   onChange={(e) =>
-                    setEditingIngredient((prev: BaseIngredient | null) => (prev ? { ...prev, name: e.target.value } : null))
+                    setEditingIngredient((prev: DatabaseIngredient | null) => (prev ? { ...prev, name: e.target.value } : null))
                   }
                 />
               </div>
@@ -488,9 +666,7 @@ export function SynchronizedInventoryManager() {
                 <Label>Category</Label>
                 <Input
                   value={editingIngredient?.category || ""}
-                  onChange={(e) =>
-                    setEditingIngredient((prev: BaseIngredient | null) => (prev ? { ...prev, category: e.target.value } : null))
-                  }
+                  disabled
                 />
               </div>
             </div>
@@ -510,8 +686,8 @@ export function SynchronizedInventoryManager() {
                       if (editingIngredient && editQuantity) {
                         const quantity = parseFloat(editQuantity)
                         if (!isNaN(quantity)) {
-                          const difference = quantity - editingIngredient.available_quantity
-                          updateStock(editingIngredient.id, Math.abs(difference), difference > 0 ? "add" : "subtract")
+                          const difference = quantity - editingIngredient.current_stock
+                          handleStockUpdate(editingIngredient.id, Math.abs(difference), difference > 0 ? "add" : "subtract")
                           setEditQuantity("")
                           setEditingIngredient(null)
                         }
@@ -526,9 +702,7 @@ export function SynchronizedInventoryManager() {
                 <Label>Unit</Label>
                 <Input
                   value={editingIngredient?.unit || ""}
-                  onChange={(e) =>
-                    setEditingIngredient((prev: BaseIngredient | null) => (prev ? { ...prev, unit: e.target.value } : null))
-                  }
+                  disabled
                 />
               </div>
             </div>
@@ -540,20 +714,20 @@ export function SynchronizedInventoryManager() {
                   type="number"
                   value={editingIngredient?.cost_per_unit || ""}
                   onChange={(e) =>
-                    setEditingIngredient((prev: BaseIngredient | null) =>
+                    setEditingIngredient((prev: DatabaseIngredient | null) =>
                       prev ? { ...prev, cost_per_unit: parseFloat(e.target.value) || 0 } : null
                     )
                   }
                 />
               </div>
               <div className="space-y-2">
-                <Label>Threshold</Label>
+                <Label>Reorder Point</Label>
                 <Input
                   type="number"
-                  value={editingIngredient?.threshold || ""}
+                  value={editingIngredient?.reorder_point || ""}
                   onChange={(e) =>
-                    setEditingIngredient((prev: BaseIngredient | null) =>
-                      prev ? { ...prev, threshold: parseFloat(e.target.value) || 0 } : null
+                    setEditingIngredient((prev: DatabaseIngredient | null) =>
+                      prev ? { ...prev, reorder_point: parseFloat(e.target.value) || 0 } : null
                     )
                   }
                 />
@@ -565,16 +739,36 @@ export function SynchronizedInventoryManager() {
                 Cancel
               </Button>
               <Button
-                onClick={() => {
+                onClick={async () => {
                   if (editingIngredient) {
-                    updateIngredient(editingIngredient.id, {
-                      name: editingIngredient.name,
-                      category: editingIngredient.category,
-                      unit: editingIngredient.unit,
-                      cost_per_unit: editingIngredient.cost_per_unit,
-                      threshold: editingIngredient.threshold,
-                    })
-                    setEditingIngredient(null)
+                    try {
+                      const result = await inventoryService.updateIngredient(editingIngredient.id, {
+                        name: editingIngredient.name,
+                        cost_per_unit: editingIngredient.cost_per_unit,
+                        reorder_point: editingIngredient.reorder_point,
+                      })
+                      
+                      if (result.success) {
+                        toast({
+                          title: "Ingredient Updated",
+                          description: `${editingIngredient.name} has been updated.`,
+                        })
+                        setEditingIngredient(null)
+                        await loadIngredients()
+                      } else {
+                        toast({
+                          title: "Error Updating Ingredient",
+                          description: result.error || "Failed to update ingredient",
+                          variant: "destructive",
+                        })
+                      }
+                    } catch (error) {
+                      toast({
+                        title: "Error Updating Ingredient",
+                        description: "Failed to update ingredient in database",
+                        variant: "destructive",
+                      })
+                    }
                   }
                 }}
               >
@@ -601,32 +795,16 @@ export function SynchronizedInventoryManager() {
                     <CardContent className="p-4">
                       <div className="flex items-start justify-between">
                         <div>
-                          <p className="font-medium">{log.ingredientName}</p>
+                          <p className="font-medium">{log.action}</p>
                           <p className="text-sm text-muted-foreground">
-                            {log.timestamp.toLocaleString()}
+                            {new Date(log.created_at).toLocaleString()}
                           </p>
                         </div>
                         <Badge variant="outline" className="capitalize">
-                          {log.action}
+                          {log.status}
                         </Badge>
                       </div>
-                      {log.changes && (
-                        <div className="mt-2 space-y-1">
-                          {log.changes.map((change: { field: string; from: any; to: any }, index: number) => (
-                            <p key={index} className="text-sm">
-                              {change.field}: {change.from} → {change.to}
-                            </p>
-                          ))}
-                        </div>
-                      )}
-                      {log.quantity && (
-                        <p className="text-sm mt-2">
-                          Quantity: {log.quantity > 0 ? "+" : ""}{log.quantity} {log.unit}
-                        </p>
-                      )}
-                      <p className="text-xs text-muted-foreground mt-2">
-                        Source: {log.source}
-                      </p>
+                      <p className="text-sm mt-2">{log.details}</p>
                     </CardContent>
                   </Card>
                 ))}
@@ -683,12 +861,15 @@ export function SynchronizedInventoryManager() {
                           <SelectValue placeholder="Select category" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="Proteins">Proteins</SelectItem>
-                          <SelectItem value="Vegetables">Vegetables</SelectItem>
-                          <SelectItem value="Grains">Grains</SelectItem>
-                          <SelectItem value="Dairy">Dairy</SelectItem>
-                          <SelectItem value="Spices">Spices</SelectItem>
-                          <SelectItem value="Oils">Oils</SelectItem>
+                          <SelectItem value="proteins">Proteins</SelectItem>
+                          <SelectItem value="meats">Meats</SelectItem>
+                          <SelectItem value="drinks">Drinks</SelectItem>
+                          <SelectItem value="vegetables">Vegetables</SelectItem>
+                          <SelectItem value="grains">Grains</SelectItem>
+                          <SelectItem value="dairy">Dairy</SelectItem>
+                          <SelectItem value="spices">Spices</SelectItem>
+                          <SelectItem value="oils">Oils</SelectItem>
+                          <SelectItem value="packaging">Packaging</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -710,7 +891,12 @@ export function SynchronizedInventoryManager() {
                           <SelectItem value="L">Liters (L)</SelectItem>
                           <SelectItem value="ml">Milliliters (ml)</SelectItem>
                           <SelectItem value="pieces">Pieces</SelectItem>
+                          <SelectItem value="bunch">Bunch</SelectItem>
                           <SelectItem value="dozen">Dozen</SelectItem>
+                          <SelectItem value="punnet">Punnet</SelectItem>
+                          <SelectItem value="tray">Tray</SelectItem>
+                          <SelectItem value="bag">Bag</SelectItem>
+                          {/* <SelectItem value="tablespoon">Tablespoon</SelectItem> */}
                         </SelectContent>
                       </Select>
                     </div>
@@ -738,8 +924,8 @@ export function SynchronizedInventoryManager() {
                         type="number"
                         min="0"
                         step="0.01"
-                        value={newIngredient.available_quantity}
-                        onChange={(e) => setNewIngredient({ ...newIngredient, available_quantity: parseFloat(e.target.value) || 0 })}
+                        value={newIngredient.current_stock}
+                        onChange={(e) => setNewIngredient({ ...newIngredient, current_stock: parseFloat(e.target.value) || 0 })}
                         placeholder="Enter initial stock"
                       />
                     </div>
@@ -752,8 +938,8 @@ export function SynchronizedInventoryManager() {
                       type="number"
                       min="0"
                       step="0.01"
-                      value={newIngredient.threshold}
-                      onChange={(e) => setNewIngredient({ ...newIngredient, threshold: parseFloat(e.target.value) || 0 })}
+                      value={newIngredient.reorder_point}
+                      onChange={(e) => setNewIngredient({ ...newIngredient, reorder_point: parseFloat(e.target.value) || 0 })}
                       placeholder="Enter low stock threshold"
                     />
                   </div>
@@ -762,23 +948,14 @@ export function SynchronizedInventoryManager() {
 
               <div className="grid gap-2">
                 <Label htmlFor="supplier">Supplier *</Label>
-                <Select
-                  value={newIngredient.supplier_id}
+                <SupplierSelector
+                  value={newIngredient.supplier_id || ""}
                   onValueChange={(value) =>
                     setNewIngredient((prev) => ({ ...prev, supplier_id: value }))
                   }
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select supplier" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {categorySuppliers.map((supplier) => (
-                      <SelectItem key={supplier.id} value={supplier.id}>
-                        {supplier.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  placeholder="Select supplier"
+                  showAddButton={true}
+                />
               </div>
 
               <div className="flex justify-end gap-2 mt-4">
@@ -826,9 +1003,9 @@ export function SynchronizedInventoryManager() {
                     <TableRow key={ingredient.id}>
                       <TableCell className="font-medium">{ingredient.name}</TableCell>
                       <TableCell>{ingredient.category}</TableCell>
-                      <TableCell>{getSupplierName(ingredient.supplier_id)}</TableCell>
+                      <TableCell>{getSupplierName(ingredient.supplier_id || '')}</TableCell>
                       <TableCell>
-                        {ingredient.available_quantity}
+                        {ingredient.current_stock}
                       </TableCell>
                       <TableCell>{ingredient.unit}</TableCell>
                       <TableCell>${ingredient.cost_per_unit.toFixed(2)}</TableCell>
@@ -843,10 +1020,7 @@ export function SynchronizedInventoryManager() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            onClick={() => {
-                              setSelectedIngredientLogs(getIngredientLogs(ingredient.id))
-                              setShowLogs(true)
-                            }}
+                            onClick={() => handleViewLogs(ingredient.id)}
                           >
                             <History className="h-4 w-4" />
                           </Button>
@@ -855,7 +1029,7 @@ export function SynchronizedInventoryManager() {
                             size="sm"
                             onClick={() => {
                               setEditingIngredient(ingredient)
-                              setEditQuantity(ingredient.available_quantity.toString())
+                              setEditQuantity(ingredient.current_stock.toString())
                             }}
                           >
                             <Edit className="h-4 w-4 mr-2" />

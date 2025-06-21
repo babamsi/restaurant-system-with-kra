@@ -25,10 +25,10 @@ export interface Batch {
   ingredients: BatchIngredient[]
   status: "draft" | "preparing" | "ready" | "completed" | "finished"
   notes?: string
-  startTime?: string
-  endTime?: string
+  start_time?: string
+  end_time?: string
   yield?: number
-  yieldUnit?: string
+  yield_unit?: string
   portions?: number
 }
 
@@ -87,17 +87,15 @@ export const useKitchenStore = create<KitchenStore>((set, get) => ({
 
   createBatch: (name, ingredients, notes, batchDetails) => {
     const newBatch: Batch = {
-      id: Math.random().toString(36).substr(2, 9),
+      id: crypto.randomUUID(),
       name,
+      ingredients,
       status: "preparing",
-      startTime: new Date().toISOString(),
-      ingredients: ingredients.map((ing) => ({
-        ...ing,
-        status: "available", // Will be updated by checkStorageLevels
-      })),
+      start_time: new Date().toISOString(),
+      end_time: undefined,
       notes,
       yield: batchDetails?.yield,
-      yieldUnit: batchDetails?.yieldUnit,
+      yield_unit: batchDetails?.yieldUnit,
       portions: batchDetails?.portions
     }
 
@@ -116,7 +114,7 @@ export const useKitchenStore = create<KitchenStore>((set, get) => ({
           ? {
               ...batch,
               status,
-              endTime: status === "completed" ? new Date().toISOString() : batch.endTime,
+              end_time: status === "completed" || status === "finished" ? new Date().toISOString() : batch.end_time
             }
           : batch
       ),

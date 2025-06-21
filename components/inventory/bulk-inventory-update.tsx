@@ -12,13 +12,15 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem } from "
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useToast } from "@/hooks/use-toast"
-import { useSynchronizedInventoryStore } from "@/stores/synchronized-inventory-store"
 import { useSupplierStore, type SupplierOrder } from "@/stores/supplier-store"
 import { Upload, FileText, CheckCircle, Loader2, Search, ChevronsUpDown, X, Calculator, Building2 } from "lucide-react"
 import type { BaseIngredient } from "@/types/operational"
 import { ReceiptUploadDialog } from "./receipt-upload-dialog"
 import type { ReceiptItem } from "./receipt-upload-dialog"
 import { cn } from "@/lib/utils"
+import { inventoryService } from '@/lib/inventory-service'
+import { useSuppliers } from '@/hooks/use-suppliers'
+import { supplierOrdersService } from '@/lib/database'
 
 interface BulkUpdateItem {
   ingredient: BaseIngredient
@@ -27,13 +29,18 @@ interface BulkUpdateItem {
   newCost?: number
 }
 
-export function BulkInventoryUpdate() {
+interface BulkInventoryUpdateProps {
+  onInventoryUpdated?: () => void
+}
+
+export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateProps) {
   const { toast } = useToast()
-  const { ingredients, updateStock, updateCost } = useSynchronizedInventoryStore()
-  const { suppliers, addOrder, createOrderFromInventoryUpdate } = useSupplierStore()
+  const { suppliers } = useSuppliers()
   const [isOpen, setIsOpen] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
   const [updateItems, setUpdateItems] = useState<BulkUpdateItem[]>([])
+  const [ingredients, setIngredients] = useState<BaseIngredient[]>([])
+  const [loading, setLoading] = useState(false)
   const [showReceiptUpload, setShowReceiptUpload] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
@@ -42,28 +49,43 @@ export function BulkInventoryUpdate() {
   const [vatRate, setVatRate] = useState("20") // Default VAT rate
   const [invoiceNumber, setInvoiceNumber] = useState("")
 
+  // Load ingredients from Supabase when dialog opens
+  const loadIngredients = async () => {
+    setLoading(true)
+    const result = await inventoryService.getIngredients()
+    if (result.success) {
+      setIngredients(result.data)
+      setUpdateItems(result.data.map((ingredient: BaseIngredient) => ({
+        ingredient,
+        selected: false
+      })))
+    } else {
+      toast({
+        title: "Error Loading Ingredients",
+        description: result.error || "Failed to load ingredients",
+        variant: "destructive",
+      })
+    }
+    setLoading(false)
+  }
+
+  const handleOpen = () => {
+    loadIngredients()
+    setIsOpen(true)
+  }
+
   // Calculate totals based on changes only
   const totals = useMemo(() => {
     const selectedItems = updateItems.filter(item => item.selected)
     const subtotal = selectedItems.reduce((sum, item) => {
-      // Only calculate if there are changes
       if (item.newQuantity === undefined && item.newCost === undefined) {
         return sum
       }
-
-      const currentQuantity = item.ingredient.available_quantity
-      const newQuantity = item.newQuantity ?? currentQuantity
+      const addQuantity = item.newQuantity ?? 0
+      const currentQuantity = item.ingredient.current_stock
       const currentCost = item.ingredient.cost_per_unit
       const newCost = item.newCost ?? currentCost
-      
-      // Calculate the difference in value
-      const quantityDifference = newQuantity - currentQuantity
-      const costDifference = newCost - currentCost
-      
-      // Calculate value change based on quantity and cost differences
-      const valueChange = (quantityDifference * currentCost) + // Value change from quantity
-                         (newQuantity * costDifference) // Value change from cost
-      
+      const valueChange = (addQuantity * currentCost) + (addQuantity * (newCost - currentCost))
       return sum + valueChange
     }, 0)
     
@@ -86,16 +108,6 @@ export function BulkInventoryUpdate() {
       ingredient.category.toLowerCase().includes(query)
     )
   }, [ingredients, searchQuery])
-
-  const handleOpen = () => {
-    setUpdateItems(
-      ingredients.map(ingredient => ({
-        ingredient,
-        selected: false
-      }))
-    )
-    setIsOpen(true)
-  }
 
   const handleSelectIngredient = (ingredient: BaseIngredient) => {
     setUpdateItems(currentItems => {
@@ -140,6 +152,14 @@ export function BulkInventoryUpdate() {
   }
 
   const handleQuantityChange = (index: number, value: string) => {
+    if (value === "") {
+      setUpdateItems(items =>
+        items.map((item, i) =>
+          i === index ? { ...item, newQuantity: undefined } : item
+        )
+      )
+      return
+    }
     const quantity = parseFloat(value)
     if (isNaN(quantity)) {
       setUpdateItems(items =>
@@ -149,8 +169,6 @@ export function BulkInventoryUpdate() {
       )
       return
     }
-
-    // Ensure quantity is not negative
     if (quantity < 0) {
       toast({
         title: "Invalid Quantity",
@@ -159,7 +177,6 @@ export function BulkInventoryUpdate() {
       })
       return
     }
-
     setUpdateItems(items =>
       items.map((item, i) =>
         i === index ? { ...item, newQuantity: quantity } : item
@@ -225,7 +242,7 @@ export function BulkInventoryUpdate() {
             ...item,
             selected: true,
             // Only update the newQuantity and newCost fields without affecting the main inventory
-            newQuantity: item.ingredient.available_quantity + receiptItem.quantity,
+            newQuantity: item.ingredient.current_stock + receiptItem.quantity,
             newCost: receiptItem.cost_per_unit
           }
         }
@@ -271,71 +288,56 @@ export function BulkInventoryUpdate() {
     setIsProcessing(true)
 
     try {
-      // Create supplier order with actual changes
-      const orderItems = itemsToUpdate.map(item => {
-        const currentQuantity = item.ingredient.available_quantity
-        const newQuantity = item.newQuantity ?? currentQuantity
-        const quantityDifference = newQuantity - currentQuantity
-        
-        return {
-          id: item.ingredient.id,
-          quantity: Math.abs(quantityDifference), // Use absolute value for order
-          cost: item.newCost ?? item.ingredient.cost_per_unit
-        }
-      })
-
-      // Calculate the actual total based on changes
-      const subtotal = itemsToUpdate.reduce((sum, item) => {
-        const currentQuantity = item.ingredient.available_quantity
-        const newQuantity = item.newQuantity ?? currentQuantity
-        const currentCost = item.ingredient.cost_per_unit
-        const newCost = item.newCost ?? currentCost
-        
-        const quantityDifference = newQuantity - currentQuantity
-        const costDifference = newCost - currentCost
-        
-        const valueChange = (quantityDifference * currentCost) + 
-                          (newQuantity * costDifference)
-        
-        return sum + valueChange
-      }, 0)
-
-      const vatValue = parseFloat(vatAmount) || 0
-      const total = subtotal + vatValue
-
-      createOrderFromInventoryUpdate(
-        selectedSupplier,
-        orderItems,
-        invoiceNumber,
-        vatValue
-      )
-
-      // Update inventory with actual changes
-      itemsToUpdate.forEach((item) => {
+      // Update inventory with actual changes using Supabase
+      for (const item of itemsToUpdate) {
         if (item.newQuantity !== undefined) {
-          const currentQuantity = item.ingredient.available_quantity
-          const newQuantity = item.newQuantity
-          const difference = newQuantity - currentQuantity
-          
-          if (difference !== 0) {
-            updateStock(
+          const addQuantity = item.newQuantity
+          if (addQuantity > 0) {
+            await inventoryService.updateStock(
               item.ingredient.id,
-              Math.abs(difference),
-              difference > 0 ? "add" : "subtract",
+              addQuantity,
+              "add",
               "bulk-update"
             )
           }
         }
         if (item.newCost !== undefined) {
-          updateCost(item.ingredient.id, item.newCost)
+          await inventoryService.updateCost(item.ingredient.id, item.newCost)
         }
+      }
+
+      // Create supplier order and order items in the database
+      const orderItems = itemsToUpdate.map(item => ({
+        ingredient_id: item.ingredient.id,
+        quantity: item.newQuantity ?? 0,
+        cost_per_unit: item.newCost ?? item.ingredient.cost_per_unit,
+        total_cost: ((item.newQuantity ?? 0) * (item.newCost ?? item.ingredient.cost_per_unit))
+      }))
+      const orderResult = await supplierOrdersService.createOrderWithItems({
+        supplier_id: selectedSupplier,
+        invoice_number: invoiceNumber,
+        total_amount: totals.total,
+        vat_amount: totals.vatAmount,
+        items: orderItems
       })
+      if (!orderResult.success) {
+        toast({
+          title: "Order Logging Error",
+          description: orderResult.error || "Failed to log supplier order.",
+          variant: "destructive",
+        })
+      }
 
       toast({
         title: "Success",
-        description: `Inventory updated and order created successfully. Total amount: $${total.toFixed(2)}`,
+        description: `Inventory updated successfully.`,
       })
 
+      // Reload ingredients after update and before closing dialog
+      await loadIngredients()
+      if (onInventoryUpdated) {
+        onInventoryUpdated()
+      }
       setUpdateItems([])
       setSelectedSupplier("")
       setInvoiceNumber("")
@@ -498,14 +500,14 @@ export function BulkInventoryUpdate() {
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        {item.ingredient.available_quantity} {item.ingredient.unit}
+                        {item.ingredient.current_stock} {item.ingredient.unit}
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center space-x-2">
                           <input
                             type="number"
                             className="w-24 px-3 py-2 border rounded text-lg"
-                            value={item.newQuantity ?? item.ingredient.available_quantity}
+                            value={item.newQuantity === undefined ? "" : item.newQuantity}
                             onChange={(e) => handleQuantityChange(index, e.target.value)}
                             min={0}
                             step={0.1}
@@ -514,13 +516,13 @@ export function BulkInventoryUpdate() {
                           <div className="flex flex-col">
                             <button
                               className="p-1 border rounded-t"
-                              onClick={() => handleQuantityChange(index, String((item.newQuantity ?? item.ingredient.available_quantity) + 1))}
+                              onClick={() => handleQuantityChange(index, String((item.newQuantity ?? item.ingredient.current_stock) + 1))}
                             >
                               ▲
                             </button>
                             <button
                               className="p-1 border rounded-b"
-                              onClick={() => handleQuantityChange(index, String((item.newQuantity ?? item.ingredient.available_quantity) - 1))}
+                              onClick={() => handleQuantityChange(index, String((item.newQuantity ?? item.ingredient.current_stock) - 1))}
                             >
                               ▼
                             </button>

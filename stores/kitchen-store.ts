@@ -30,6 +30,7 @@ export interface Batch {
   yield?: number
   yield_unit?: string
   portions?: number
+  original_portions?: number
 }
 
 interface KitchenStore {

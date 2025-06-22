@@ -110,4 +110,24 @@ export async function fetchIngredients() {
     .order('name')
   if (error) throw error
   return data
+}
+
+// --- Wastage Events ---
+export async function fetchWastageEvents() {
+  const { data, error } = await supabase
+    .from('wastage')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(200)
+  if (error) throw error
+  return data
+}
+
+export async function insertWastageEvent(event: Database['public']['Tables']['wastage']['Insert']) {
+  const { data, error } = await supabase
+    .from('wastage')
+    .insert(event)
+    .select()
+  if (error) throw error
+  return data
 } 

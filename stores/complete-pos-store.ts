@@ -12,14 +12,20 @@ interface POSState {
   lastUpdated: string
 
   // Cart Actions
-  addToCart: (menuItem: MenuItem, quantity: number) => void
+  addToCart: (
+    menuItem: MenuItem,
+    quantity: number,
+    options: { id: string; portionSize?: string; customization?: string },
+  ) => void
   updateCartItemQuantity: (cartItemId: string, newQuantity: number) => void
   removeFromCart: (cartItemId: string) => void
   clearCart: () => void
+  loadCart: (items: CartItem[]) => void
 
   // Order Actions
   createOrder: (orderData: Partial<Order>) => Order
-  updateOrderStatus: (orderId: string, status: string) => void
+  updateOrder: (orderId: string, orderData: Partial<Order>) => Order
+  updateOrderStatus: (orderId: string, status: "pending" | "preparing" | "ready" | "completed" | "cancelled") => void
 
   // Getters
   getCartTotal: () => number
@@ -41,14 +47,14 @@ export const useCompletePOSStore = create<POSState>()(
       orders: [],
       lastUpdated: new Date().toISOString(),
 
-      addToCart: (menuItem, quantity) => {
-        const existingItem = get().cart.find((item) => item.menu_item_id === menuItem.id)
+      addToCart: (menuItem, quantity, options) => {
+        const existingItem = get().cart.find((item) => item.id === options.id)
 
         if (existingItem) {
           get().updateCartItemQuantity(existingItem.id, existingItem.quantity + quantity)
         } else {
           const cartItem: CartItem = {
-            id: `cart-${Date.now()}-${Math.random()}`,
+            id: options.id,
             menu_item_id: menuItem.id,
             name: menuItem.name,
             type: menuItem.type,
@@ -56,6 +62,8 @@ export const useCompletePOSStore = create<POSState>()(
             quantity: quantity,
             total_price: menuItem.price * quantity,
             unit: menuItem.unit,
+            portionSize: options.portionSize,
+            customization: options.customization,
             total_nutrition: {
               calories: menuItem.nutrition.calories * quantity,
               protein: menuItem.nutrition.protein * quantity,
@@ -145,6 +153,17 @@ export const useCompletePOSStore = create<POSState>()(
         )
       },
 
+      loadCart: (items) => {
+        set(
+          () => ({
+            cart: items,
+            lastUpdated: new Date().toISOString(),
+          }),
+          false,
+          "loadCart",
+        )
+      },
+
       createOrder: (orderData) => {
         const order: Order = {
           id: `ORD-${Date.now()}`,
@@ -177,10 +196,12 @@ export const useCompletePOSStore = create<POSState>()(
           customerName: order.customer_name || "Customer",
           items: order.items.map((item) => ({
             id: item.id,
+            menu_item_id: item.menu_item_id,
             name: item.name,
             quantity: item.quantity,
-            portionSize: "regular",
+            portionSize: item.portionSize,
             price: item.unit_price,
+            customization: item.customization,
           })),
           status: "incoming",
           total: order.total,
@@ -205,6 +226,65 @@ export const useCompletePOSStore = create<POSState>()(
         get().clearCart()
 
         return order
+      },
+
+      updateOrder: (orderId, orderData) => {
+        let updatedOrder: Order | undefined;
+
+        set(
+          (state) => ({
+            orders: state.orders.map((order) => {
+              if (order.id === orderId) {
+                updatedOrder = {
+                  ...order,
+                  ...orderData,
+                  items: [...get().cart],
+                  updated_at: new Date().toISOString(),
+                } as Order;
+                return updatedOrder;
+              }
+              return order;
+            }),
+            lastUpdated: new Date().toISOString(),
+          }),
+          false,
+          "updateOrder",
+        );
+
+        if (updatedOrder) {
+          useOrdersStore.getState().updateOrder(orderId, {
+            items: updatedOrder.items.map((item) => ({
+              id: item.id,
+              menu_item_id: item.menu_item_id,
+              name: item.name,
+              quantity: item.quantity,
+              portionSize: item.portionSize,
+              price: item.unit_price,
+              customization: item.customization,
+            })),
+            total: updatedOrder.total,
+          });
+
+          // Notify inventory about potential changes
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(
+              new CustomEvent("order-updated", {
+                detail: {
+                  orderId: updatedOrder.id,
+                  orderItems: updatedOrder.items,
+                },
+              }),
+            );
+          }
+        }
+
+        // Clear cart after order
+        get().clearCart();
+
+        if (!updatedOrder) {
+          throw new Error("Failed to update order");
+        }
+        return updatedOrder;
       },
 
       updateOrderStatus: (orderId, status) => {

@@ -110,6 +110,8 @@ export interface CartItem {
   quantity: number
   total_price: number
   unit?: string
+  portionSize?: string
+  customization?: string
   total_nutrition: NutritionInfo
   inventory_deduction?: {
     ingredient_id: number

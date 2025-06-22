@@ -2,11 +2,12 @@ export type OrderStatus = "incoming" | "processing" | "completed" | "cancelled"
 
 export interface OrderItem {
   id: string
+  menu_item_id: string
   name: string
   quantity: number
-  portionSize?: "small" | "regular" | "large"
+  portionSize?: string
   price: number
-  specialInstructions?: string
+  customization?: string
 }
 
 export interface Order {

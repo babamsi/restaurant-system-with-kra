@@ -25,7 +25,6 @@ import {
   Zap,
   ChefHat,
   Package,
-  Activity,
   RefreshCw,
   AlertTriangle,
   ArrowUpDown,
@@ -55,11 +54,13 @@ import {
   fetchBatchIngredients,
   upsertBatchIngredient,
   deleteBatchIngredient,
-  fetchSystemLogs,
   insertSystemLog,
   fetchIngredients,
+  fetchWastageEvents,
 } from "@/lib/kitchenSupabase"
 import { supabase } from "@/lib/supabase"
+import { WastageManager, type WastageEvent } from "./wastage-manager"
+import { RecipeManager } from "./recipe-manager"
 
 interface ExtendedIngredient extends UnifiedIngredient {
   available_quantity: number;
@@ -75,15 +76,6 @@ interface KitchenStorageItem {
   used_grams?: number;
   used_liters?: number;
   last_updated?: string;
-}
-
-interface SystemLog {
-  id: string;
-  timestamp: string;
-  type: "storage" | "batch";
-  action: string;
-  details: string;
-  status: "success" | "error" | "info";
 }
 
 // Add a type guard for Batch
@@ -340,13 +332,14 @@ const createBatch = async (
     id: crypto.randomUUID(),
     name,
     ingredients,
-    status: "preparing",
-    start_time: new Date().toISOString(),
+    status: "draft",
+    start_time: undefined,
     end_time: undefined,
     notes: notes || "",
     yield: yieldInfo?.yield || 0,
     portions: yieldInfo?.portions || 0,
-    yield_unit: yieldInfo?.yield_unit || "g"
+    yield_unit: yieldInfo?.yield_unit || "g",
+    original_portions: yieldInfo?.portions || 0 // NEW: store original portions
   }
   try {
     // Insert the new batch into Supabase
@@ -438,6 +431,7 @@ export function CorrectedKitchenManager() {
   const [requestQuantity, setRequestQuantity] = useState("")
   const [searchQuery, setSearchQuery] = useState("")
   const [selectedCategory, setSelectedCategory] = useState<string>("all")
+  const [selectedStockStatus, setSelectedStockStatus] = useState<string>("all")
   const [selectedStatus, setSelectedStatus] = useState<string>("all")
   const [selectedRecipe, setSelectedRecipe] = useState<any>(null)
   const [isCreatingRecipe, setIsCreatingRecipe] = useState(false)
@@ -451,10 +445,12 @@ export function CorrectedKitchenManager() {
   const [selectedBatch, setSelectedBatch] = useState<Batch | null>(null)
   const [showDeleteConfirmDialog, setShowDeleteConfirmDialog] = useState(false)
   const [batchToDelete, setBatchToDelete] = useState<Batch | null>(null)
-  const [systemLogs, setSystemLogs] = useState<SystemLog[]>([])
   const [showPredefinedBatches, setShowPredefinedBatches] = useState(false)
   const [isStartingBatch, setIsStartingBatch] = useState(false)
   const [isDeletingBatch, setIsDeletingBatch] = useState(false)
+  const [wastageEvents, setWastageEvents] = useState<WastageEvent[]>([])
+  const [showWastageDialog, setShowWastageDialog] = useState(false)
+  const [preSelectedBatchForWastage, setPreSelectedBatchForWastage] = useState<Batch | null>(null)
 
   // Supabase-backed state
   const [kitchenStorage, setKitchenStorage] = useState<KitchenStorageItem[]>([])
@@ -481,24 +477,16 @@ export function CorrectedKitchenManager() {
   const availableIngredients = ingredients.filter((ing) => (ing as ExtendedIngredient).available_quantity > 0)
   const sellableIngredients = ingredients.filter((ing) => (ing as ExtendedIngredient).is_sellable_individually)
 
-  // Add function to create log entries
-  const addSystemLog = (type: "storage" | "batch", action: string, details: string, status: "success" | "error" | "info" = "info") => {
-    const newLog: SystemLog = {
-      id: Math.random().toString(36).substr(2, 9),
-      timestamp: new Date().toISOString(),
-      type,
-      action,
-      details,
-      status
-    }
-    setSystemLogs(prev => [newLog, ...prev])
-  }
-
   // Update handleImportIngredients to use direct Supabase data
   const [isImporting, setIsImporting] = useState(false)
   const handleImportIngredients = async () => {
     if (selectedIngredients.length === 0) {
-      addSystemLog("storage", "Import Failed", "No ingredients selected", "error")
+      insertSystemLog({
+        type: "storage",
+        action: "Import Failed",
+        details: "No ingredients selected",
+        status: "error"
+      })
       toast({
         title: "No Ingredients Selected",
         description: "Please select at least one ingredient to import.",
@@ -876,15 +864,15 @@ export function CorrectedKitchenManager() {
   useEffect(() => {
     async function loadKitchenData() {
       try {
-        const [storageData, batchData, logData, ingredientsData] = await Promise.all([
+        const [storageData, batchData, ingredientsData, wastageData] = await Promise.all([
           fetchKitchenStorage(),
           fetchBatches(),
-          fetchSystemLogs(),
           fetchIngredients(),
+          fetchWastageEvents(),
         ])
         setKitchenStorage(storageData || [])
         setInventoryIngredientsList(ingredientsData || [])
-        setSystemLogs(logData || [])
+        setWastageEvents(wastageData || [])
         
         // Update batches in the Zustand store
         if (batchData) {
@@ -900,6 +888,48 @@ export function CorrectedKitchenManager() {
     }
     loadKitchenData()
   }, [toast])
+
+  const refreshKitchenData = async () => {
+    try {
+      const [storageData, batchData, wastageData] = await Promise.all([
+        fetchKitchenStorage(),
+        fetchBatches(),
+        fetchWastageEvents(),
+      ]);
+      setKitchenStorage(storageData || []);
+      setWastageEvents(wastageData || []);
+      if (batchData) {
+        useKitchenStore.setState({ batches: batchData });
+      }
+    } catch (err) {
+      toast({
+        title: "Error refreshing data",
+        description: String(err),
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Add function to refresh selected batch data
+  const refreshSelectedBatch = async () => {
+    if (selectedBatch) {
+      try {
+        const [batchData] = await Promise.all([
+          fetchBatches(),
+        ]);
+        if (batchData) {
+          useKitchenStore.setState({ batches: batchData });
+          // Update the selected batch with fresh data
+          const updatedBatch = batchData.find(b => b.id === selectedBatch.id);
+          if (updatedBatch) {
+            setSelectedBatch(updatedBatch);
+          }
+        }
+      } catch (err) {
+        console.error("Error refreshing selected batch:", err);
+      }
+    }
+  };
 
   // Save data to localStorage whenever it changes
   useEffect(() => {
@@ -946,12 +976,12 @@ export function CorrectedKitchenManager() {
       return
     }
     if (!latestIngredient || Number(latestIngredient.current_stock) <= 0) {
-      addSystemLog(
-        "storage",
-        "Request Failed",
-        `Failed to request more ${latestIngredient?.name || ''}:\n- Current stock: ${latestIngredient?.current_stock || 0} ${latestIngredient?.unit || ''}\n- Status: Out of stock`,
-        "error"
-      )
+      insertSystemLog({
+        type: "storage",
+        action: "Request Failed",
+        details: `Failed to request more ${latestIngredient?.name || ''}:\n- Current stock: ${latestIngredient?.current_stock || 0} ${latestIngredient?.unit || ''}\n- Status: Out of stock`,
+        status: "error"
+      })
       toast({
         title: "No Stock Available",
         description: "This ingredient is out of stock in the main inventory.",
@@ -960,12 +990,12 @@ export function CorrectedKitchenManager() {
       return
     }
     // Log the request initiation
-    addSystemLog(
-      "storage",
-      "Request Initiated",
-      `Initiating request for ${latestIngredient.name}:\n- Current kitchen stock: ${item.quantity} ${item.unit}\n- Available in main inventory: ${latestIngredient.current_stock} ${latestIngredient.unit}`,
-      "info"
-    )
+    insertSystemLog({
+      type: "storage",
+      action: "Request Initiated",
+      details: `Initiating request for ${latestIngredient.name}:\n- Current kitchen stock: ${item.quantity} ${item.unit}\n- Available in main inventory: ${latestIngredient.current_stock} ${latestIngredient.unit}`,
+      status: "info"
+    })
     setSelectedIngredients([
       {
         ingredientId: item.ingredient_id,
@@ -982,12 +1012,12 @@ export function CorrectedKitchenManager() {
   // Confirm request: update kitchen storage and inventory, refresh both
   const handleConfirmRequest = async () => {
     if (selectedIngredients.length === 0 || !requestedIngredientDetails) {
-      addSystemLog(
-        "storage",
-        "Request Failed",
-        "No ingredients selected for request",
-        "error"
-      )
+      insertSystemLog({
+        type: "storage",
+        action: "Request Failed",
+        details: "No ingredients selected for request",
+        status: "error"
+      })
       toast({
         title: "Missing Information",
         description: "Please select at least one ingredient to request.",
@@ -1087,7 +1117,8 @@ export function CorrectedKitchenManager() {
         notes: batchNotes || "",
         yield: Number(newBatch.yield),
         portions: Number(newBatch.portions),
-        yield_unit: newBatch.yieldUnit
+        yield_unit: newBatch.yieldUnit,
+        original_portions: Number(newBatch.portions) // NEW: store original portions
       };
 
       await upsertBatch(batchData);
@@ -1152,19 +1183,38 @@ export function CorrectedKitchenManager() {
       }
       const storageUpdateInstructions: StorageUpdateInstruction[] = [];
 
+      interface BatchUpdateInstruction {
+        batchToUpdate: Batch;
+        newPortions: number;
+      }
+      const batchUpdateInstructions: BatchUpdateInstruction[] = [];
+
       for (const ingredient of batch.ingredients) {
-        if (ingredient.isBatch) {
-          const sourceBatch = batches.find(b => b.id === ingredient.ingredientId);
-          if (!sourceBatch || !sourceBatch.portions || sourceBatch.portions < ingredient.requiredQuantity) {
-              validationErrors.push(
-                `Insufficient batch "${sourceBatch?.name || 'Unknown'}": Need ${ingredient.requiredQuantity} portions, have ${sourceBatch?.portions || 0}`
-              );
-          }
-        } else {
+      if (ingredient.isBatch) {
+        const sourceBatch = batches.find(b => b.id === ingredient.ingredientId);
+        if (!sourceBatch) {
+          validationErrors.push(`Referenced batch not found for ingredient: ${ingredient.ingredientId}`);
+          continue;
+        }
+        if (sourceBatch.status !== 'ready') {
+          validationErrors.push(`Batch "${sourceBatch.name}" must be READY (current status: ${sourceBatch.status}) to use as an ingredient.`);
+          continue;
+        }
+        if (!sourceBatch.portions || sourceBatch.portions < ingredient.requiredQuantity) {
+            validationErrors.push(
+              `Insufficient portions for batch "${sourceBatch?.name || 'Unknown'}": Need ${ingredient.requiredQuantity}, have ${sourceBatch?.portions || 0}`
+            );
+          } else {
+            batchUpdateInstructions.push({
+              batchToUpdate: sourceBatch,
+              newPortions: sourceBatch.portions - ingredient.requiredQuantity,
+          });
+        }
+      } else {
             const kitchenItem = kitchenStorage.find(item => item.ingredient_id === ingredient.ingredientId);
             const inventoryIngredient = inventoryIngredientsList.find(i => i.id.toString() === ingredient.ingredientId);
             
-            if (!kitchenItem) {
+        if (!kitchenItem) {
               const ingredientName = inventoryIngredient?.name || getIngredientName(ingredient.ingredientId);
               validationErrors.push(`Missing ingredient: ${ingredientName}`);
               continue;
@@ -1178,7 +1228,6 @@ export function CorrectedKitchenManager() {
             const ingredientName = inventoryIngredient.name;
             const requiredUnitInfo = measurementUnits.find(u => u.value === ingredient.unit);
 
-            // LOGIC: If units are different and we're dealing with weight or volume, update used_grams/liters
             if (ingredient.unit !== kitchenItem.unit && (requiredUnitInfo?.type === 'weight' || requiredUnitInfo?.type === 'volume')) {
               if (requiredUnitInfo.type === 'weight') {
                 const requiredGrams = convertUnit(ingredient.requiredQuantity, ingredient.unit, 'g', ingredientName);
@@ -1188,12 +1237,8 @@ export function CorrectedKitchenManager() {
                 
                 if (requiredGrams > remainingGrams) {
                   validationErrors.push(`Insufficient ${ingredientName}: Need ${ingredient.requiredQuantity} ${ingredient.unit} (~${requiredGrams.toFixed(0)}g), but only ~${Math.round(remainingGrams)}g available.`);
-                } else {
-                  storageUpdateInstructions.push({
-                    item: kitchenItem,
-                    ingredientName,
-                    addUsedGrams: requiredGrams,
-                  });
+        } else {
+                  storageUpdateInstructions.push({ item: kitchenItem, ingredientName, addUsedGrams: requiredGrams });
                 }
               } else { // Volume
                 const requiredLiters = convertUnit(ingredient.requiredQuantity, ingredient.unit, 'l', ingredientName);
@@ -1204,48 +1249,30 @@ export function CorrectedKitchenManager() {
                 if (requiredLiters > remainingLiters) {
                   validationErrors.push(`Insufficient ${ingredientName}: Need ${ingredient.requiredQuantity} ${ingredient.unit} (~${requiredLiters.toFixed(2)}l), but only ~${remainingLiters.toFixed(2)}l available.`);
                 } else {
-                  storageUpdateInstructions.push({
-                    item: kitchenItem,
-                    ingredientName,
-                    addUsedLiters: requiredLiters,
-                  });
+                  storageUpdateInstructions.push({ item: kitchenItem, ingredientName, addUsedLiters: requiredLiters });
                 }
-              }
-            } else {
-              // ORIGINAL LOGIC: Units are the same or it's not a special case, so deduct from main quantity.
+            }
+          } else {
               const requiredQuantityInStorageUnit = convertUnit(ingredient.requiredQuantity, ingredient.unit, kitchenItem.unit, ingredientName);
-
               if (requiredQuantityInStorageUnit > kitchenItem.quantity) {
-                validationErrors.push(
-                  `Insufficient ${ingredientName}: Need ${ingredient.requiredQuantity} ${ingredient.unit}, have ${kitchenItem.quantity} ${kitchenItem.unit}`
-                );
+                validationErrors.push(`Insufficient ${ingredientName}: Need ${ingredient.requiredQuantity} ${ingredient.unit}, have ${kitchenItem.quantity} ${kitchenItem.unit}`);
               } else {
-                storageUpdateInstructions.push({
-                  item: kitchenItem,
-                  ingredientName,
-                  newQuantity: kitchenItem.quantity - requiredQuantityInStorageUnit,
-                });
+                storageUpdateInstructions.push({ item: kitchenItem, ingredientName, newQuantity: kitchenItem.quantity - requiredQuantityInStorageUnit });
               }
             }
           }
         }
 
       if (validationErrors.length > 0) {
-        toast({
-          title: "Cannot Start Batch",
-          description: validationErrors.join('\\n'),
-          variant: "destructive",
-        });
-        return;
-      }
+        toast({ title: "Cannot Start Batch", description: validationErrors.join('\\n'), variant: "destructive" });
+      return;
+    }
 
-      // All validations passed - proceed with updates
       const updatePromises: Promise<any>[] = [];
       const updateLogs: string[] = [];
 
       for (const instruction of storageUpdateInstructions) {
         const { item, ingredientName, newQuantity, addUsedGrams, addUsedLiters } = instruction;
-
         const updatedItem = {
           id: item.id,
           ingredient_id: item.ingredient_id,
@@ -1255,43 +1282,36 @@ export function CorrectedKitchenManager() {
           used_liters: (item.used_liters || 0) + (addUsedLiters || 0),
           last_updated: new Date().toISOString()
         };
-
         updatePromises.push(upsertKitchenStorage(updatedItem));
-        
-        if (newQuantity !== undefined) {
-          updateLogs.push(`Updated ${ingredientName}: ${item.quantity} → ${newQuantity.toFixed(2)} ${item.unit}`);
-        }
-        if (addUsedGrams) {
-          updateLogs.push(`Used ${addUsedGrams.toFixed(2)}g of ${ingredientName}`);
-        }
-        if (addUsedLiters) {
-          updateLogs.push(`Used ${addUsedLiters.toFixed(2)}l of ${ingredientName}`);
-        }
+        if (newQuantity !== undefined) updateLogs.push(`Updated ${ingredientName}: ${item.quantity} → ${newQuantity.toFixed(2)} ${item.unit}`);
+        if (addUsedGrams) updateLogs.push(`Used ${addUsedGrams.toFixed(2)}g of ${ingredientName}`);
+        if (addUsedLiters) updateLogs.push(`Used ${addUsedLiters.toFixed(2)}l of ${ingredientName}`);
+      }
+
+      for (const instruction of batchUpdateInstructions) {
+        const { batchToUpdate, newPortions } = instruction;
+        const updatedSourceBatch = { ...batchToUpdate, portions: newPortions };
+        updatePromises.push(upsertBatch(updatedSourceBatch));
+        updateLogs.push(`Used ${(batchToUpdate.portions || 0) - newPortions} portions from batch "${batchToUpdate.name}"`);
       }
 
       const updatedBatch = {
-        id: batch.id,
-        name: batch.name,
-        ingredients: batch.ingredients,
+          ...batch,
         status: "preparing" as const,
         start_time: new Date().toISOString(),
-        end_time: batch.end_time,
-        notes: batch.notes,
-        yield: batch.yield,
-        yield_unit: batch.yield_unit,
-        portions: batch.portions
       };
-
       updatePromises.push(upsertBatch(updatedBatch));
 
       await Promise.all(updatePromises);
 
-      const updatedKitchenStorage = await fetchKitchenStorage();
+      // To ensure UI consistency, we refetch the affected data after all updates are made.
+      const [updatedKitchenStorage, updatedBatchesData] = await Promise.all([
+        fetchKitchenStorage(),
+        fetchBatches()
+      ]);
       setKitchenStorage(updatedKitchenStorage || []);
-
-      const updatedBatches = batches.map(b => b.id === batch.id ? updatedBatch : b);
-      useKitchenStore.setState({ batches: updatedBatches });
-      localStorage.setItem('kitchenBatches', JSON.stringify(updatedBatches));
+      useKitchenStore.setState({ batches: updatedBatchesData || [] });
+      localStorage.setItem('kitchenBatches', JSON.stringify(updatedBatchesData || []));
 
       await insertSystemLog({
         type: "batch",
@@ -1302,7 +1322,7 @@ export function CorrectedKitchenManager() {
 
       toast({
         title: "Batch Started Successfully",
-        description: `Started preparing "${batch.name}". ${storageUpdateInstructions.length} ingredients updated.`,
+        description: `Started preparing "${batch.name}". ${storageUpdateInstructions.length + batchUpdateInstructions.length} items updated.`,
       });
 
     } catch (error) {
@@ -1468,75 +1488,69 @@ export function CorrectedKitchenManager() {
   }
 
   // Update handleUpdateBatchStatus to include more detailed logging
-  const handleUpdateBatchStatus = (batchId: string, newStatus: Batch["status"]) => {
-    const batch = batches.find(b => b.id === batchId)
-    if (batch) {
-      // Log the status change with detailed information
-      addSystemLog(
-        "batch",
-        "Status Update",
-        `Batch "${batch.name}" status changed from ${batch.status} to ${newStatus}
-        - Current yield: ${batch.yield || 0} ${batch.yield_unit || 'g'}
-        - Current portions: ${batch.portions || 0}
-        - Start time: ${formatDateSafe(batch.start_time)}
-        ${batch.end_time ? `- End time: ${formatDateSafe(batch.end_time)}` : ''}`,
-        "info"
-      )
+  const handleUpdateBatchStatus = async (batchId: string, newStatus: Batch["status"]) => {
+    const batch = batches.find(b => b.id === batchId);
+    if (!batch) {
+      toast({ title: "Error", description: "Batch not found.", variant: "destructive" });
+      return;
     }
-    updateBatchStatus(batchId, newStatus)
-    setShowBatchDetailsDialog(false)
-    toast({
-      title: "Batch Status Updated",
-      description: `Batch has been marked as ${newStatus}.`,
-    })
-  }
 
-  // Add new function to handle batch restock
-  const handleRestockBatch = (batch: Batch) => {
-    // Log the restock initiation
-    addSystemLog(
-      "batch",
-      "Batch Restock Initiated",
-      `Restocking batch "${batch.name}":
-      - Current portions: ${batch.portions || 0}
-      - Target portions: ${(batch.portions || 0) + (batch.portions || 0)}
-      - Current yield: ${batch.yield || 0} ${batch.yield_unit || 'g'}`,
-      "info"
-    )
-
-    // Update the batch with doubled portions
     const updatedBatch: Batch = {
       ...batch,
-      portions: (batch.portions || 0) + (batch.portions || 0),
-      status: "preparing" as Batch['status']
-    }
+      status: newStatus,
+      end_time: newStatus === 'completed' ? new Date().toISOString() : batch.end_time,
+    };
 
-    // Update the batch in the store
-    const updatedBatches = batches.map(b => 
-      b.id === batch.id ? updatedBatch : b
-    )
+    try {
+      await upsertBatch(updatedBatch);
 
-    // Update localStorage
-    localStorage.setItem('kitchenBatches', JSON.stringify(updatedBatches))
+      const updatedBatches = batches.map(b => (b.id === batchId ? updatedBatch : b));
+      useKitchenStore.setState({ batches: updatedBatches });
+      localStorage.setItem('kitchenBatches', JSON.stringify(updatedBatches));
 
-    // Update the store state
-    useKitchenStore.setState({ batches: updatedBatches.filter(isValidBatch) })
+      await insertSystemLog({
+        type: "batch",
+        action: "Status Update",
+        details: `Batch "${batch.name}" status changed from ${batch.status} to ${newStatus}.`,
+        status: "info"
+      });
 
-    // Log successful restock
-    addSystemLog(
-      "batch",
-      "Batch Restocked",
-      `Successfully restocked batch "${batch.name}":
-      - New portions: ${updatedBatch.portions}
-      - Status: ${updatedBatch.status}`,
-      "success"
-    )
-
+      setShowBatchDetailsDialog(false);
     toast({
-      title: "Batch Restocked",
-      description: `${batch.name} has been restocked with ${batch.portions} additional portions.`,
-    })
-  }
+        title: "Batch Status Updated",
+        description: `Batch "${batch.name}" has been marked as ${newStatus}.`,
+      });
+    } catch (error) {
+      console.error("Error updating batch status:", error);
+      toast({
+        title: "Update Failed",
+        description: "Failed to update batch status in the database.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Add new function to handle batch restock
+  const handleRestockBatch = async (batch: Batch) => {
+    toast({
+      title: "Restocking Batch",
+      description: `Refreshing batch "${batch.name}". Portions reset to original value.`,
+    });
+
+    // Update the existing batch in-place
+    const restockPortions = batch.original_portions || batch.portions || 0;
+    const updatedBatch: Batch = {
+      ...batch,
+      status: "draft",
+      start_time: undefined,
+      end_time: undefined,
+      portions: restockPortions,
+      // original_portions remains unchanged
+    };
+    await upsertBatch(updatedBatch);
+    setShowBatchDetailsDialog(false);
+    refreshKitchenData();
+  };
 
   // Update the batch details dialog content
   const renderBatchDetails = (batch: Batch) => {
@@ -1637,7 +1651,7 @@ export function CorrectedKitchenManager() {
             >
               <CheckCircle className="h-4 w-4 mr-2" />
               Mark as Ready
-                              </Button>
+            </Button>
           )}
           {batch.status === "ready" && (
             <Button 
@@ -1657,6 +1671,20 @@ export function CorrectedKitchenManager() {
               Restock Batch
             </Button>
           )}
+          {(batch.status === "ready" || batch.status === "preparing" || batch.status === "completed") && batch.portions && batch.portions > 0 && (
+            <Button
+              variant="outline"
+              onClick={() => {
+                setPreSelectedBatchForWastage(batch)
+                setShowWastageDialog(true)
+                setShowBatchDetailsDialog(false)
+              }}
+              className="border-orange-500 text-orange-600 hover:bg-orange-50"
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              Report Wastage
+            </Button>
+          )}
         </DialogFooter>
                       </div>
     )
@@ -1672,17 +1700,17 @@ export function CorrectedKitchenManager() {
 
     setIsDeletingBatch(true);
     try {
-      // Log the batch details before deletion
+    // Log the batch details before deletion
       await insertSystemLog({
         type: "batch",
         action: "Batch Deletion",
         details: `Deleting batch "${batchToDelete.name}" with:
-        - Status: ${batchToDelete.status}
+      - Status: ${batchToDelete.status}
         - Yield: ${batchToDelete.yield || 0} ${batchToDelete.yield_unit || 'g'}
-        - Portions: ${batchToDelete.portions || 0}
-        - Ingredients: ${batchToDelete.ingredients.map(ing => 
-          `${getIngredientName(ing.ingredientId, ing.isBatch)} (${ing.requiredQuantity} ${ing.isBatch ? 'portions' : ing.unit})`
-        ).join(', ')}`,
+      - Portions: ${batchToDelete.portions || 0}
+      - Ingredients: ${batchToDelete.ingredients.map(ing => 
+        `${getIngredientName(ing.ingredientId, ing.isBatch)} (${ing.requiredQuantity} ${ing.isBatch ? 'portions' : ing.unit})`
+      ).join(', ')}`,
         status: "info"
       });
 
@@ -1694,7 +1722,7 @@ export function CorrectedKitchenManager() {
       useKitchenStore.setState({ batches: updatedBatches });
       localStorage.setItem('kitchenBatches', JSON.stringify(updatedBatches));
 
-      // Log successful deletion
+    // Log successful deletion
       await insertSystemLog({
         type: "batch",
         action: "Batch Deleted",
@@ -1705,9 +1733,9 @@ export function CorrectedKitchenManager() {
       setShowDeleteConfirmDialog(false);
       setBatchToDelete(null);
 
-      toast({
-        title: "Batch Deleted",
-        description: `${batchToDelete.name} has been deleted successfully.`,
+    toast({
+      title: "Batch Deleted",
+      description: `${batchToDelete.name} has been deleted successfully.`,
       });
 
     } catch (error) {
@@ -2199,7 +2227,8 @@ export function CorrectedKitchenManager() {
         <TabsList>
           <TabsTrigger value="storage">Kitchen Storage</TabsTrigger>
           <TabsTrigger value="batches">Batches</TabsTrigger>
-          <TabsTrigger value="logs">System Logs</TabsTrigger>
+          <TabsTrigger value="recipes">Recipes</TabsTrigger>
+          <TabsTrigger value="wastage">Wastage</TabsTrigger>
         </TabsList>
 
         <TabsContent value="storage">
@@ -2208,11 +2237,43 @@ export function CorrectedKitchenManager() {
               <CardTitle>Kitchen Storage</CardTitle>
         </CardHeader>
         <CardContent>
-              <div className="flex justify-end mb-4">
-                <Button onClick={handleCheckStorageLevels}>
-                  <RefreshCw className="h-4 w-4 mr-2" />
-                  Check Levels
-                </Button>
+              {/* Filters and Search for Kitchen Storage */}
+              <div className="flex flex-col md:flex-row md:items-center gap-2 mb-4">
+                <Input
+                  type="text"
+                  placeholder="Search ingredients..."
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  className="w-full md:w-64"
+                />
+                <Select
+                  value={selectedCategory}
+                  onValueChange={setSelectedCategory}
+                >
+                  <SelectTrigger className="w-[180px]">
+                    <SelectValue placeholder="Category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Categories</SelectItem>
+                    {categories.map((cat) => (
+                      <SelectItem key={cat} value={cat}>{cat}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={selectedStockStatus}
+                  onValueChange={setSelectedStockStatus}
+                >
+                  <SelectTrigger className="w-[180px]">
+                    <SelectValue placeholder="Stock Status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Stock Statuses</SelectItem>
+                    {/* <SelectItem value="available">Available</SelectItem> */}
+                    <SelectItem value="low">Low Stock</SelectItem>
+                    <SelectItem value="out">Out of Stock</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               {/* Show loading spinner or message if ingredients are not loaded */}
               {isLoadingIngredients ? (
@@ -2233,7 +2294,24 @@ export function CorrectedKitchenManager() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                    {kitchenStorage.map((item) => (
+                    {kitchenStorage
+                      .filter(item => {
+                        const ingredient = inventoryIngredientsList.find(i => i.id.toString() === item.ingredient_id)
+                        const matchesSearch = !searchQuery || (ingredient && ingredient.name.toLowerCase().includes(searchQuery.toLowerCase()))
+                        const matchesCategory = selectedCategory === "all" || (ingredient && ingredient.category === selectedCategory)
+                        // Stock status logic
+                        let matchesStock = true;
+                        const threshold = ingredient?.threshold ?? 5;
+                        if (selectedStockStatus === "available") {
+                          matchesStock = item.quantity > threshold;
+                        } else if (selectedStockStatus === "low") {
+                          matchesStock = item.quantity > 0 && item.quantity <= threshold;
+                        } else if (selectedStockStatus === "out") {
+                          matchesStock = item.quantity === 0;
+                        }
+                        return matchesSearch && matchesCategory && matchesStock;
+                      })
+                      .map((item) => (
                         <TableRow key={item.id}>
                         <TableCell>
                           <div className="flex items-center space-x-2">
@@ -2278,6 +2356,32 @@ export function CorrectedKitchenManager() {
               <CardTitle>Active Batches</CardTitle>
         </CardHeader>
         <CardContent>
+              {/* Filters and Search for Batches */}
+              <div className="flex flex-col md:flex-row md:items-center gap-2 mb-4">
+                <Input
+                  type="text"
+                  placeholder="Search batches..."
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  className="w-full md:w-64"
+                />
+                <Select
+                  value={selectedStatus}
+                  onValueChange={setSelectedStatus}
+                >
+                  <SelectTrigger className="w-[180px]">
+                    <SelectValue placeholder="Status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Statuses</SelectItem>
+                    <SelectItem value="draft">Draft</SelectItem>
+                    <SelectItem value="preparing">Preparing</SelectItem>
+                    <SelectItem value="ready">Ready</SelectItem>
+                    <SelectItem value="completed">Completed</SelectItem>
+                    <SelectItem value="finished">Finished</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
               <div className="mt-6">
           <Table>
             <TableHeader>
@@ -2291,98 +2395,104 @@ export function CorrectedKitchenManager() {
               </TableRow>
             </TableHeader>
             <TableBody>
-                    {batches.map((batch) => (
-                      <TableRow 
-                        key={batch.id}
-                        className="cursor-pointer hover:bg-muted/50"
-                        onClick={() => {
-                          setSelectedBatch(batch)
-                          setShowBatchDetailsDialog(true)
-                        }}
-                      >
-                        <TableCell className="font-medium">{batch.name}</TableCell>
-                        <TableCell>{getBatchStatusBadge(batch)}</TableCell>
-                    <TableCell>
-                          {formatDateSafe(batch.start_time)}
-                    </TableCell>
-                        <TableCell>{batch.yield || 0} {batch.yield_unit || 'g'}</TableCell>
-                        <TableCell>{batch.portions || 0}</TableCell>
-                    <TableCell>
-                          <div className="flex items-center gap-2">
-                            {batch.status === "draft" && (
+                    {batches
+                      .filter((batch: Batch) => {
+                        const matchesSearch = !searchQuery || batch.name.toLowerCase().includes(searchQuery.toLowerCase());
+                        const matchesStatus = selectedStatus === "all" || batch.status === selectedStatus;
+                        return matchesSearch && matchesStatus;
+                      })
+                      .map((batch) => (
+                        <TableRow 
+                          key={batch.id}
+                          className="cursor-pointer hover:bg-muted/50"
+                          onClick={() => {
+                            setSelectedBatch(batch)
+                            setShowBatchDetailsDialog(true)
+                          }}
+                        >
+                          <TableCell className="font-medium">{batch.name}</TableCell>
+                          <TableCell>{getBatchStatusBadge(batch)}</TableCell>
+                          <TableCell>
+                            {formatDateSafe(batch.start_time)}
+                          </TableCell>
+                          <TableCell>{batch.yield || 0} {batch.yield_unit || 'g'}</TableCell>
+                          <TableCell>{batch.portions || 0}</TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              {batch.status === "draft" && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={isStartingBatch}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleStartPreparing(batch)
+                                  }}
+                                >
+                                  {isStartingBatch ? (
+                                    <>
+                                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-current mr-2" />
+                                      Starting...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <ChefHat className="h-4 w-4 mr-1" />
+                                      Start Preparing
+                                    </>
+                                  )}
+                                </Button>
+                              )}
+                              {batch.status === "preparing" && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleUpdateBatchStatus(batch.id, "ready")
+                                  }}
+                                >
+                                  Mark Ready
+                                </Button>
+                              )}
+                              {batch.status === "ready" && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleUpdateBatchStatus(batch.id, "completed")
+                                  }}
+                                >
+                                  Complete
+                                </Button>
+                              )}
+                              {batch.status === "completed" && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleRestockBatch(batch)
+                                  }}
+                                >
+                                  <RefreshCw className="h-4 w-4 mr-1" />
+                                  Restock
+                                </Button>
+                              )}
                               <Button
-                                variant="outline"
+                                variant="destructive"
                                 size="sm"
-                                disabled={isStartingBatch}
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  handleStartPreparing(batch)
+                                  handleDeleteBatch(batch)
                                 }}
                               >
-                                {isStartingBatch ? (
-                                  <>
-                                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-current mr-2" />
-                                    Starting...
-                                  </>
-                                ) : (
-                                  <>
-                                <ChefHat className="h-4 w-4 mr-1" />
-                                Start Preparing
-                                  </>
-                                )}
-                              </Button>
-                            )}
-                            {batch.status === "preparing" && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  handleUpdateBatchStatus(batch.id, "ready")
-                                }}
-                              >
-                                Mark Ready
-                              </Button>
-                            )}
-                            {batch.status === "ready" && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  handleUpdateBatchStatus(batch.id, "completed")
-                                }}
-                              >
-                                Complete
-                              </Button>
-                            )}
-                            {batch.status === "completed" && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  handleRestockBatch(batch)
-                                }}
-                              >
-                                <RefreshCw className="h-4 w-4 mr-1" />
-                                Restock
-                              </Button>
-                            )}
-                            <Button
-                              variant="destructive"
-                              size="sm"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                handleDeleteBatch(batch)
-                              }}
-                            >
                                 <Trash2 className="h-4 w-4" />
                               </Button>
-                          </div>
-                    </TableCell>
-                          </TableRow>
-                        ))}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
                   </TableBody>
                 </Table>
               </div>
@@ -2390,73 +2500,34 @@ export function CorrectedKitchenManager() {
           </Card>
                 </TabsContent>
 
-        <TabsContent value="logs">
-                  <Card>
-                    <CardHeader>
-              <CardTitle>System Logs</CardTitle>
-                    </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                      <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setSystemLogs([])}
-                    >
-                      Clear Logs
-                            </Button>
-                        </div>
-                        </div>
-                <ScrollArea className="h-[600px] pr-4">
-                        <div className="space-y-2">
-                    {systemLogs.map((log) => (
-                      <div
-                        key={log.id}
-                        className={`p-4 rounded-lg border ${
-                          log.status === "error"
-                            ? "border-red-200 bg-red-50"
-                            : log.status === "success"
-                            ? "border-green-200 bg-green-50"
-                            : "border-blue-200 bg-blue-50"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <Badge
-                              variant={log.type === "storage" ? "outline" : "default"}
-                              className={
-                                log.type === "storage"
-                                  ? "text-blue-600 border-blue-600"
-                                  : "bg-purple-600"
-                              }
-                            >
-                              {log.type === "storage" ? "Storage" : "Batch"}
-                            </Badge>
-                            <span className="font-medium">{log.action}</span>
-                        </div>
-                          <span className="text-sm text-muted-foreground">
-                            {formatDateSafe(log.timestamp)}
-                          </span>
-                        </div>
-                        <p className="mt-2 text-sm text-muted-foreground">
-                          {log.details}
-                        </p>
-                      </div>
-                    ))}
-                    {systemLogs.length === 0 && (
-                      <div className="text-center py-8 text-muted-foreground">
-                        <Activity className="h-8 w-8 mx-auto mb-2" />
-                        <p>No system logs yet</p>
-                        <p className="text-sm">Actions will be logged here</p>
-                        </div>
-                    )}
-                  </div>
-                </ScrollArea>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </TabsContent>
+        <TabsContent value="recipes">
+          <RecipeManager 
+            recipes={recipes}
+            // @ts-ignore
+            inventoryIngredients={inventoryIngredientsList}
+            addRecipe={addRecipe}
+            publishRecipe={publishRecipe}
+            unpublishRecipe={unpublishRecipe}
+          />
+        </TabsContent>
+
+        <TabsContent value="wastage">
+          <WastageManager
+            kitchenStorage={kitchenStorage}
+            batches={batches}
+            wastageEvents={wastageEvents}
+            onWastageReported={() => {
+              refreshKitchenData();
+              refreshSelectedBatch(); // Refresh the selected batch data
+            }}
+            getIngredientName={getIngredientName}
+            showDialog={showWastageDialog}
+            onDialogChange={setShowWastageDialog}
+            preSelectedBatch={preSelectedBatchForWastage}
+            onPreSelectedBatchChange={setPreSelectedBatchForWastage}
+          />
+        </TabsContent>
+
               </Tabs>
 
       {/* New Batch Dialog */}
@@ -2753,7 +2824,8 @@ export function CorrectedKitchenManager() {
               <ScrollArea className="h-[300px] pr-4">
                 <div className="grid gap-4">
                   {batches
-                    .filter(batch => batch.status === "ready" && batch.portions && batch.portions > 0)
+                    // Show all batches regardless of status
+                    .filter(batch => batch.portions && batch.portions > 0)
                     .map((batch) => (
                       <div key={`batch-${batch.id}`} className="flex items-center space-x-4">
                         <Checkbox
@@ -2791,6 +2863,9 @@ export function CorrectedKitchenManager() {
                             <span>{batch.name}</span>
                             <Badge variant="outline" className="text-xs">
                               {batch.portions || 0} portions
+                            </Badge>
+                            <Badge variant="secondary" className="text-xs ml-2">
+                              {batch.status}
                             </Badge>
                           </Label>
                           <p className="text-sm text-muted-foreground">

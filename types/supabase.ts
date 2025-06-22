@@ -467,6 +467,41 @@ export interface Database {
           created_at?: string
         }
       }
+      wastage: {
+        Row: {
+          id: string
+          item_id: string
+          item_name: string
+          is_batch: boolean
+          quantity: number
+          unit: string
+          reason: string
+          reported_by: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          item_id: string
+          item_name: string
+          is_batch?: boolean
+          quantity: number
+          unit: string
+          reason: string
+          reported_by?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          item_id?: string
+          item_name?: string
+          is_batch?: boolean
+          quantity?: number
+          unit?: string
+          reason?: string
+          reported_by?: string | null
+          created_at?: string
+        }
+      }
     }
     Views: {
       [_ in never]: never

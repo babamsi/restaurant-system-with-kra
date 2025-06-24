@@ -22,7 +22,7 @@ import {
   CheckCircle,
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { useCompletePOSStore } from "@/stores/complete-pos-store"
+import { useCompletePOSStore, useCompletePOSStore as usePOSStore } from "@/stores/complete-pos-store"
 import { useOrdersStore } from "@/stores/orders-store"
 import type { MenuItem, CartItem } from "@/types/unified-system"
 import Image from "next/image"
@@ -50,6 +50,7 @@ export function CorrectedPOSSystem() {
     getCartItemCount,
     getAvailableMenuItems,
     loadCart,
+    updateOrderStatus,
   } = useCompletePOSStore()
 
   const [searchTerm, setSearchTerm] = useState("")
@@ -72,6 +73,9 @@ export function CorrectedPOSSystem() {
   const [isCustomizing, setIsCustomizing] = useState(false)
   const [customizingItem, setCustomizingItem] = useState<{ menuItem: MenuItem; portionSize?: string } | null>(null)
   const [customizationNotes, setCustomizationNotes] = useState("")
+
+  const [showTableOptions, setShowTableOptions] = useState<null | TableState>(null)
+  const [showPayment, setShowPayment] = useState<null | { table: TableState; orderId: string }>(null)
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000)
@@ -172,24 +176,31 @@ export function CorrectedPOSSystem() {
 
   const handleTableSelect = (table: TableState) => {
     if (table.orderId) {
+      setShowTableOptions(table)
+    } else {
+      setEditingOrderId(null)
+      setSelectedTable(table)
+    }
+  }
+
+  const handleAddMoreOrders = () => {
+    if (showTableOptions) {
+      const table = showTableOptions
       const orderToLoad = allOrders.find((o) => o.id === table.orderId)
       if (orderToLoad) {
-        setEditingOrderId(orderToLoad.id)
         const cartItemsToLoad: CartItem[] = orderToLoad.items
           .map((item) => {
             const menuItem = menuItems.find((mi) => mi.id === item.menu_item_id)
-            if (!menuItem) {
-              console.error(`MenuItem with id ${item.menu_item_id} not found.`)
-              return null
-            }
-
+            if (!menuItem) return undefined
             return {
-              ...menuItem,
               id: item.id,
               menu_item_id: menuItem.id,
+              name: menuItem.name,
+              type: menuItem.type,
               unit_price: item.price,
               quantity: item.quantity,
               total_price: item.price * item.quantity,
+              unit: menuItem.unit,
               portionSize: item.portionSize,
               customization: item.customization,
               total_nutrition: {
@@ -200,13 +211,40 @@ export function CorrectedPOSSystem() {
                 fiber: menuItem.nutrition.fiber * item.quantity,
                 sodium: menuItem.nutrition.sodium * item.quantity,
               },
-            }
+              inventory_deduction: menuItem.inventory_deduction
+                ? {
+                    ingredient_id: menuItem.inventory_deduction.ingredient_id,
+                    quantity_to_deduct: menuItem.inventory_deduction.quantity_per_unit * item.quantity,
+                  }
+                : undefined,
+            } as CartItem
           })
-          .filter((item): item is CartItem => item !== null)
+          .filter((item): item is CartItem => item !== undefined)
         loadCart(cartItemsToLoad)
       }
+      setSelectedTable(table)
+      setShowTableOptions(null)
     }
-    setSelectedTable(table)
+  }
+
+  const handleProceedToPayment = () => {
+    if (showTableOptions && showTableOptions.orderId) {
+      setShowPayment({ table: showTableOptions, orderId: showTableOptions.orderId })
+      setShowTableOptions(null)
+    }
+  }
+
+  const handleMarkAsPaid = () => {
+    if (showPayment) {
+      updateOrderStatus(showPayment.orderId, "completed")
+      setTables((prev) =>
+        prev.map((t) =>
+          t.id === showPayment.table.id ? { ...t, status: "available", orderId: undefined } : t
+        )
+      )
+      toast({ title: "Payment Complete", description: `Table ${showPayment.table.number} is now available.` })
+      setShowPayment(null)
+    }
   }
 
   const handleCloseOrderModal = () => {
@@ -302,6 +340,58 @@ export function CorrectedPOSSystem() {
         </div>
       </div>
 
+      <Dialog open={!!showTableOptions} onOpenChange={(open) => !open && setShowTableOptions(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Table {showTableOptions?.number} Options</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-4 py-2">
+            <Button size="lg" className="w-full" onClick={handleAddMoreOrders}>
+              <Plus className="h-5 w-5 mr-2" /> Add More Orders
+            </Button>
+            <Button size="lg" className="w-full" variant="secondary" onClick={handleProceedToPayment}>
+              <CheckCircle className="h-5 w-5 mr-2" /> Proceed to Payment
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!showPayment} onOpenChange={(open) => !open && setShowPayment(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Payment for Table {showPayment?.table.number}</DialogTitle>
+          </DialogHeader>
+          {showPayment && (
+            <div className="space-y-4">
+              {(() => {
+                const order = allOrders.find((o) => o.id === showPayment.orderId)
+                if (!order) return <div>Order not found.</div>
+                return (
+                  <>
+                    <div className="flex justify-between text-lg font-semibold">
+                      <span>Order Total:</span>
+                      <span>${order.total.toFixed(2)}</span>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      {order.items.map((item) => (
+                        <div key={item.id} className="flex justify-between text-sm">
+                          <span>{item.name}{item.portionSize && ` (${item.portionSize})`}</span>
+                          <span>x{item.quantity}</span>
+                          <span>${(item.price * item.quantity).toFixed(2)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )
+              })()}
+              <Button className="w-full mt-4" onClick={handleMarkAsPaid}>
+                <CheckCircle className="h-5 w-5 mr-2" /> Mark as Paid
+              </Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!selectedTable} onOpenChange={(isOpen) => !isOpen && handleCloseOrderModal()}>
         <DialogContent className="max-w-7xl h-[90vh] flex flex-col p-0 gap-0">
           <DialogHeader className="p-4 border-b">
@@ -339,14 +429,14 @@ export function CorrectedPOSSystem() {
                 </div>
               </div>
               <div className="flex-1 overflow-auto p-4 bg-muted/20">
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-6">
                   {filteredMenuItems.map((item) => (
                     <Card
                       key={item.id}
-                      className="overflow-hidden group transition-all duration-300 hover:shadow-lg hover:border-primary/50 border-2 border-transparent"
+                      className="overflow-hidden group transition-all duration-300 hover:shadow-2xl hover:border-primary/70 border-2 border-transparent rounded-2xl bg-white dark:bg-card relative"
                     >
                       <CardContent className="p-0">
-                        <div className="aspect-video bg-muted relative">
+                        <div className="aspect-[4/3] bg-muted relative rounded-t-2xl overflow-hidden">
                           {item.image ? (
                             <Image src={item.image} alt={item.name} fill className="object-cover" />
                           ) : (
@@ -354,8 +444,10 @@ export function CorrectedPOSSystem() {
                               🍽️
                             </div>
                           )}
-                          <div className="absolute inset-0 bg-black/20" />
-                          <h3 className="absolute bottom-2 left-3 font-bold text-white text-lg">{item.name}</h3>
+                          <div className="absolute inset-0 bg-gradient-to-t from-black/30 to-transparent" />
+                          <h3 className="absolute bottom-2 left-3 font-bold text-white text-lg drop-shadow-lg">
+                            {item.name}
+                          </h3>
                           <Badge variant="secondary" className="absolute top-2 right-2 text-xs">
                             {`${Math.floor(item.available_quantity)} left`}
                           </Badge>
@@ -363,7 +455,7 @@ export function CorrectedPOSSystem() {
                         <div className="p-4 space-y-3">
                           <div className="flex items-center justify-between">
                             <span className="font-bold text-xl text-primary">${item.price.toFixed(2)}</span>
-                            <p className="text-xs text-muted-foreground">{item.description}</p>
+                            <p className="text-xs text-muted-foreground line-clamp-2 max-w-[120px] text-right">{item.description}</p>
                           </div>
                           {item.type === "recipe" && item.portion_sizes ? (
                             <div className="flex gap-2">
@@ -372,7 +464,7 @@ export function CorrectedPOSSystem() {
                                   key={size}
                                   size="sm"
                                   variant="outline"
-                                  className="flex-1"
+                                  className="flex-1 rounded-full border-primary/30 hover:border-primary"
                                   onClick={() => handleOpenCustomization(item, size)}
                                   disabled={item.available_quantity === 0}
                                 >
@@ -383,7 +475,7 @@ export function CorrectedPOSSystem() {
                           ) : (
                             <Button
                               size="sm"
-                              className="w-full"
+                              className="w-full rounded-full"
                               onClick={() => handleOpenCustomization(item)}
                               disabled={item.available_quantity === 0}
                             >

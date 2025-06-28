@@ -870,6 +870,7 @@ export function SynchronizedInventoryManager() {
                           <SelectItem value="spices">Spices</SelectItem>
                           <SelectItem value="oils">Oils</SelectItem>
                           <SelectItem value="packaging">Packaging</SelectItem>
+                          <SelectItem value="dishes">Dishes</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>

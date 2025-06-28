@@ -361,6 +361,8 @@ export interface Database {
           yield: number
           yield_unit_id: string
           portions: number
+          original_yield: number
+          original_portions: number
           status: string
           start_time: string | null
           end_time: string | null
@@ -375,6 +377,8 @@ export interface Database {
           yield: number
           yield_unit_id: string
           portions: number
+          original_yield: number
+          original_portions: number
           status?: string
           start_time?: string | null
           end_time?: string | null
@@ -389,6 +393,8 @@ export interface Database {
           yield?: number
           yield_unit_id?: string
           portions?: number
+          original_yield?: number
+          original_portions?: number
           status?: string
           start_time?: string | null
           end_time?: string | null

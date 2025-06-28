@@ -82,13 +82,45 @@ export function CorrectedPOSSystem() {
     return () => clearInterval(timer)
   }, [])
 
-  const categories = ["All", ...Array.from(new Set(menuItems.map((item) => item.category)))]
+  // Default nutrition info for sample items
+  const defaultNutrition = { calories: 100, protein: 2, carbs: 20, fat: 3, fiber: 1, sodium: 100 }
+  // Sample menu items with categories and subcategories (add subcategory as extra property for grouping)
+  const sampleMenuItems: (MenuItem & { subcategory?: string })[] = [
+    { id: "1", name: "Spring Rolls", price: 5, category: "Starters", available_quantity: 10, description: "Crispy rolls", type: "individual", nutrition: defaultNutrition },
+    { id: "2", name: "Garlic Bread", price: 4, category: "Starters", available_quantity: 8, description: "Buttery bread", type: "individual", nutrition: defaultNutrition },
+    { id: "3", name: "Margherita Pizza", price: 12, category: "Main Course", available_quantity: 5, description: "Classic pizza", type: "recipe", nutrition: defaultNutrition, subcategory: "Pizza" },
+    { id: "4", name: "Pepperoni Pizza", price: 14, category: "Main Course", available_quantity: 3, description: "Spicy pepperoni", type: "recipe", nutrition: defaultNutrition, subcategory: "Pizza" },
+    { id: "5", name: "Spaghetti Bolognese", price: 13, category: "Main Course", available_quantity: 6, description: "Rich meat sauce", type: "recipe", nutrition: defaultNutrition, subcategory: "Pasta" },
+    { id: "6", name: "Fettuccine Alfredo", price: 13, category: "Main Course", available_quantity: 4, description: "Creamy sauce", type: "recipe", nutrition: defaultNutrition, subcategory: "Pasta" },
+    { id: "7", name: "Coke", price: 2, category: "Drinks", available_quantity: 20, description: "Chilled soda", type: "individual", nutrition: defaultNutrition },
+    { id: "8", name: "Orange Juice", price: 3, category: "Drinks", available_quantity: 15, description: "Fresh juice", type: "individual", nutrition: defaultNutrition },
+  ]
 
-  const filteredMenuItems = getAvailableMenuItems().filter((item) => {
-    const matchesSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase())
-    const matchesCategory = selectedCategory === "All" || item.category === selectedCategory
-    return matchesSearch && matchesCategory
-  })
+  // Use sampleMenuItems for demonstration (replace with menuItems for real data)
+  const menuToShow = sampleMenuItems
+
+  // Group menu items by category and subcategory
+  const groupedMenu = menuToShow.reduce((acc, item) => {
+    if (!acc[item.category]) acc[item.category] = {}
+    const subcat = (item as any).subcategory || "__no_sub__"
+    if (!acc[item.category][subcat]) acc[item.category][subcat] = []
+    acc[item.category][subcat].push(item)
+    return acc
+  }, {} as Record<string, Record<string, (MenuItem & { subcategory?: string })[]>>)
+
+  const categories = ["All", ...Object.keys(groupedMenu)]
+
+  // Filtered menu by search/category
+  const filteredGroupedMenu = Object.entries(groupedMenu).reduce((acc, [category, subcats]) => {
+    if (selectedCategory !== "All" && category !== selectedCategory) return acc
+    const filteredSubcats: Record<string, (MenuItem & { subcategory?: string })[]> = {}
+    Object.entries(subcats).forEach(([subcat, items]) => {
+      const filteredItems = items.filter(item => item.name.toLowerCase().includes(searchTerm.toLowerCase()))
+      if (filteredItems.length > 0) filteredSubcats[subcat] = filteredItems
+    })
+    if (Object.keys(filteredSubcats).length > 0) acc[category] = filteredSubcats
+    return acc
+  }, {} as Record<string, Record<string, (MenuItem & { subcategory?: string })[]>>)
 
   const handleOpenCustomization = (menuItem: MenuItem, portionSize?: string) => {
     setCustomizingItem({ menuItem, portionSize })
@@ -99,32 +131,14 @@ export function CorrectedPOSSystem() {
     if (!customizingItem) return
 
     const { menuItem, portionSize } = customizingItem
-    let actualQuantity = 1
-    let displayText = ""
-
-    if (menuItem.type === "individual") {
-      const defaultServings = { g: 100, ml: 200 } as const
-      const unit = (menuItem.unit === "ml" ? "ml" : "g") as "g" | "ml"
-      actualQuantity = defaultServings[unit]
-      displayText = `${actualQuantity}${unit} of ${menuItem.name}`
-    } else {
-      displayText = `${portionSize} ${menuItem.name}`
-    }
-
-    if (menuItem.available_quantity < actualQuantity) {
-      toast({
-        title: "Insufficient Stock",
-        description: `Only ${Math.floor(menuItem.available_quantity)} available for ${menuItem.name}`,
-        variant: "destructive",
-      })
-      return
-    }
+    let displayText = menuItem.name
+    if (portionSize) displayText = `${portionSize} ${menuItem.name}`
 
     const cartItemId = `${menuItem.id}${portionSize ? `-${portionSize}` : ""}${
       customizationNotes ? `-${customizationNotes}` : ""
     }`
 
-    addToCart(menuItem, actualQuantity, {
+    addToCart(menuItem, 1, {
       id: cartItemId,
       portionSize,
       customization: customizationNotes,
@@ -132,7 +146,8 @@ export function CorrectedPOSSystem() {
 
     toast({
       title: "Added to Order",
-      description: displayText + (customizationNotes ? " (customized)" : ""),
+      description: displayText + (customizationNotes ? ` (${customizationNotes})` : ""),
+      duration: 500,
     })
 
     setIsCustomizing(false)
@@ -259,9 +274,9 @@ export function CorrectedPOSSystem() {
         <div className="flex items-center justify-between p-4">
           <div className="flex items-center gap-4">
             <UtensilsCrossed className="h-7 w-7 text-primary" />
-            <h1 className="text-xl font-bold">Restaurant POS</h1>
-          </div>
-          <div className="text-sm text-muted-foreground">
+              <h1 className="text-xl font-bold">Restaurant POS</h1>
+            </div>
+            <div className="text-sm text-muted-foreground">
             {currentTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} •{" "}
             {currentTime.toLocaleDateString()}
           </div>
@@ -282,9 +297,9 @@ export function CorrectedPOSSystem() {
           {tables.map((table) => {
             const order = allOrders.find((o) => o.id === table.orderId)
             return (
-              <Card
-                key={table.id}
-                onClick={() => handleTableSelect(table)}
+            <Card 
+              key={table.id}
+              onClick={() => handleTableSelect(table)}
                 className={`cursor-pointer group hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1 border-2 ${
                   table.status === "occupied"
                     ? "border-primary/50 bg-primary/5 dark:bg-primary/10"
@@ -295,16 +310,16 @@ export function CorrectedPOSSystem() {
                   <div>
                     <div className="flex justify-between items-center">
                       <h3 className="text-2xl font-bold text-foreground">{table.number}</h3>
-                      <Badge
+                <Badge 
                         variant={table.status === "occupied" ? "default" : "secondary"}
                         className={`capitalize transition-colors duration-300 ${
                           table.status === "occupied"
                             ? "bg-primary text-primary-foreground"
                             : "bg-green-200 text-green-800 dark:bg-green-800 dark:text-green-100"
-                        }`}
-                      >
-                        {table.status}
-                      </Badge>
+                  }`}
+                >
+                  {table.status}
+                </Badge>
                     </div>
                     <div className="text-sm text-muted-foreground mt-1">
                       {table.status === "occupied" ? (
@@ -333,8 +348,8 @@ export function CorrectedPOSSystem() {
                       </div>
                     )}
                   </div>
-                </CardContent>
-              </Card>
+              </CardContent>
+            </Card>
             )
           })}
         </div>
@@ -399,112 +414,110 @@ export function CorrectedPOSSystem() {
               {editingOrderId ? `Editing Order for Table ${selectedTable?.number}` : `New Order for Table ${selectedTable?.number}`}
             </DialogTitle>
           </DialogHeader>
-          <div className="flex-1 flex overflow-hidden">
-            <div className="flex-1 flex flex-col overflow-hidden">
-              <div className="flex-shrink-0 p-4 border-b border-border bg-muted/20">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                    <Select value={selectedCategory} onValueChange={setSelectedCategory}>
+      <div className="flex-1 flex overflow-hidden">
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="flex-shrink-0 p-4 border-b border-border bg-muted/20">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <Select value={selectedCategory} onValueChange={setSelectedCategory}>
                       <SelectTrigger className="w-48">
                         <SelectValue placeholder="Filter by category" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {categories.map((category) => (
-                          <SelectItem key={category} value={category}>
-                            {category}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {categories.map((category) => (
+                      <SelectItem key={category} value={category}>
+                        {category}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                     <div className="relative">
                       <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                      <Input
+                  <Input
                         placeholder="Search menu items..."
                         className="pl-10 w-96"
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
                       />
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div className="flex-1 overflow-auto p-4 bg-muted/20">
-                <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-6">
-                  {filteredMenuItems.map((item) => (
-                    <Card
-                      key={item.id}
-                      className="overflow-hidden group transition-all duration-300 hover:shadow-2xl hover:border-primary/70 border-2 border-transparent rounded-2xl bg-white dark:bg-card relative"
-                    >
-                      <CardContent className="p-0">
-                        <div className="aspect-[4/3] bg-muted relative rounded-t-2xl overflow-hidden">
-                          {item.image ? (
-                            <Image src={item.image} alt={item.name} fill className="object-cover" />
-                          ) : (
-                            <div className="flex items-center justify-center h-full text-4xl text-muted-foreground/30">
-                              🍽️
-                            </div>
-                          )}
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/30 to-transparent" />
-                          <h3 className="absolute bottom-2 left-3 font-bold text-white text-lg drop-shadow-lg">
-                            {item.name}
-                          </h3>
-                          <Badge variant="secondary" className="absolute top-2 right-2 text-xs">
-                            {`${Math.floor(item.available_quantity)} left`}
-                          </Badge>
-                        </div>
-                        <div className="p-4 space-y-3">
-                          <div className="flex items-center justify-between">
-                            <span className="font-bold text-xl text-primary">${item.price.toFixed(2)}</span>
-                            <p className="text-xs text-muted-foreground line-clamp-2 max-w-[120px] text-right">{item.description}</p>
-                          </div>
-                          {item.type === "recipe" && item.portion_sizes ? (
-                            <div className="flex gap-2">
-                              {Object.keys(item.portion_sizes).map((size) => (
-                                <Button
-                                  key={size}
-                                  size="sm"
-                                  variant="outline"
-                                  className="flex-1 rounded-full border-primary/30 hover:border-primary"
-                                  onClick={() => handleOpenCustomization(item, size)}
-                                  disabled={item.available_quantity === 0}
-                                >
-                                  {size.charAt(0).toUpperCase() + size.slice(1)}
-                                </Button>
-                              ))}
-                            </div>
-                          ) : (
-                            <Button
-                              size="sm"
-                              className="w-full rounded-full"
-                              onClick={() => handleOpenCustomization(item)}
-                              disabled={item.available_quantity === 0}
-                            >
-                              <Plus className="h-4 w-4 mr-1" />
-                              Add to Order
-                            </Button>
-                          )}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ))}
-                </div>
               </div>
             </div>
-            <div className="w-[380px] border-l border-border bg-card flex flex-col">
-              <div className="p-4 border-b border-border">
-                <h2 className="text-lg font-semibold flex items-center gap-2">
-                  <ShoppingCart className="h-5 w-5" />
-                  Current Order ({getCartItemCount()})
-                </h2>
+          </div>
               </div>
-              <div className="flex-1 overflow-auto p-4">
-                {cart.length === 0 ? (
+              <div className="flex-1 overflow-auto p-4 bg-muted/20">
+                {/* Render grouped menu by category and subcategory */}
+                <div>
+                  {Object.entries(filteredGroupedMenu).map(([category, subcats]) => (
+                    <div key={category} className="mb-8">
+                      <h2 className="text-xl font-bold mb-2">{category}</h2>
+                      {Object.entries(subcats).map(([subcat, items]) => (
+                        <div key={subcat} className="mb-4">
+                          {subcat !== "__no_sub__" && (
+                            <h3 className="text-lg font-semibold mb-1">{subcat}</h3>
+                          )}
+                          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                            {items.map(item => (
+                              <Card
+                                key={item.id}
+                                className="overflow-hidden group transition-all duration-300 hover:shadow-2xl hover:border-primary/70 border-2 border-transparent rounded-2xl bg-white dark:bg-card relative"
+                              >
+                                <CardContent className="p-0">
+                                  <div className="aspect-[4/3] bg-muted relative rounded-t-2xl overflow-hidden">
+                                    {item.image ? (
+                                      <Image src={item.image} alt={item.name} fill className="object-cover" />
+                                    ) : (
+                                      <div className="flex items-center justify-center h-full text-4xl text-muted-foreground/30">
+                                        🍽️
+                        </div>
+                                    )}
+                                    <div className="absolute inset-0 bg-gradient-to-t from-black/30 to-transparent" />
+                                    <h3 className="absolute bottom-2 left-3 font-bold text-white text-lg drop-shadow-lg">
+                                      {item.name}
+                                    </h3>
+                                    <Badge variant="secondary" className="absolute top-2 right-2 text-xs">
+                                      {`${Math.floor(item.available_quantity)} left`}
+                          </Badge>
+                        </div>
+                                  <div className="p-4 space-y-3">
+                                    <div className="flex items-center justify-between">
+                                      <span className="font-bold text-xl text-primary">${item.price.toFixed(2)}</span>
+                                      <p className="text-xs text-muted-foreground line-clamp-2 max-w-[120px] text-right">{item.description}</p>
+                          </div>
+                          <Button
+                            size="sm"
+                                      className="w-full rounded-full"
+                                      onClick={() => handleOpenCustomization(item)}
+                            disabled={item.available_quantity === 0}
+                          >
+                            <Plus className="h-4 w-4 mr-1" />
+                                      Add to Order
+                          </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                ))}
+              </div>
+          </div>
+        </div>
+            <div className="w-[380px] border-l border-border bg-card flex flex-col">
+          <div className="p-4 border-b border-border">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <ShoppingCart className="h-5 w-5" />
+                  Current Order ({getCartItemCount()})
+              </h2>
+          </div>
+          <div className="flex-1 overflow-auto p-4">
+            {cart.length === 0 ? (
                   <div className="text-center text-muted-foreground py-12">
                     <p className="font-medium">No items in order</p>
                     <p className="text-sm">Select items from the menu to get started.</p>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
+              </div>
+            ) : (
+              <div className="space-y-3">
                     {cart.map((item: CartItem) => (
                       <div key={item.id} className="bg-muted/50 p-3 rounded-lg">
                         <div className="flex items-start justify-between">
@@ -513,7 +526,7 @@ export function CorrectedPOSSystem() {
                             {item.portionSize && (
                               <p className="text-xs text-muted-foreground capitalize">{item.portionSize}</p>
                             )}
-                          </div>
+                        </div>
                           <span className="font-medium text-sm">${item.total_price.toFixed(2)}</span>
                         </div>
                         {item.customization && (
@@ -552,11 +565,11 @@ export function CorrectedPOSSystem() {
                           </Button>
                         </div>
                       </div>
-                    ))}
-                  </div>
-                )}
+                ))}
               </div>
-              {cart.length > 0 && (
+            )}
+          </div>
+          {cart.length > 0 && (
                 <div className="border-t border-border p-4 space-y-4 bg-muted/30">
                   <div className="flex justify-between font-semibold">
                     <span>Subtotal:</span>
@@ -566,16 +579,16 @@ export function CorrectedPOSSystem() {
                     <span>Tax (16%):</span>
                     <span>${(getCartTotal() * 0.16).toFixed(2)}</span>
                   </div>
-                  <div className="flex justify-between text-lg font-bold">
-                    <span>Total:</span>
+                <div className="flex justify-between text-lg font-bold">
+                  <span>Total:</span>
                     <span>${(getCartTotal() * 1.16).toFixed(2)}</span>
-                  </div>
+                </div>
                   <Button className="w-full" size="lg" onClick={handlePlaceOrder}>
                     <CheckCircle className="h-5 w-5 mr-2" />
                     {editingOrderId ? "Update Order" : "Place Order"}
-                  </Button>
-                </div>
-              )}
+              </Button>
+            </div>
+          )}
             </div>
           </div>
         </DialogContent>
@@ -614,6 +627,6 @@ export function CorrectedPOSSystem() {
       <Dialog open={showHistory} onOpenChange={setShowHistory}>
         {/* ... history content ... */}
       </Dialog>
-    </div>
+      </div>
   )
 }

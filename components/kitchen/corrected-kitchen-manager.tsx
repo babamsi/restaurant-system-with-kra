@@ -61,6 +61,12 @@ import {
 import { supabase } from "@/lib/supabase"
 import { WastageManager, type WastageEvent } from "./wastage-manager"
 import { RecipeManager } from "./recipe-manager"
+import { FreezerManager, type FreezerItem } from "./FreezerManager"
+import { CookedFreezerManager } from "./CookedFreezerManager"
+import { SupplierDeliveryDialog } from "./SupplierDeliveryDialog"
+import { useSuppliers } from "@/hooks/use-suppliers"
+import { ImportIngredientsDialog } from "./ImportIngredientsDialog"
+import { KitchenStorageTable } from "./KitchenStorageTable"
 
 interface ExtendedIngredient extends UnifiedIngredient {
   available_quantity: number;
@@ -76,6 +82,10 @@ interface KitchenStorageItem {
   used_grams?: number;
   used_liters?: number;
   last_updated?: string;
+  open_container_remaining?: number;
+  open_container_unit?: string;
+  reference_weight_per_bunch?: number;
+  reference_weight_unit?: string;
 }
 
 // Add a type guard for Batch
@@ -339,7 +349,8 @@ const createBatch = async (
     yield: yieldInfo?.yield || 0,
     portions: yieldInfo?.portions || 0,
     yield_unit: yieldInfo?.yield_unit || "g",
-    original_portions: yieldInfo?.portions || 0 // NEW: store original portions
+    original_portions: yieldInfo?.portions || 0, // NEW: store original portions
+    original_yield: yieldInfo?.yield || 0 // NEW: store original yield
   }
   try {
     // Insert the new batch into Supabase
@@ -376,6 +387,12 @@ interface Ingredient {
   current_stock?: number; // Add this line for import dialog compatibility
 }
 
+// Create a new local type that extends the store's BatchIngredient type
+type ExtendedBatchIngredient = BatchIngredient & {
+  useYield?: boolean
+  yieldAmount?: number
+}
+
 export function CorrectedKitchenManager() {
   const { toast } = useToast()
   const { updateStock } = useSynchronizedInventoryStore()
@@ -407,13 +424,68 @@ export function CorrectedKitchenManager() {
   const ingredients = useCompleteInventoryStore((state) => state.ingredients)
   const lastUpdated = useCompleteInventoryStore((state) => state.lastUpdated)
   const markAsCooked = useCompleteInventoryStore((state) => state.markAsCooked)
+  const [showReferenceWeightDialog, setShowReferenceWeightDialog] = useState(false);
+const [referenceWeightIngredient, setReferenceWeightIngredient] = useState<Ingredient | null>(null);
+const [referenceWeightValue, setReferenceWeightValue] = useState<string>("");
+const [referenceWeightUnit, setReferenceWeightUnit] = useState<string>("g");
+const [pendingImportIngredient, setPendingImportIngredient] = useState<any>(null);
+
+// Handler for reference weight dialog submission
+const handleReferenceWeightSubmit = async () => {
+  if (!referenceWeightIngredient || !pendingImportIngredient) return;
+  const value = parseFloat(referenceWeightValue)
+  if (!value || value <= 0) {
+    toast({
+      title: "Invalid Value",
+      description: "Please enter a valid positive number for the conversion.",
+      variant: "destructive"
+    })
+    return;
+  }
+  // Upsert kitchen storage with reference weight
+  const existingItem = kitchenStorage.find(item => item.ingredient_id === referenceWeightIngredient.id.toString())
+  const storageItem: any = {
+    ...(existingItem?.id ? { id: existingItem.id } : {}),
+    ingredient_id: referenceWeightIngredient.id.toString(),
+    quantity: (existingItem?.quantity || 0) + pendingImportIngredient.requiredQuantity,
+    unit: referenceWeightIngredient.unit,
+    reference_weight_per_bunch: value,
+    reference_weight_unit: referenceWeightUnit,
+    last_updated: new Date().toISOString()
+  }
+  await upsertKitchenStorage(storageItem)
+  setKitchenStorage(prevStorage => {
+    const index = prevStorage.findIndex(item => item.ingredient_id === referenceWeightIngredient.id.toString())
+    const ensureId = (item: any) => ({
+      ...item,
+      id: item.id || crypto.randomUUID?.() || Date.now().toString(),
+    })
+    if (index >= 0) {
+      const updatedStorage = [...prevStorage]
+      updatedStorage[index] = ensureId(storageItem)
+      return updatedStorage
+    }
+    return [...prevStorage, ensureId(storageItem)]
+  })
+  setShowReferenceWeightDialog(false)
+  setReferenceWeightIngredient(null)
+  setReferenceWeightValue("")
+  setReferenceWeightUnit("g")
+  setPendingImportIngredient(null)
+  // Continue import for the rest
+  handleImportIngredients()
+}
+
+
+
+
 
   // State declarations
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [showRequestDialog, setShowRequestDialog] = useState(false)
   const [showBatchDialog, setShowBatchDialog] = useState(false)
   const [showBatchIngredientsDialog, setShowBatchIngredientsDialog] = useState(false)
-  const [selectedIngredients, setSelectedIngredients] = useState<BatchIngredient[]>([])
+  const [selectedIngredients, setSelectedIngredients] = useState<ExtendedBatchIngredient[]>([])
   const [newBatch, setNewBatch] = useState<{
     name: string;
     yield: number;
@@ -451,6 +523,9 @@ export function CorrectedKitchenManager() {
   const [wastageEvents, setWastageEvents] = useState<WastageEvent[]>([])
   const [showWastageDialog, setShowWastageDialog] = useState(false)
   const [preSelectedBatchForWastage, setPreSelectedBatchForWastage] = useState<Batch | null>(null)
+  const [freezerItems, setFreezerItems] = useState<FreezerItem[]>([])
+  const [cookedFreezerItems, setCookedFreezerItems] = useState<any[]>([])
+  const [showSupplierDelivery, setShowSupplierDelivery] = useState(false)
 
   // Supabase-backed state
   const [kitchenStorage, setKitchenStorage] = useState<KitchenStorageItem[]>([])
@@ -518,6 +593,21 @@ export function CorrectedKitchenManager() {
       return
     }
 
+    // Check if any selected ingredient with unit 'bunch' is missing reference weight
+    for (const ingredient of selectedIngredients) {
+      const syncedIngredient = inventoryIngredientsList.find(i => i.id.toString() === ingredient.ingredientId)
+      if (syncedIngredient && syncedIngredient.unit === 'bunch') {
+        // Check if kitchen storage already has reference_weight_per_bunch
+        const existingItem = kitchenStorage.find(item => item.ingredient_id === ingredient.ingredientId)
+        if (!existingItem || !('reference_weight_per_bunch' in existingItem) || !existingItem.reference_weight_per_bunch) {
+          setReferenceWeightIngredient(syncedIngredient)
+          setPendingImportIngredient(ingredient)
+          setShowReferenceWeightDialog(true)
+          return // Pause import until user provides value
+        }
+      }
+    }
+
     setIsImporting(true)
     try {
     // Process all valid imports
@@ -526,23 +616,22 @@ export function CorrectedKitchenManager() {
       if (syncedIngredient) {
           // First, check if the ingredient already exists in kitchen storage
           const existingItem = kitchenStorage.find(item => item.ingredient_id === ingredient.ingredientId)
-          
           // Prepare the storage item data
-          const storageItem = {
+          const storageItem: any = {
             ...(existingItem?.id ? { id: existingItem.id } : {}), // Only include id if updating
             ingredient_id: ingredient.ingredientId,
             quantity: (existingItem?.quantity || 0) + ingredient.requiredQuantity,
             unit: syncedIngredient.unit,
             last_updated: new Date().toISOString()
           }
-
-          // Update or insert the item in Supabase
+          // If bunch, add reference weight fields
+          if (syncedIngredient.unit === 'bunch' && existingItem?.reference_weight_per_bunch) {
+            storageItem.reference_weight_per_bunch = existingItem.reference_weight_per_bunch;
+            storageItem.reference_weight_unit = existingItem.reference_weight_unit || 'g';
+          }
           await upsertKitchenStorage(storageItem)
-
-          // Update local state
           setKitchenStorage(prevStorage => {
             const index = prevStorage.findIndex(item => item.ingredient_id === ingredient.ingredientId)
-            // Always ensure a valid id for every KitchenStorageItem
             const ensureId = (item: any) => ({
               ...item,
               id: item.id || crypto.randomUUID?.() || Date.now().toString(),
@@ -554,16 +643,12 @@ export function CorrectedKitchenManager() {
             }
             return [...prevStorage, ensureId(storageItem)]
           })
-
-          // Update inventory stock in Supabase
           await supabase
             .from('ingredients')
             .update({ 
               current_stock: Number(syncedIngredient.current_stock) - ingredient.requiredQuantity 
             })
             .eq('id', ingredient.ingredientId)
-
-          // Log the successful import
           await insertSystemLog({
             type: "storage",
             action: "Import Success",
@@ -572,16 +657,12 @@ export function CorrectedKitchenManager() {
           })
         }
       }
-
     setShowImportDialog(false)
     setSelectedIngredients([])
-
     toast({
       title: "Ingredients Imported",
       description: "Selected ingredients have been imported to kitchen storage.",
     })
-
-      // Refresh the ingredients list
       const updatedIngredients = await fetchIngredients()
       setInventoryIngredientsList(updatedIngredients || [])
     } catch (error) {
@@ -609,6 +690,30 @@ export function CorrectedKitchenManager() {
   useEffect(() => {
     console.log("🍳 KITCHEN: Last updated timestamp:", lastUpdated)
   }, [lastUpdated])
+
+  useEffect(() => {
+    async function fetchFreezerItems() {
+      const { data, error } = await supabase
+        .from("freezer_items")
+        .select("*")
+        .order("created_at", { ascending: false })
+      if (!error && data) {
+        const mapped = data.map((item: any) => ({
+          id: item.id,
+          ingredientId: item.ingredient_id,
+          ingredientName: item.ingredient_name,
+          portions: item.number_of_portions,
+          yieldPerPortion: item.yield_per_portion,
+          unit: item.unit,
+          dateFrozen: item.date_frozen,
+          bestBefore: item.best_before,
+          notes: item.notes,
+        }))
+        setFreezerItems(mapped)
+      }
+    }
+    fetchFreezerItems()
+  }, [])
 
   // ✅ ADDED: useEffect to validate inventory sync on mount and updates
   // useEffect(() => {
@@ -1111,14 +1216,15 @@ export function CorrectedKitchenManager() {
         id: crypto.randomUUID(),
         name: newBatchName,
         ingredients: selectedIngredients,
-        status: "draft" as const, // New status for batches that haven't started preparing
-        start_time: undefined, // Will be set when starting preparation
+        status: "draft",
+        start_time: undefined,
         end_time: undefined,
         notes: batchNotes || "",
         yield: Number(newBatch.yield),
         portions: Number(newBatch.portions),
         yield_unit: newBatch.yieldUnit,
-        original_portions: Number(newBatch.portions) // NEW: store original portions
+        original_portions: Number(newBatch.portions), // NEW: store original portions
+        original_yield: Number(newBatch.yield), // NEW: store original yield
       };
 
       await upsertBatch(batchData);
@@ -1166,143 +1272,429 @@ export function CorrectedKitchenManager() {
     }
   };
 
-  // New function to start preparing a batch
-  const handleStartPreparing = async (batch: Batch) => {
-    if (isStartingBatch) return; // Prevent multiple simultaneous starts
+  // --- Helper: Extract pack size from ingredient name (e.g., 'Olive 4 LTR' => 4000ml) ---
+  function extractPackSize(ingredientName: string, requestedUnit: string): number | null {
+    // Try to extract number and unit (LTR, ML, KG, G)
+    let match = ingredientName.match(/(\d+(?:\.\d+)?)\s*(LTR|L|ML|KG|G)/i);
+    if (!match) return null;
+    let value = parseFloat(match[1]);
+    let unit = match[2].toLowerCase();
     
+    // If the requested unit matches the pack unit, return the value as-is
+    if ((unit === 'kg' && requestedUnit === 'kg') || 
+        (unit === 'g' && requestedUnit === 'g') ||
+        (unit === 'ltr' && requestedUnit === 'l') ||
+        (unit === 'l' && requestedUnit === 'l') ||
+        (unit === 'ml' && requestedUnit === 'ml')) {
+      return value;
+    }
+    
+    // Otherwise, convert to the requested unit
+    if (unit === 'ltr' || unit === 'l') return value * 1000; // LTR to ml
+    if (unit === 'ml') return value;
+    if (unit === 'kg') return value * 1000; // KG to g
+    if (unit === 'g') return value;
+    return null;
+  }
+
+  // --- Update handleStartPreparing deduction logic for countable-pack ingredients ---
+  const handleStartPreparing = async (batch: Batch) => {
+    if (isStartingBatch) return;
     setIsStartingBatch(true);
     try {
       const validationErrors: string[] = [];
-      
       interface StorageUpdateInstruction {
-        item: KitchenStorageItem;
+        item: KitchenStorageItem | null;
         ingredientName: string;
         newQuantity?: number;
+        newOpenContainerRemaining?: number;
+        openContainerUnit?: string;
         addUsedGrams?: number;
         addUsedLiters?: number;
+        freezerUpdates?: { id: string, newPortions: number, portionsToUse: number }[];
       }
       const storageUpdateInstructions: StorageUpdateInstruction[] = [];
-
       interface BatchUpdateInstruction {
         batchToUpdate: Batch;
         newPortions: number;
+        newYield?: number;
       }
       const batchUpdateInstructions: BatchUpdateInstruction[] = [];
 
-      for (const ingredient of batch.ingredients) {
-      if (ingredient.isBatch) {
-        const sourceBatch = batches.find(b => b.id === ingredient.ingredientId);
-        if (!sourceBatch) {
-          validationErrors.push(`Referenced batch not found for ingredient: ${ingredient.ingredientId}`);
-          continue;
-        }
-        if (sourceBatch.status !== 'ready') {
-          validationErrors.push(`Batch "${sourceBatch.name}" must be READY (current status: ${sourceBatch.status}) to use as an ingredient.`);
-          continue;
-        }
-        if (!sourceBatch.portions || sourceBatch.portions < ingredient.requiredQuantity) {
-            validationErrors.push(
-              `Insufficient portions for batch "${sourceBatch?.name || 'Unknown'}": Need ${ingredient.requiredQuantity}, have ${sourceBatch?.portions || 0}`
-            );
+      // Fetch freezer items for backup ingredient checking
+      const { data: freezerItemsData } = await supabase
+        .from("freezer_items")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      for (const ingredient of batch.ingredients as ExtendedBatchIngredient[]) {
+        const ingredientName = getIngredientName(ingredient.ingredientId, ingredient.isBatch);
+        if (ingredient.isBatch) {
+          const sourceBatch = batches.find(b => b.id === ingredient.ingredientId);
+          if (!sourceBatch) {
+            validationErrors.push(`Referenced batch not found for ingredient: ${ingredient.ingredientId}`);
+            continue;
+          }
+          if (sourceBatch.status !== 'ready') {
+            validationErrors.push(`Batch "${sourceBatch.name}" must be READY (current status: ${sourceBatch.status}) to use as an ingredient.`);
+            continue;
+          }
+          // NEW: Support useYield toggle
+          if ((ingredient as ExtendedBatchIngredient).useYield) {
+            const yieldToUse = (ingredient as ExtendedBatchIngredient).yieldAmount ?? 0;
+            const batchYield = sourceBatch.yield ?? 0;
+            if (batchYield < yieldToUse) {
+              validationErrors.push(`Insufficient yield in batch "${sourceBatch.name}": Need ${yieldToUse}${sourceBatch.yield_unit}, have ${batchYield}${sourceBatch.yield_unit}`);
+            } else {
+              batchUpdateInstructions.push({
+                batchToUpdate: sourceBatch,
+                newYield: batchYield - yieldToUse,
+                newPortions: (batchYield - yieldToUse) <= 0 ? 0 : (sourceBatch.portions ?? 0)
+              });
+            }
           } else {
-            batchUpdateInstructions.push({
-              batchToUpdate: sourceBatch,
-              newPortions: sourceBatch.portions - ingredient.requiredQuantity,
-          });
-        }
-      } else {
-            const kitchenItem = kitchenStorage.find(item => item.ingredient_id === ingredient.ingredientId);
-            const inventoryIngredient = inventoryIngredientsList.find(i => i.id.toString() === ingredient.ingredientId);
-            
-        if (!kitchenItem) {
-              const ingredientName = inventoryIngredient?.name || getIngredientName(ingredient.ingredientId);
-              validationErrors.push(`Missing ingredient: ${ingredientName}`);
-              continue;
+            // Default: use portions
+            if (!sourceBatch.portions || sourceBatch.portions < ingredient.requiredQuantity) {
+              validationErrors.push(
+                `Insufficient portions for batch "${sourceBatch?.name || 'Unknown'}": Need ${ingredient.requiredQuantity}, have ${sourceBatch?.portions || 0}`
+              );
+            } else {
+              batchUpdateInstructions.push({
+                batchToUpdate: sourceBatch,
+                newPortions: sourceBatch.portions - ingredient.requiredQuantity,
+                newYield: sourceBatch.yield // unchanged
+              });
             }
-
-            if (!inventoryIngredient) {
-              validationErrors.push(`Ingredient not found in inventory: ${ingredient.ingredientId}`);
-              continue;
-            }
-
-            const ingredientName = inventoryIngredient.name;
-            const requiredUnitInfo = measurementUnits.find(u => u.value === ingredient.unit);
-
-            if (ingredient.unit !== kitchenItem.unit && (requiredUnitInfo?.type === 'weight' || requiredUnitInfo?.type === 'volume')) {
-              if (requiredUnitInfo.type === 'weight') {
-                const requiredGrams = convertUnit(ingredient.requiredQuantity, ingredient.unit, 'g', ingredientName);
-                const totalAvailableInGrams = convertUnit(kitchenItem.quantity, kitchenItem.unit, 'g', ingredientName);
-                const currentUsedGrams = kitchenItem.used_grams || 0;
-                const remainingGrams = totalAvailableInGrams - currentUsedGrams;
-                
-                if (requiredGrams > remainingGrams) {
-                  validationErrors.push(`Insufficient ${ingredientName}: Need ${ingredient.requiredQuantity} ${ingredient.unit} (~${requiredGrams.toFixed(0)}g), but only ~${Math.round(remainingGrams)}g available.`);
+          }
+          continue;
         } else {
-                  storageUpdateInstructions.push({ item: kitchenItem, ingredientName, addUsedGrams: requiredGrams });
-                }
-              } else { // Volume
-                const requiredLiters = convertUnit(ingredient.requiredQuantity, ingredient.unit, 'l', ingredientName);
-                const totalAvailableInLiters = convertUnit(kitchenItem.quantity, kitchenItem.unit, 'l', ingredientName);
-                const currentUsedLiters = kitchenItem.used_liters || 0;
-                const remainingLiters = totalAvailableInLiters - currentUsedLiters;
+          const kitchenItem = kitchenStorage.find(item => item.ingredient_id === ingredient.ingredientId);
+          const inventoryIngredient = inventoryIngredientsList.find(i => i.id.toString() === ingredient.ingredientId);
+          
+          // Check if we need to use freezer items as backup
+          let needsFreezerBackup = false;
+          let freezerBackupAvailable = false;
+          let freezerItemsToUse: { id: string, newPortions: number, portionsToUse: number }[] = [];
 
-                if (requiredLiters > remainingLiters) {
-                  validationErrors.push(`Insufficient ${ingredientName}: Need ${ingredient.requiredQuantity} ${ingredient.unit} (~${requiredLiters.toFixed(2)}l), but only ~${remainingLiters.toFixed(2)}l available.`);
-                } else {
-                  storageUpdateInstructions.push({ item: kitchenItem, ingredientName, addUsedLiters: requiredLiters });
+          if (!kitchenItem || kitchenItem.quantity < ingredient.requiredQuantity) {
+            needsFreezerBackup = true;
+            
+            // Find freezer items for this ingredient
+            const availableFreezerItems = freezerItemsData?.filter((item: any) => 
+              item.ingredient_id === ingredient.ingredientId && 
+              item.number_of_portions > 0
+            ) || [];
+
+            if (availableFreezerItems.length > 0) {
+              // Calculate total available from freezer
+              const totalFreezerYield = availableFreezerItems.reduce((sum: number, item: any) => 
+                sum + (item.number_of_portions * item.yield_per_portion), 0
+              );
+
+              // Convert required quantity to the same unit for comparison
+              let requiredInSameUnit = ingredient.requiredQuantity;
+              if (ingredient.unit !== availableFreezerItems[0]?.unit) {
+                requiredInSameUnit = convertUnit(ingredient.requiredQuantity, ingredient.unit, availableFreezerItems[0].unit, ingredientName);
+              }
+
+              if (totalFreezerYield >= requiredInSameUnit) {
+                freezerBackupAvailable = true;
+                
+                // Calculate how much to take from each freezer item
+                let remainingNeeded = requiredInSameUnit;
+                for (const freezerItem of availableFreezerItems) {
+                  if (remainingNeeded <= 0) break;
+                  
+                  const itemYield = freezerItem.number_of_portions * freezerItem.yield_per_portion;
+                  const toUse = Math.min(remainingNeeded, itemYield);
+                  const portionsToUse = Math.ceil(toUse / freezerItem.yield_per_portion);
+                  
+                  if (portionsToUse > 0) {
+                    freezerItemsToUse.push({
+                      id: freezerItem.id,
+                      newPortions: freezerItem.number_of_portions - portionsToUse,
+                      portionsToUse
+                    });
+                    remainingNeeded -= toUse;
+                  }
                 }
-            }
-          } else {
-              const requiredQuantityInStorageUnit = convertUnit(ingredient.requiredQuantity, ingredient.unit, kitchenItem.unit, ingredientName);
-              if (requiredQuantityInStorageUnit > kitchenItem.quantity) {
-                validationErrors.push(`Insufficient ${ingredientName}: Need ${ingredient.requiredQuantity} ${ingredient.unit}, have ${kitchenItem.quantity} ${kitchenItem.unit}`);
-              } else {
-                storageUpdateInstructions.push({ item: kitchenItem, ingredientName, newQuantity: kitchenItem.quantity - requiredQuantityInStorageUnit });
               }
             }
           }
+
+          if (!kitchenItem) {
+            if (!freezerBackupAvailable) {
+              validationErrors.push(`Missing ingredient: ${ingredientName} (not in kitchen storage or freezer)`);
+            }
+            continue;
+          }
+
+          // --- NEW: If storage is 'bunch' and batch unit is weight, use reference_weight_per_bunch ---
+          if (kitchenItem.unit === 'bunch' && ['g', 'kg'].includes(ingredient.unit)) {
+            const refWeight = kitchenItem.reference_weight_per_bunch;
+            const refUnit = kitchenItem.reference_weight_unit || 'g';
+            if (!refWeight) {
+              validationErrors.push(`No reference weight set for ${ingredientName} (bunch to grams). Please edit kitchen storage to set this value.`);
+              continue;
+            }
+            // Convert batch request to grams if needed
+            let requestedGrams = ingredient.requiredQuantity;
+            if (ingredient.unit === 'kg') requestedGrams *= 1000;
+            // If the reference unit is kg, convert to grams
+            let refWeightInGrams = refWeight;
+            if (refUnit === 'kg') refWeightInGrams = refWeight * 1000;
+
+            // Use open bunch first if available
+            let openRemaining = kitchenItem.open_container_remaining ?? 0;
+            let openUnit = kitchenItem.open_container_unit || 'g';
+            if (openUnit === 'kg') openRemaining *= 1000;
+            let bunches = kitchenItem.quantity;
+            let gramsToDeduct = requestedGrams;
+            let newOpenRemaining = openRemaining;
+            let newBunches = bunches;
+            let usedFromOpen = 0;
+            let usedFromNewBunch = 0;
+
+            if (openRemaining > 0) {
+              if (gramsToDeduct <= openRemaining) {
+                // Use only from open bunch
+                newOpenRemaining = openRemaining - gramsToDeduct;
+                gramsToDeduct = 0;
+                usedFromOpen = requestedGrams;
+              } else {
+                // Use up open bunch, then open new bunches as needed
+                gramsToDeduct -= openRemaining;
+                usedFromOpen = openRemaining;
+                newOpenRemaining = 0;
+              }
+            }
+
+            // If more grams needed, open new bunches
+            while (gramsToDeduct > 0 && newBunches > 0) {
+              if (gramsToDeduct >= refWeightInGrams) {
+                gramsToDeduct -= refWeightInGrams;
+                newBunches -= 1;
+                usedFromNewBunch += refWeightInGrams;
+                newOpenRemaining = 0;
+              } else {
+                // Open a new bunch, use part of it, set the rest as open
+                newBunches -= 1;
+                newOpenRemaining = refWeightInGrams - gramsToDeduct;
+                usedFromNewBunch += gramsToDeduct;
+                gramsToDeduct = 0;
+              }
+            }
+
+            if (gramsToDeduct > 0) {
+              validationErrors.push(`Not enough bunches of ${ingredientName}: Need more to fulfill ${requestedGrams}g, have only ${(bunches * refWeightInGrams + openRemaining)}g`);
+              continue;
+            }
+
+            storageUpdateInstructions.push({
+              item: kitchenItem,
+              ingredientName,
+              newQuantity: newBunches,
+              newOpenContainerRemaining: newOpenRemaining,
+              openContainerUnit: 'g',
+            });
+            continue;
+          }
+          // --- END NEW ---
+
+          const countableUnits = ["piece", "pieces", "bunch", "tray", "pack", "packet", "pcs"];
+          const isCountable = countableUnits.includes(kitchenItem.unit.toLowerCase());
+          const isWeight = ["kg", "g"].includes(kitchenItem.unit.toLowerCase());
+          const isVolume = ["l", "ml"].includes(kitchenItem.unit.toLowerCase());
+
+          // If storage is countable and batch unit is weight/volume, use open_container_remaining logic
+          if (isCountable && (["kg", "g", "l", "ml"].includes(ingredient.unit)) && kitchenItem.unit !== 'bunch') {
+            // Extract pack size in requested unit (e.g., grams or ml)
+            const packSize = extractPackSize(inventoryIngredient?.name || ingredientName, ingredient.unit);
+            if (!packSize) {
+              validationErrors.push(`Cannot determine pack size for ${ingredientName}`);
+              continue;
+            }
+            // Convert everything to the base unit (g or ml) only if needed
+            let requested = ingredient.requiredQuantity;
+            let openRemaining = kitchenItem.open_container_remaining ?? 0;
+            let openUnit = kitchenItem.open_container_unit || ingredient.unit;
+            
+            // Only convert if units don't match
+            if (ingredient.unit !== openUnit) {
+              if ((ingredient.unit === 'g' || ingredient.unit === 'ml') && openUnit === 'kg') openRemaining *= 1000;
+              if ((ingredient.unit === 'g' || ingredient.unit === 'ml') && openUnit === 'l') openRemaining *= 1000;
+            }
+            
+            let packs = kitchenItem.quantity;
+            let toDeduct = requested;
+            let newOpenRemaining = openRemaining;
+            let newPacks = packs;
+            let usedFromOpen = 0;
+            let usedFromNewPack = 0;
+
+            if (openRemaining > 0) {
+              if (toDeduct <= openRemaining) {
+                // Use only from open pack
+                newOpenRemaining = openRemaining - toDeduct;
+                toDeduct = 0;
+                usedFromOpen = requested;
+              } else {
+                // Use up open pack, then open new packs as needed
+                toDeduct -= openRemaining;
+                usedFromOpen = openRemaining;
+                newOpenRemaining = 0;
+              }
+            }
+
+            // If more needed, open new packs
+            while (toDeduct > 0 && newPacks > 0) {
+              if (toDeduct >= packSize) {
+                toDeduct -= packSize;
+                newPacks -= 1; // Always decrement quantity for each new pack opened
+                usedFromNewPack += packSize;
+                newOpenRemaining = 0;
+              } else {
+                // Open a new pack, use part of it, set the rest as open
+                newPacks -= 1; // Always decrement quantity for each new pack opened
+                newOpenRemaining = packSize - toDeduct;
+                usedFromNewPack += toDeduct;
+                toDeduct = 0;
+              }
+            }
+
+            if (toDeduct > 0) {
+              validationErrors.push(`Not enough packs of ${ingredientName}: Need more to fulfill ${requested} ${ingredient.unit}, have only ${(packs * packSize + openRemaining)} ${ingredient.unit}`);
+              continue;
+            }
+
+            storageUpdateInstructions.push({
+              item: kitchenItem,
+              ingredientName,
+              newQuantity: newPacks,
+              newOpenContainerRemaining: newOpenRemaining,
+              openContainerUnit: ingredient.unit,
+            });
+            continue;
+          }
+
+          // ... existing logic for weight/volume ...
+          if (isWeight || isVolume) {
+            let requestedInStorageUnit = convertUnit(ingredient.requiredQuantity, ingredient.unit, kitchenItem.unit, ingredientName);
+            
+            // Check if we need freezer backup
+            if (requestedInStorageUnit > kitchenItem.quantity) {
+              if (!freezerBackupAvailable) {
+                validationErrors.push(`Insufficient ${ingredientName}: Need ${ingredient.requiredQuantity} ${ingredient.unit} (${requestedInStorageUnit}${kitchenItem.unit}), have ${kitchenItem.quantity}${kitchenItem.unit}`);
+              } else {
+                // Use what's available in kitchen storage, rest from freezer
+                const availableFromKitchen = kitchenItem.quantity;
+                const neededFromFreezer = requestedInStorageUnit - availableFromKitchen;
+                
+                storageUpdateInstructions.push({ 
+                  item: kitchenItem, 
+                  ingredientName, 
+                  newQuantity: 0,
+                  freezerUpdates: freezerItemsToUse
+                });
+              }
+            } else {
+              storageUpdateInstructions.push({ item: kitchenItem, ingredientName, newQuantity: kitchenItem.quantity - requestedInStorageUnit });
+            }
+            continue;
+          }
+
+          // ... fallback ...
+          const requiredQuantityInStorageUnit = convertUnit(ingredient.requiredQuantity, ingredient.unit, kitchenItem.unit, ingredientName);
+          if (requiredQuantityInStorageUnit > kitchenItem.quantity) {
+            if (!freezerBackupAvailable) {
+              validationErrors.push(`Insufficient ${ingredientName}: Need ${ingredient.requiredQuantity} ${ingredient.unit}, have ${kitchenItem.quantity} ${kitchenItem.unit}`);
+            } else {
+              // Use what's available in kitchen storage, rest from freezer
+              const availableFromKitchen = kitchenItem.quantity;
+              const neededFromFreezer = requiredQuantityInStorageUnit - availableFromKitchen;
+              
+              storageUpdateInstructions.push({ 
+                item: kitchenItem, 
+                ingredientName, 
+                newQuantity: 0,
+                freezerUpdates: freezerItemsToUse
+              });
+            }
+          } else {
+            storageUpdateInstructions.push({ item: kitchenItem, ingredientName, newQuantity: kitchenItem.quantity - requiredQuantityInStorageUnit });
+          }
         }
+      }
 
       if (validationErrors.length > 0) {
-        toast({ title: "Cannot Start Batch", description: validationErrors.join('\\n'), variant: "destructive" });
-      return;
-    }
+        toast({ title: "Cannot Start Batch", description: validationErrors.join('\n'), variant: "destructive" });
+        setIsStartingBatch(false);
+        return;
+      }
 
       const updatePromises: Promise<any>[] = [];
       const updateLogs: string[] = [];
+      const freezerUpdatePromises: Promise<any>[] = [];
 
       for (const instruction of storageUpdateInstructions) {
-        const { item, ingredientName, newQuantity, addUsedGrams, addUsedLiters } = instruction;
-        const updatedItem = {
-          id: item.id,
-          ingredient_id: item.ingredient_id,
-          quantity: newQuantity !== undefined ? newQuantity : item.quantity,
-          unit: item.unit,
-          used_grams: (item.used_grams || 0) + (addUsedGrams || 0),
-          used_liters: (item.used_liters || 0) + (addUsedLiters || 0),
-          last_updated: new Date().toISOString()
-        };
-        updatePromises.push(upsertKitchenStorage(updatedItem));
-        if (newQuantity !== undefined) updateLogs.push(`Updated ${ingredientName}: ${item.quantity} → ${newQuantity.toFixed(2)} ${item.unit}`);
-        if (addUsedGrams) updateLogs.push(`Used ${addUsedGrams.toFixed(2)}g of ${ingredientName}`);
-        if (addUsedLiters) updateLogs.push(`Used ${addUsedLiters.toFixed(2)}l of ${ingredientName}`);
+        if (instruction.item) {
+          const { item, ingredientName, newQuantity, newOpenContainerRemaining, openContainerUnit, addUsedGrams, addUsedLiters, freezerUpdates } = instruction;
+          const updatedItem = {
+            ...item,
+            quantity: newQuantity !== undefined ? newQuantity : item.quantity,
+            open_container_remaining: newOpenContainerRemaining !== undefined ? newOpenContainerRemaining : item.open_container_remaining,
+            open_container_unit: openContainerUnit || item.open_container_unit,
+            used_grams: (item.used_grams || 0) + (addUsedGrams || 0),
+            used_liters: (item.used_liters || 0) + (addUsedLiters || 0),
+            last_updated: new Date().toISOString()
+          };
+          updatePromises.push(upsertKitchenStorage(updatedItem));
+          if (newQuantity !== undefined) updateLogs.push(`Updated ${ingredientName}: ${item.quantity} → ${newQuantity} ${item.unit}`);
+          if (newOpenContainerRemaining !== undefined) updateLogs.push(`Open pack of ${ingredientName} now has ${newOpenContainerRemaining}${openContainerUnit}`);
+          if (addUsedGrams) updateLogs.push(`Used ${addUsedGrams}g of ${ingredientName}`);
+          if (addUsedLiters) updateLogs.push(`Used ${addUsedLiters}l of ${ingredientName}`);
+          
+          // Handle freezer updates
+          if (freezerUpdates) {
+            for (const freezerUpdate of freezerUpdates) {
+              freezerUpdatePromises.push(
+                (async () => {
+                  try {
+                    await supabase
+                      .from('freezer_items')
+                      .update({ 
+                        number_of_portions: freezerUpdate.newPortions 
+                      })
+                      .eq('id', freezerUpdate.id);
+                    updateLogs.push(`Used ${freezerUpdate.portionsToUse} portions from freezer for ${ingredientName}`);
+                  } catch (error) {
+                    console.error("Error updating freezer item:", error);
+                  }
+                })()
+              );
+            }
+          }
+        }
       }
 
       for (const instruction of batchUpdateInstructions) {
-        const { batchToUpdate, newPortions } = instruction;
-        const updatedSourceBatch = { ...batchToUpdate, portions: newPortions };
+        const { batchToUpdate, newPortions, newYield } = instruction;
+        const updatedSourceBatch = { ...batchToUpdate };
+        if (typeof newPortions === 'number') updatedSourceBatch.portions = newPortions;
+        if (typeof newYield === 'number') updatedSourceBatch.yield = newYield;
         updatePromises.push(upsertBatch(updatedSourceBatch));
-        updateLogs.push(`Used ${(batchToUpdate.portions || 0) - newPortions} portions from batch "${batchToUpdate.name}"`);
+        updateLogs.push(`Used from batch "${batchToUpdate.name}": ${typeof newYield === 'number' && batchToUpdate.yield !== undefined ? `${(batchToUpdate.yield ?? 0) - newYield}${batchToUpdate.yield_unit}` : `${(batchToUpdate.portions ?? 0) - (newPortions ?? 0)} portions`}`);
       }
 
       const updatedBatch = {
-          ...batch,
+        ...batch,
         status: "preparing" as const,
         start_time: new Date().toISOString(),
       };
       updatePromises.push(upsertBatch(updatedBatch));
 
-      await Promise.all(updatePromises);
+      // Execute all updates including freezer updates
+      await Promise.all([...updatePromises, ...freezerUpdatePromises]);
 
       // To ensure UI consistency, we refetch the affected data after all updates are made.
       const [updatedKitchenStorage, updatedBatchesData] = await Promise.all([
@@ -1326,14 +1718,8 @@ export function CorrectedKitchenManager() {
       });
 
     } catch (error) {
-      console.error("Error starting batch:", error);
-      toast({
-        title: "Error Starting Batch",
-        description: "Failed to start batch preparation. Please try again.",
-        variant: "destructive"
-      });
-    } finally {
       setIsStartingBatch(false);
+      toast({ title: "Error Starting Batch", description: "Failed to start batch preparation. Please try again.", variant: "destructive" });
     }
   };
 
@@ -1534,18 +1920,20 @@ export function CorrectedKitchenManager() {
   const handleRestockBatch = async (batch: Batch) => {
     toast({
       title: "Restocking Batch",
-      description: `Refreshing batch "${batch.name}". Portions reset to original value.`,
+      description: `Refreshing batch "${batch.name}". Portions and yield reset to original values.`,
     });
 
     // Update the existing batch in-place
     const restockPortions = batch.original_portions || batch.portions || 0;
+    const restockYield = batch.original_yield || batch.yield || 0;
     const updatedBatch: Batch = {
       ...batch,
       status: "draft",
       start_time: undefined,
       end_time: undefined,
       portions: restockPortions,
-      // original_portions remains unchanged
+      yield: restockYield,
+      // original_portions and original_yield remain unchanged
     };
     await upsertBatch(updatedBatch);
     setShowBatchDetailsDialog(false);
@@ -1887,7 +2275,7 @@ export function CorrectedKitchenManager() {
   const renderNewBatchDialog = () => {
     return (
       <Dialog open={showNewBatchDialog} onOpenChange={setShowNewBatchDialog}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-3xl min-w-[600px] max-h-[90vh] overflow-y-auto">
               <DialogHeader>
             <DialogTitle>Create New Batch</DialogTitle>
               </DialogHeader>
@@ -1990,122 +2378,154 @@ export function CorrectedKitchenManager() {
 
                   <ScrollArea className="h-[300px] pr-4">
                     <div className="space-y-4">
-                      {selectedIngredients.map((ingredient) => {
-                        const isBatch = ingredient.isBatch;
-                        const batch = isBatch ? batches.find(b => b.id === ingredient.ingredientId) : null;
-                        const kitchenItem = !isBatch ? storage.find(item => item.ingredientId === ingredient.ingredientId) : null;
-                        const ingredientName = !isBatch ? getIngredientName(ingredient.ingredientId) : batch?.name || '';
-                        const availableQuantity = isBatch ? (batch?.portions || 0) : (kitchenItem?.quantity || 0);
-                        
-                        // Calculate the storage unit equivalent with special handling for pieces
-                        const storageUnitEquivalent = !isBatch && kitchenItem ? 
-                          (kitchenItem.unit === 'pcs' ? 
-                            convertUnit(ingredient.requiredQuantity, ingredient.unit, 'g', ingredientName) : 
-                            convertUnit(ingredient.requiredQuantity, ingredient.unit, kitchenItem.unit)) : 
-                          ingredient.requiredQuantity;
-                        
-                        // Get the gram amount from ingredient name if it exists
-                        const gramAmount = !isBatch ? extractGramAmount(ingredientName) : null;
-                        
-                        const unitHasChanged = !isBatch && kitchenItem && ingredient.unit !== kitchenItem.unit;
-
-                        const unitBadge = unitHasChanged ? (
-                          <Badge variant="outline" className="ml-2 text-xs font-normal">
-                            {ingredient.requiredQuantity}{ingredient.unit} used
-                          </Badge>
-                        ) : null;
+                      {(selectedIngredients as ExtendedBatchIngredient[]).map((ingredient, idx) => {
+                        const isBatch = ingredient.isBatch
+                        const batch = isBatch ? batches.find(b => b.id === ingredient.ingredientId) : null
+                        const kitchenItem = !isBatch ? storage.find(item => item.ingredientId === ingredient.ingredientId) : null
+                        const ingredientName = isBatch ? batch?.name || "Unknown Batch" : getIngredientName(ingredient.ingredientId)
                         
                         return (
                           <div 
                             key={`${isBatch ? 'batch-' : 'ingredient-'}${ingredient.ingredientId}`} 
-                            className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 bg-muted/50 rounded-lg gap-4"
+                            className="flex flex-col sm:flex-row sm:items-center p-4 bg-muted/50 rounded-lg gap-2 sm:gap-4"
                           >
-                            <div className="flex-1 min-w-0">
-                              <p className="font-medium truncate flex items-center">
+                            {/* Name and Remove button, always visible and aligned */}
+                            <div className="flex flex-row items-center gap-2 flex-shrink-0 min-w-[180px] max-w-[340px]">
+                              <span className="font-medium truncate break-words flex items-center">
                                 {ingredientName}
                                 {isBatch && (
                                   <Badge variant="outline" className="ml-2 text-xs">
                                     Batch
                                   </Badge>
                                 )}
-                                {unitBadge}
-                              </p>
-                              <p className="text-sm text-muted-foreground">
-                                Required: {ingredient.requiredQuantity} {ingredient.unit}
-                                {!isBatch && kitchenItem && (
-                                  <span className="ml-2">
-                                    (Available: {kitchenItem.quantity} {kitchenItem.unit}
-                                    {gramAmount && ` - ${gramAmount}g total`})
                                   </span>
-                                )}
-                              </p>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 flex-shrink-0"
+                                onClick={() => {
+                                  setSelectedIngredients(
+                                    selectedIngredients.filter(
+                                      (i) => !(i.ingredientId === ingredient.ingredientId && i.isBatch === isBatch),
+                                    ),
+                                  )
+                                }}
+                              >
+                                <Trash2 className="h-4 w-4 text-red-500" />
+                              </Button>
                             </div>
-                            <div className="flex items-center gap-2 w-full sm:w-auto">
+
+                            {/* Inputs and Toggles, always next to the name on desktop */}
+                            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 w-full">
+                              {isBatch && batch ? (
+                                // BATCH INGREDIENT UI
+                                <div className="w-full space-y-3">
+                                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                    <span>Available:</span>
+                                    <span>{batch.portions} portions / {batch.yield} {batch.yield_unit}</span>
+                                  </div>
+                                  <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 w-full">
+                                    <Label className="text-sm">Use:</Label>
+                                    <div className="flex flex-row gap-2 w-full">
+                                      {ingredient.useYield ? (
+                                        <Input
+                                          type="number"
+                                          min={0}
+                                          max={batch.yield || 0}
+                                          value={ingredient.yieldAmount || ""}
+                                          onChange={e => {
+                                            const value = e.target.value
+                                            setSelectedIngredients(
+                                              selectedIngredients.map((i, iidx) =>
+                                                iidx === idx
+                                                  ? { ...i, yieldAmount: value === "" ? undefined : parseFloat(value) }
+                                                  : i,
+                                              ),
+                                            )
+                                          }}
+                                          className="w-16"
+                                          placeholder={`Yield (${batch.yield_unit})`}
+                                        />
+                                      ) : (
+                                        <Input
+                                          type="number"
+                                          min="0"
+                                          step="1"
+                                          value={ingredient.requiredQuantity || ""}
+                                          onChange={e => {
+                                            const value = e.target.value
+                                            const newQuantity = value === "" ? 0 : parseInt(value, 10)
+                                            setSelectedIngredients(
+                                              selectedIngredients.map((i, iidx) =>
+                                                iidx === idx ? { ...i, requiredQuantity: newQuantity } : i,
+                                              ),
+                                            )
+                                          }}
+                                          className="w-16"
+                                          placeholder="Portions"
+                                        />
+                                      )}
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => {
+                                          setSelectedIngredients(
+                                            selectedIngredients.map((i, iidx) =>
+                                              iidx === idx ? { ...i, useYield: !ingredient.useYield } : i,
+                                            ),
+                                          )
+                                        }}
+                                        className="min-w-[80px]"
+                                      >
+                                        {ingredient.useYield ? "portions" : batch.yield_unit}
+                                      </Button>
+                            </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                // REGULAR INGREDIENT UI
+                                <div className="flex flex-row gap-2 w-full items-center">
                               <Input
-                                name="forBamci"
                                 type="number"
                                 value={ingredient.requiredQuantity || ""}
-                                onChange={(e) => {
-                                  const value = e.target.value;
-                                  const newQuantity = value === "" ? 0 : parseFloat(value);
-                                  
-                                  // Simply update the quantity without any validation
+                                onChange={e => {
+                                  const value = e.target.value
+                                  const newQuantity = value === "" ? 0 : parseFloat(value)
                                   setSelectedIngredients(
-                                    selectedIngredients.map((i) =>
-                                      i.ingredientId === ingredient.ingredientId && i.isBatch === isBatch
-                                        ? { ...i, requiredQuantity: newQuantity }
-                                        : i
-                                    )
-                                  );
+                                    selectedIngredients.map((i, iidx) =>
+                                      iidx === idx ? { ...i, requiredQuantity: newQuantity } : i,
+                                    ),
+                                  )
                                 }}
-                                className="w-24"
+                                className="w-20 sm:w-24"
                                 min="0"
                                 step="any"
+                                placeholder="Quantity"
                               />
-                              {!isBatch && (
                                 <Select
                                   value={ingredient.unit}
-                                  onValueChange={(value) => {
+                                  onValueChange={value => {
                                     setSelectedIngredients(
-                                      selectedIngredients.map((i) =>
-                                        i.ingredientId === ingredient.ingredientId && i.isBatch === isBatch
-                                          ? { ...i, unit: value }
-                                          : i
+                                      selectedIngredients.map((i, iidx) => (iidx === idx ? { ...i, unit: value } : i)),
                                       )
-                                    );
                                   }}
                                 >
-                                  <SelectTrigger className="w-[100px]">
+                                  <SelectTrigger className="w-24 sm:w-28">
                                     <SelectValue placeholder="Unit" />
                                   </SelectTrigger>
                                   <SelectContent>
-                                    {measurementUnits.map((unit) => (
+                                    {measurementUnits.map(unit => (
                                       <SelectItem key={unit.value} value={unit.value}>
                                         {unit.label}
                                       </SelectItem>
                                     ))}
                                   </SelectContent>
                                 </Select>
+                                </div>
                               )}
-                              {isBatch && (
-                                <span className="text-sm text-muted-foreground">portions</span>
-                              )}
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => {
-                                  setSelectedIngredients(
-                                    selectedIngredients.filter(
-                                      (i) => i.ingredientId !== ingredient.ingredientId || i.isBatch !== isBatch
-                                    )
-                                  );
-                                }}
-                              >
-                                <Trash2 className="h-4 w-4 text-red-500" />
-                              </Button>
                             </div>
                           </div>
-                        );
+                        )
                       })}
                       {selectedIngredients.length === 0 && (
                         <div className="text-center py-8 text-muted-foreground">
@@ -2201,20 +2621,26 @@ export function CorrectedKitchenManager() {
   // Add state for import dialog search
   const [importSearchQuery, setImportSearchQuery] = useState("")
 
+  const { suppliers } = useSuppliers();
+
   // Update the Import Ingredients Dialog section
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
               <div>
           <h2 className="text-2xl font-bold">Kitchen Management</h2>
           <p className="text-sm text-muted-foreground">
-            Import ingredients from main inventory and manage batch preparation
+            Import ingredients, manage deliveries, and prepare batches.
                       </p>
               </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={handleOpenImportDialog}>
             <ArrowUpDown className="h-4 w-4 mr-2" />
             Import Ingredients
+          </Button>
+          <Button variant="outline" onClick={() => setShowSupplierDelivery(true)}>
+            <Package className="h-4 w-4 mr-2" />
+            Supplier Delivery
           </Button>
           <Button onClick={() => setShowNewBatchDialog(true)}>
             <ChefHat className="h-4 w-4 mr-2" />
@@ -2229,6 +2655,8 @@ export function CorrectedKitchenManager() {
           <TabsTrigger value="batches">Batches</TabsTrigger>
           <TabsTrigger value="recipes">Recipes</TabsTrigger>
           <TabsTrigger value="wastage">Wastage</TabsTrigger>
+          <TabsTrigger value="freezer">Freezer</TabsTrigger>
+          <TabsTrigger value="cooked-freezer">Cooked Freezer</TabsTrigger>
         </TabsList>
 
         <TabsContent value="storage">
@@ -2238,43 +2666,7 @@ export function CorrectedKitchenManager() {
         </CardHeader>
         <CardContent>
               {/* Filters and Search for Kitchen Storage */}
-              <div className="flex flex-col md:flex-row md:items-center gap-2 mb-4">
-                <Input
-                  type="text"
-                  placeholder="Search ingredients..."
-                  value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                  className="w-full md:w-64"
-                />
-                <Select
-                  value={selectedCategory}
-                  onValueChange={setSelectedCategory}
-                >
-                  <SelectTrigger className="w-[180px]">
-                    <SelectValue placeholder="Category" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Categories</SelectItem>
-                    {categories.map((cat) => (
-                      <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Select
-                  value={selectedStockStatus}
-                  onValueChange={setSelectedStockStatus}
-                >
-                  <SelectTrigger className="w-[180px]">
-                    <SelectValue placeholder="Stock Status" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Stock Statuses</SelectItem>
-                    {/* <SelectItem value="available">Available</SelectItem> */}
-                    <SelectItem value="low">Low Stock</SelectItem>
-                    <SelectItem value="out">Out of Stock</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+              
               {/* Show loading spinner or message if ingredients are not loaded */}
               {isLoadingIngredients ? (
                 <div className="flex items-center justify-center py-8">
@@ -2282,69 +2674,13 @@ export function CorrectedKitchenManager() {
                   <span>Loading ingredients...</span>
                 </div>
               ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Ingredient</TableHead>
-                    <TableHead>Quantity</TableHead>
-                          <TableHead>Unit</TableHead>
-                  <TableHead>Status</TableHead>
-                    <TableHead>Last Updated</TableHead>
-                  <TableHead>Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                    {kitchenStorage
-                      .filter(item => {
-                        const ingredient = inventoryIngredientsList.find(i => i.id.toString() === item.ingredient_id)
-                        const matchesSearch = !searchQuery || (ingredient && ingredient.name.toLowerCase().includes(searchQuery.toLowerCase()))
-                        const matchesCategory = selectedCategory === "all" || (ingredient && ingredient.category === selectedCategory)
-                        // Stock status logic
-                        let matchesStock = true;
-                        const threshold = ingredient?.threshold ?? 5;
-                        if (selectedStockStatus === "available") {
-                          matchesStock = item.quantity > threshold;
-                        } else if (selectedStockStatus === "low") {
-                          matchesStock = item.quantity > 0 && item.quantity <= threshold;
-                        } else if (selectedStockStatus === "out") {
-                          matchesStock = item.quantity === 0;
-                        }
-                        return matchesSearch && matchesCategory && matchesStock;
-                      })
-                      .map((item) => (
-                        <TableRow key={item.id}>
-                        <TableCell>
-                          <div className="flex items-center space-x-2">
-                              <span>{getIngredientName(item.ingredient_id)}</span>
-                            {(item.used_grams || 0) > 0 && (
-                              <Badge variant="secondary" className="text-xs">
-                                Used: {(item.used_grams || 0).toFixed(2)}g
-                              </Badge>
-                            )}
-                            {(item.used_liters || 0) > 0 && (
-                              <Badge variant="secondary" className="text-xs">
-                                Used: {(item.used_liters || 0).toFixed(2)}l
-                              </Badge>
-                            )}
-                          </div>
-                        </TableCell>
-                      <TableCell>{item.quantity}</TableCell>
-                      <TableCell>{item.unit}</TableCell>
-                      <TableCell>{getStorageStatusBadge(item)}</TableCell>
-                          <TableCell>{formatDateSafe(item.last_updated)}</TableCell>
-                    <TableCell>
-                      <Button
-                          variant="outline"
-                        size="sm"
-                          onClick={() => handleRequestMore(item)}
-                      >
-                          Request More
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                    ))}
-              </TableBody>
-            </Table>
+            <KitchenStorageTable
+              kitchenStorage={kitchenStorage}
+              inventoryIngredientsList={inventoryIngredientsList}
+              freezerItems={freezerItems}
+              getIngredientName={getIngredientName}
+              onRequestMore={handleRequestMore}
+            />
               )}
         </CardContent>
       </Card>
@@ -2528,128 +2864,40 @@ export function CorrectedKitchenManager() {
           />
         </TabsContent>
 
+        <TabsContent value="freezer">
+          <FreezerManager kitchenStorage={kitchenStorage} getIngredientName={getIngredientName} onItemsChange={setFreezerItems} />
+        </TabsContent>
+
+        <TabsContent value="cooked-freezer">
+          <CookedFreezerManager 
+            batches={batches.map(batch => ({
+              id: batch.id,
+              name: batch.name,
+              portions: batch.portions ?? 0,
+              yield: batch.yield ?? 0,
+              yield_unit: batch.yield_unit ?? 'g',
+              status: batch.status
+            }))} 
+            onItemsChange={setCookedFreezerItems} 
+          />
+        </TabsContent>
+
               </Tabs>
 
       {/* New Batch Dialog */}
       {renderNewBatchDialog()}
 
       {/* Import Ingredients Dialog */}
-      <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-                            <DialogHeader>
-            <DialogTitle>Import Ingredients</DialogTitle>
-            <DialogDescription>
-              Select ingredients to import from the main inventory to kitchen storage.
-            </DialogDescription>
-                            </DialogHeader>
-                              <div className="space-y-4">
-            {isLoadingIngredients ? (
-              <div className="flex items-center justify-center py-8">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
-              </div>
-            ) : (
-              <>
-                <div className="mb-4">
-                  <Input
-                    type="text"
-                    placeholder="Search ingredients..."
-                    value={importSearchQuery}
-                    onChange={e => setImportSearchQuery(e.target.value)}
-                  />
-                </div>
-            <ScrollArea className="h-[400px] pr-4">
-              <div className="grid gap-4">
-                    {inventoryIngredientsList
-                      .filter(ingredient => ingredient.name.toLowerCase().includes(importSearchQuery.toLowerCase()))
-                      .map((ingredient) => {
-                        const stock = ingredient.current_stock ?? ingredient.available_quantity ?? 0;
-                        return (
-                  <div key={ingredient.id} className="flex items-center space-x-4">
-                    <Checkbox
-                      id={`ingredient-${ingredient.id}`}
-                      checked={selectedIngredients.some(
-                        (i) => i.ingredientId === ingredient.id.toString()
-                      )}
-                              disabled={Number(stock) <= 0}
-                      onCheckedChange={(checked: boolean) => {
-                        if (checked) {
-                          setSelectedIngredients([
-                            ...selectedIngredients,
-                            {
-                              ingredientId: ingredient.id.toString(),
-                              requiredQuantity: 1,
-                              unit: ingredient.unit,
-                              status: "available"
-                            },
-                          ])
-                        } else {
-                          setSelectedIngredients(
-                            selectedIngredients.filter(
-                              (i) => i.ingredientId !== ingredient.id.toString()
-                            )
-                          )
-                        }
-                      }}
-                    />
-                    <div className="flex-1">
-                      <Label 
-                        htmlFor={`ingredient-${ingredient.id}`}
-                                className={Number(stock) <= 0 ? "text-muted-foreground" : ""}
-                      >
-                        {ingredient.name}
-                      </Label>
-                              <p className={`text-sm ${Number(stock) > 0 ? "text-muted-foreground" : "text-red-500"}`}>
-                                {Number(stock) > 0
-                                  ? `Available: ${stock} ${ingredient.unit || ""}`
-                                  : "Out of stock"}
-                                      </p>
-                                    </div>
-                    {selectedIngredients.some(i => i.ingredientId === ingredient.id.toString()) && (
-                      <div className="flex items-center gap-2">
-                        <Input
-                          type="number"
-                          min="0"
-                          step="any"
-                          value={selectedIngredients.find(i => i.ingredientId === ingredient.id.toString())?.requiredQuantity || ""}
-                          onChange={(e) => {
-                            const value = e.target.value;
-                            const newQuantity = value === "" ? 0 : parseFloat(value);
-                            if (value === "" || (newQuantity > 0 && newQuantity <= Number(stock))) {
-                              setSelectedIngredients(
-                                selectedIngredients.map(i =>
-                                  i.ingredientId === ingredient.id.toString()
-                                    ? { ...i, requiredQuantity: newQuantity }
-                                    : i
-                                )
-                              )
-                            }
-                          }}
-                          className="w-24"
-                        />
-                                <span className="text-sm text-muted-foreground">{ingredient.unit || ""}</span>
-                                  </div>
-                    )}
-              </div>
-                        )
-                      })}
-            </div>
-            </ScrollArea>
-              </>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowImportDialog(false)}>
-              Cancel
-            </Button>
-            <Button 
-              onClick={handleImportIngredients}
-              disabled={selectedIngredients.length === 0 || isLoadingIngredients || isImporting}
-            >
-              {isImporting ? "Importing..." : "Import Selected"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ImportIngredientsDialog
+        open={showImportDialog}
+        onOpenChange={setShowImportDialog}
+        inventoryIngredientsList={inventoryIngredientsList}
+        kitchenStorage={kitchenStorage}
+        setKitchenStorage={setKitchenStorage}
+        fetchIngredients={fetchIngredients}
+        upsertKitchenStorage={upsertKitchenStorage}
+        toast={toast}
+      />
 
       {/* Request More Dialog */}
       <Dialog open={showRequestDialog} onOpenChange={(open) => {
@@ -2732,7 +2980,7 @@ export function CorrectedKitchenManager() {
 
       {/* Batch Ingredients Selection Dialog */}
       <Dialog open={showBatchIngredientsDialog} onOpenChange={setShowBatchIngredientsDialog}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-3xl min-w-[600px] max-h-[90vh] overflow-y-auto">
                             <DialogHeader>
             <DialogTitle>Select Ingredients and Batches</DialogTitle>
             <DialogDescription>
@@ -2915,7 +3163,7 @@ export function CorrectedKitchenManager() {
 
       {/* Add Batch Details Dialog */}
       <Dialog open={showBatchDetailsDialog} onOpenChange={setShowBatchDetailsDialog}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-3xl min-w-[600px] max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Batch Details</DialogTitle>
             <DialogDescription>
@@ -2948,6 +3196,56 @@ export function CorrectedKitchenManager() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <SupplierDeliveryDialog
+        open={showSupplierDelivery}
+        onOpenChange={setShowSupplierDelivery}
+        ingredients={inventoryIngredientsList}
+        suppliers={suppliers}
+        onDeliverySuccess={refreshKitchenData}
+      />
+
+      {/* Reference Weight Prompt Dialog */}
+      <Dialog open={showReferenceWeightDialog} onOpenChange={setShowReferenceWeightDialog}>
+        <DialogContent className="max-w-md w-full">
+          <DialogHeader>
+            <DialogTitle>Set Conversion for Bunch</DialogTitle>
+            <DialogDescription>
+              {referenceWeightIngredient && (
+                <>How many grams are in <span className="font-semibold">one bunch</span> of <span className="font-semibold">{referenceWeightIngredient.name}</span>?</>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-4 py-4">
+            <div className="flex items-center gap-2">
+              <Input
+                type="number"
+                min="1"
+                value={referenceWeightValue}
+                onChange={e => setReferenceWeightValue(e.target.value)}
+                placeholder="e.g. 30"
+                className="w-32"
+              />
+              <Select value={referenceWeightUnit} onValueChange={setReferenceWeightUnit}>
+                <SelectTrigger className="w-24">
+                  <SelectValue placeholder="Unit" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="g">Grams (g)</SelectItem>
+                  <SelectItem value="kg">Kilograms (kg)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="text-muted-foreground text-sm">This value will be used to convert bunches to grams for batch preparation and deduction.</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowReferenceWeightDialog(false)}>Cancel</Button>
+            <Button onClick={handleReferenceWeightSubmit} disabled={!referenceWeightValue || parseFloat(referenceWeightValue) <= 0}>Save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
+
+// Add state for reference weight prompt at the top of the component

@@ -177,7 +177,7 @@ export const KitchenStorageTable: React.FC<KitchenStorageTableProps> = ({
                         {frozenTotal} {item.unit} frozen
                       </Badge>
                     )}
-                    {(item.used_grams || 0) > 0 && (
+                    {/* {(item.used_grams || 0) > 0 && (
                       <Badge variant="secondary" className="text-xs">
                         Used: {(item.used_grams || 0).toFixed(2)}g
                       </Badge>
@@ -186,7 +186,7 @@ export const KitchenStorageTable: React.FC<KitchenStorageTableProps> = ({
                       <Badge variant="secondary" className="text-xs">
                         Used: {(item.used_liters || 0).toFixed(2)}l
                       </Badge>
-                    )}
+                    )} */}
                   </div>
                 </TableCell>
                 <TableCell>

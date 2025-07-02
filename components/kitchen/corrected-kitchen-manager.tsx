@@ -204,7 +204,7 @@ const extractVolumeInMl = (ingredientName: string): number | null => {
 }
 
 // Update the convertUnit function to properly handle piece-to-gram conversions
-const convertUnit = (value: number, fromUnit: string, toUnit: string, ingredientName?: string): number => {
+export const convertUnit = (value: number, fromUnit: string, toUnit: string, ingredientName?: string): number => {
   // Common conversion factors
   const conversions: { [key: string]: { [key: string]: number } } = {
     'g': {
@@ -1988,7 +1988,7 @@ const handleReferenceWeightSubmit = async () => {
               Restock Batch
             </Button>
           )}
-          {(batch.status === "ready" || batch.status === "preparing" || batch.status === "completed") && batch.portions && batch.portions > 0 && (
+          {/* {(batch.status === "ready" || batch.status === "preparing" || batch.status === "completed") && batch.portions && batch.portions > 0 && (
             <Button
               variant="outline"
               onClick={() => {
@@ -2001,7 +2001,7 @@ const handleReferenceWeightSubmit = async () => {
               <Trash2 className="h-4 w-4 mr-2" />
               Report Wastage
             </Button>
-          )}
+          )} */}
         </DialogFooter>
                       </div>
     )

@@ -315,15 +315,15 @@ export function WastageManager({
           return
         }
       } else {
-        itemUnit = "portion(s)"
-        maxAvailable = batchItem.portions || 0
-        if (wastageQuantity > maxAvailable) {
-          toast({
-            title: "Invalid Quantity",
-            description: `Cannot waste more portions than available. Available: ${maxAvailable} portions`,
-            variant: "destructive",
-          })
-          return
+      itemUnit = "portion(s)"
+      maxAvailable = batchItem.portions || 0
+      if (wastageQuantity > maxAvailable) {
+        toast({
+          title: "Invalid Quantity",
+          description: `Cannot waste more portions than available. Available: ${maxAvailable} portions`,
+          variant: "destructive",
+        })
+        return
         }
       }
     }
@@ -380,10 +380,10 @@ export function WastageManager({
             .update({ yield: (batchItem.yield || 0) - wastageQuantity })
             .eq("id", batchItem.id)
         } else {
-          await supabase
-            .from("batches")
-            .update({ portions: (batchItem.portions || 0) - wastageQuantity })
-            .eq("id", batchItem.id)
+        await supabase
+          .from("batches")
+          .update({ portions: (batchItem.portions || 0) - wastageQuantity })
+          .eq("id", batchItem.id)
         }
       }
 
@@ -582,21 +582,21 @@ export function WastageManager({
                       </SelectContent>
                     </Select>
                   ) : (
-                    <Select
-                      value={selectedItem}
-                      onValueChange={(value) => {
-                        setSelectedItem(value)
-                        setQuantity("")
-                      }}
-                      disabled={!!preSelectedBatch}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder={`Select a ${wastageType}`} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {renderItemList()}
-                      </SelectContent>
-                    </Select>
+                  <Select 
+                    value={selectedItem} 
+                    onValueChange={(value) => {
+                      setSelectedItem(value)
+                      setQuantity("")
+                    }}
+                    disabled={!!preSelectedBatch}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={`Select a ${wastageType}`} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {renderItemList()}
+                    </SelectContent>
+                  </Select>
                   )}
                 </div>
                 <div className="space-y-2">
@@ -688,8 +688,8 @@ export function WastageManager({
                           }
                         }
                       } else {
-                        if (value === "" || (numValue >= 0 && numValue <= maxQuantity)) {
-                          setQuantity(value)
+                      if (value === "" || (numValue >= 0 && numValue <= maxQuantity)) {
+                        setQuantity(value)
                         }
                       }
                     }}
@@ -768,7 +768,7 @@ export function WastageManager({
                 >
                   Cancel
                 </Button>
-                <Button
+                <Button 
                   onClick={handleReportWastage}
                   disabled={(() => {
                     if (isReporting || !reason || !reportedBy) return true;

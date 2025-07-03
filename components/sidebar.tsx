@@ -13,6 +13,7 @@ const navigation = [
   { name: "Dashboard", href: "/dashboard", icon: Home },
   { name: "Inventory", href: "/inventory", icon: Package },
   { name: "Kitchen", href: "/kitchen", icon: ChefHat },
+  { name: "Recipes", href: "/recipes", icon: Menu },
   { name: "Point of Sale", href: "/pos", icon: ShoppingCart },
   { name: "Orders", href: "/orders", icon: ClipboardList },
   { name: "Customer Portal", href: "/customer-portal", icon: Store },

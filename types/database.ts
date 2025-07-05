@@ -290,6 +290,7 @@ export interface Recipe {
   id: string;
   name: string;
   description?: string;
+  restaurant: 'Omel Dunia' | 'Mamma Mia';
   category_id?: string;
   yield_per_batch: number;
   yield_unit_id: string;
@@ -321,6 +322,7 @@ export interface Recipe {
 export interface CreateRecipeInput {
   name: string;
   description?: string;
+  restaurant: 'Omel Dunia' | 'Mamma Mia';
   category_id?: string;
   yield_per_batch: number;
   yield_unit_id: string;

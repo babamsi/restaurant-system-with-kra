@@ -2,7 +2,7 @@ import React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ShoppingCart, Trash2 } from "lucide-react";
+import { Trash2 } from "lucide-react";
 
 export interface RecipeComponent {
   type: "ingredient" | "batch";
@@ -16,15 +16,15 @@ export interface RecipeCardProps {
   id?: string;
   name: string;
   description?: string;
+  restaurant?: string;
   price?: number;
   components: RecipeComponent[];
   available: boolean;
-  onOrder?: () => void;
   onDelete?: (id: string) => void;
   onViewDetails?: () => void;
 }
 
-export const RecipeCard: React.FC<RecipeCardProps> = ({ id, name, description, price, components, available, onOrder, onDelete, onViewDetails }) => {
+export const RecipeCard: React.FC<RecipeCardProps> = ({ id, name, description, restaurant, price, components, available, onDelete, onViewDetails }) => {
   const handleCardClick = (e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest('button')) {
       return;
@@ -41,11 +41,11 @@ export const RecipeCard: React.FC<RecipeCardProps> = ({ id, name, description, p
     >
       <CardHeader className="flex flex-col gap-1">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 w-full">
-          <div className="flex items-center gap-2 flex-1 min-w-0">
+          <div className="flex items-center gap-2 min-w-0 flex-1 flex-wrap">
             <CardTitle className="text-xl font-semibold mb-1 truncate">{name}</CardTitle>
             {typeof price === 'number' && (
               <span className="inline-block bg-green-100 text-green-800 text-sm font-bold px-3 py-1 rounded-full">
-                ${price.toFixed(2)}
+                {price.toFixed(2)}
               </span>
             )}
           </div>
@@ -53,7 +53,7 @@ export const RecipeCard: React.FC<RecipeCardProps> = ({ id, name, description, p
             <Button
               variant="ghost"
               size="icon"
-              className="ml-auto"
+              className="ml-auto flex-shrink-0"
               aria-label="Delete recipe"
               onClick={(e) => {
                 e.stopPropagation();
@@ -64,9 +64,16 @@ export const RecipeCard: React.FC<RecipeCardProps> = ({ id, name, description, p
             </Button>
           )}
         </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {restaurant && (
+            <Badge variant="outline" className="text-xs">
+              {restaurant}
+            </Badge>
+          )}
+        </div>
         {description && <p className="text-sm text-muted-foreground mb-2">{description}</p>}
       </CardHeader>
-      <CardContent className="flex-1 flex flex-col gap-3">
+      <CardContent className="flex flex-col gap-3">
         <div className="mb-2">
           <div className="text-xs font-medium text-muted-foreground mb-1">Components:</div>
           <ul className="space-y-1">
@@ -82,17 +89,6 @@ export const RecipeCard: React.FC<RecipeCardProps> = ({ id, name, description, p
             ))}
           </ul>
         </div>
-        <Button
-          className="mt-auto w-full"
-          disabled={!available}
-          onClick={(e) => {
-            e.stopPropagation();
-            onOrder?.();
-          }}
-        >
-          <ShoppingCart className="h-4 w-4 mr-2" />
-          {available ? "Order" : "Unavailable"}
-        </Button>
       </CardContent>
     </Card>
   );

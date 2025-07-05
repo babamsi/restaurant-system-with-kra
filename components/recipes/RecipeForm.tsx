@@ -36,6 +36,7 @@ export const RecipeForm: React.FC<RecipeFormProps> = ({
   const [formData, setFormData] = useState({
     name: "",
     description: "",
+    restaurant: "Omel Dunia" as 'Omel Dunia' | 'Mamma Mia',
     price: "",
     category: "",
     components: [] as any[],
@@ -48,6 +49,7 @@ export const RecipeForm: React.FC<RecipeFormProps> = ({
         setFormData({
           name: recipe.name || "",
           description: recipe.description || "",
+          restaurant: recipe.restaurant || "Omel Dunia",
           price: recipe.price?.toString() || "",
           category: recipe.category || "",
           components: recipe.components?.map((comp: any) => ({
@@ -62,6 +64,7 @@ export const RecipeForm: React.FC<RecipeFormProps> = ({
         setFormData({
           name: "",
           description: "",
+          restaurant: "Omel Dunia",
           price: "",
           category: "",
           components: [],
@@ -106,7 +109,7 @@ export const RecipeForm: React.FC<RecipeFormProps> = ({
       price: formData.price ? parseFloat(formData.price) : null,
       id: editMode ? recipe?.id : undefined,
     };
-    onSubmit(submitData).finally(() => {
+    Promise.resolve(onSubmit(submitData)).finally(() => {
       setIsSubmitting(false);
     });
   };
@@ -126,6 +129,18 @@ export const RecipeForm: React.FC<RecipeFormProps> = ({
             <div>
               <Label>Description</Label>
               <Input value={formData.description} onChange={e => setFormData(prev => ({ ...prev, description: e.target.value }))} placeholder="Description (optional)" />
+            </div>
+            <div>
+              <Label>Restaurant</Label>
+              <Select value={formData.restaurant} onValueChange={(value) => setFormData(prev => ({ ...prev, restaurant: value as 'Omel Dunia' | 'Mamma Mia' }))}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select restaurant" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Omel Dunia">Omel Dunia</SelectItem>
+                  <SelectItem value="Mamma Mia">Mamma Mia</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
             <div>
               <Label>Price</Label>

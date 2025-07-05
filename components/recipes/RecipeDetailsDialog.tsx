@@ -18,6 +18,7 @@ export interface RecipeDetailsDialogProps {
     id?: string;
     name: string;
     description?: string;
+    restaurant?: string;
     price?: number;
     category?: string;
     components: RecipeComponent[];
@@ -69,6 +70,16 @@ export const RecipeDetailsDialog: React.FC<RecipeDetailsDialogProps> = ({
             )}
             
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {recipe.restaurant && (
+                <div>
+                  <h3 className="text-sm font-medium text-muted-foreground mb-2">
+                    Restaurant
+                  </h3>
+                  <Badge variant="outline" className="text-sm">
+                    {recipe.restaurant}
+                  </Badge>
+                </div>
+              )}
               {recipe.category && (
                 <div>
                   <h3 className="text-sm font-medium text-muted-foreground mb-2">
@@ -86,7 +97,7 @@ export const RecipeDetailsDialog: React.FC<RecipeDetailsDialogProps> = ({
                     Price
                   </h3>
                   <div className="text-2xl font-bold text-green-600">
-                    ${recipe.price.toFixed(2)}
+                    {recipe.price.toFixed(2)}
                   </div>
                 </div>
               )}

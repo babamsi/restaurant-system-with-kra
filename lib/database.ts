@@ -383,7 +383,7 @@ export const ingredientsService = {
 
       // Apply pagination
       if (pagination) {
-        const { from, to } = getPaginationRange(pagination)
+        const { from, to } = getPaginationRange(pagination.page || 1, pagination.limit || 10)
         query = query.range(from, to)
       }
 
@@ -674,7 +674,7 @@ export const recipesService = {
 
       // Apply pagination
       if (pagination) {
-        const { from, to } = getPaginationRange(pagination)
+        const { from, to } = getPaginationRange(pagination.page || 1, pagination.limit || 10)
         query = query.range(from, to)
       }
 
@@ -834,7 +834,7 @@ export const batchesService = {
 
       // Apply pagination
       if (pagination) {
-        const { from, to } = getPaginationRange(pagination)
+        const { from, to } = getPaginationRange(pagination.page || 1, pagination.limit || 10)
         query = query.range(from, to)
       }
 
@@ -1101,9 +1101,9 @@ export const supplierOrdersService = {
   async getOrderItems(order_id: string) {
     try {
       const { data, error } = await supabase
-        .from('supplier_order_items')
-        .select('*, ingredient:ingredient_id(name)')
-        .eq('order_id', order_id);
+        .from("supplier_order_items")
+        .select("*, ingredient:ingredient_id(name)")
+        .eq("order_id", order_id);
       return { data, error: error?.message || null };
     } catch (error) {
       return { data: null, error: handleSupabaseError(error) };
@@ -1124,6 +1124,249 @@ export const supplierOrdersService = {
     }
   }
 };
+
+// =====================================================
+// TABLE ORDERS SERVICE
+// =====================================================
+
+export const tableOrdersService = {
+  // Create a new table order and its items
+  async createOrderWithItems({
+    table_number,
+    table_id,
+    customer_name,
+    order_type = 'dine-in',
+    subtotal = 0,
+    tax_rate = 0,
+    tax_amount = 0,
+    total_amount = 0,
+    special_instructions,
+    notes,
+    items
+  }: {
+    table_number: string;
+    table_id: number;
+    customer_name?: string;
+    order_type?: 'dine-in' | 'takeaway';
+    subtotal?: number;
+    tax_rate?: number;
+    tax_amount?: number;
+    total_amount?: number;
+    special_instructions?: string;
+    notes?: string;
+    items: Array<{
+      menu_item_id: string;
+      menu_item_name: string;
+      quantity: number;
+      unit_price: number;
+      total_price: number;
+      portion_size?: string;
+      customization_notes?: string;
+    }>;
+  }) {
+    try {
+      // Check for existing active order on this table
+      const { data: existingOrder } = await this.getActiveOrderByTable(table_id);
+      if (existingOrder) {
+        throw new Error(`Table ${table_number} already has an active order. Please add items to the existing order instead.`);
+      }
+
+      // 1. Create the table order
+      const { data: order, error: orderError } = await supabase
+        .from('table_orders')
+        .insert({
+          table_number,
+          table_id,
+          customer_name,
+          order_type,
+          subtotal,
+          tax_rate,
+          tax_amount,
+          total_amount,
+          special_instructions,
+          notes
+        })
+        .select()
+        .single();
+      
+      if (orderError || !order) {
+        throw new Error(orderError?.message || 'Failed to create table order');
+      }
+
+      // 2. Create the order items
+      const orderItems = items.map(item => ({
+        order_id: order.id,
+        menu_item_id: item.menu_item_id,
+        menu_item_name: item.menu_item_name,
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        total_price: item.total_price,
+        portion_size: item.portion_size,
+        customization_notes: item.customization_notes
+      }));
+      
+      const { error: itemsError } = await supabase
+        .from('table_order_items')
+        .insert(orderItems);
+      
+      if (itemsError) {
+        throw new Error(itemsError.message || 'Failed to create table order items');
+      }
+
+      return { data: order, success: true };
+    } catch (error) {
+      return { data: null, success: false, error: handleSupabaseError(error) };
+    }
+  },
+
+  // Get active order for a specific table
+  async getActiveOrderByTable(table_id: number) {
+    try {
+      const { data, error } = await supabase
+        .from('table_orders')
+        .select(`
+          *,
+          items:table_order_items(*)
+        `)
+        .eq('table_id', table_id)
+        .in('status', ['pending', 'preparing', 'ready'])
+        .single();
+      
+      return { data, error: error?.message || null };
+    } catch (error) {
+      return { data: null, error: handleSupabaseError(error) };
+    }
+  },
+
+  // Get all orders for a table (including completed)
+  async getOrdersByTable(table_id: number) {
+    try {
+      const { data, error } = await supabase
+        .from('table_orders')
+        .select(`
+          *,
+          items:table_order_items(*)
+        `)
+        .eq('table_id', table_id)
+        .order('created_at', { ascending: false });
+      
+      return { data, error: error?.message || null };
+    } catch (error) {
+      return { data: null, error: handleSupabaseError(error) };
+    }
+  },
+
+  // Update order status
+  async updateOrderStatus(order_id: string, status: string) {
+    try {
+      const { data, error } = await supabase
+        .from('table_orders')
+        .update({ status })
+        .eq('id', order_id)
+        .select()
+        .single();
+      
+      return { data, error: error?.message || null };
+    } catch (error) {
+      return { data: null, error: handleSupabaseError(error) };
+    }
+  },
+
+  // Mark order as paid
+  async markOrderAsPaid(order_id: string, payment_method: string) {
+    try {
+      const { data, error } = await supabase
+        .from('table_orders')
+        .update({ 
+          status: 'paid',
+          payment_method,
+          payment_date: new Date().toISOString()
+        })
+        .eq('id', order_id)
+        .select()
+        .single();
+      
+      return { data, error: error?.message || null };
+    } catch (error) {
+      return { data: null, error: handleSupabaseError(error) };
+    }
+  },
+
+  // Add items to existing order
+  async addItemsToOrder(order_id: string, items: Array<{
+    menu_item_id: string;
+    menu_item_name: string;
+    quantity: number;
+    unit_price: number;
+    total_price: number;
+    portion_size?: string;
+    customization_notes?: string;
+  }>) {
+    try {
+      const orderItems = items.map(item => ({
+        order_id,
+        menu_item_id: item.menu_item_id,
+        menu_item_name: item.menu_item_name,
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        total_price: item.total_price,
+        portion_size: item.portion_size,
+        customization_notes: item.customization_notes
+      }));
+      
+      const { error } = await supabase
+        .from('table_order_items')
+        .insert(orderItems);
+      
+      if (error) {
+        throw new Error(error.message || 'Failed to add items to order');
+      }
+
+      // Update order totals
+      const { data: existingOrderItems } = await supabase
+        .from('table_order_items')
+        .select('total_price')
+        .eq('order_id', order_id);
+      
+      const newSubtotal = existingOrderItems?.reduce((sum, item) => sum + item.total_price, 0) || 0;
+      const taxAmount = newSubtotal * 0.16; // 16% tax rate
+      const totalAmount = newSubtotal + taxAmount;
+
+      const { data, error: updateError } = await supabase
+        .from('table_orders')
+        .update({
+          subtotal: newSubtotal,
+          tax_amount: taxAmount,
+          total_amount: totalAmount
+        })
+        .eq('id', order_id)
+        .select()
+        .single();
+      
+      return { data, error: updateError?.message || null };
+    } catch (error) {
+      return { data: null, error: handleSupabaseError(error) };
+    }
+  },
+
+  // Get all pending orders
+  async getPendingOrders() {
+    try {
+      const { data, error } = await supabase
+        .from('table_orders')
+        .select(`
+          *,
+          items:table_order_items(*)
+        `)
+        .in('status', ['pending', 'preparing', 'ready'])
+        .order('created_at', { ascending: false });
+      
+      return { data, error: error?.message || null };
+    } catch (error) {
+      return { data: null, error: handleSupabaseError(error) };
+    }
+  }
+}
 
 // =====================================================
 // EXPORT ALL SERVICES
@@ -1177,10 +1420,10 @@ export const inventoryService = {
             query = query.eq('current_stock', 0);
             break;
           case 'low_stock':
-            query = query.lte('current_stock', supabase.sql`reorder_point`);
+            query = query.lt('current_stock', query.select('reorder_point'));
             break;
           case 'in_stock':
-            query = query.gt('current_stock', supabase.sql`reorder_point`);
+            query = query.gt('current_stock', 0);
             break;
         }
       }
@@ -1496,7 +1739,7 @@ export const inventoryService = {
           suppliers(name, contact_person)
         `)
         .eq('is_active', true)
-        .lte('current_stock', supabase.sql`reorder_point`)
+        .lt('current_stock', 10)
         .gt('current_stock', 0);
 
       if (error) {

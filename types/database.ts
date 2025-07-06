@@ -480,6 +480,105 @@ export interface CreateSystemLogInput {
 }
 
 // =====================================================
+// POS SYSTEM - TABLE ORDERS
+// =====================================================
+
+export interface TableOrder {
+  id: string;
+  table_number: string;
+  table_id: number;
+  customer_name?: string;
+  order_type: 'dine-in' | 'takeaway';
+  subtotal: number;
+  tax_rate: number;
+  tax_amount: number;
+  total_amount: number;
+  status: 'pending' | 'preparing' | 'ready' | 'completed' | 'cancelled' | 'paid';
+  payment_method?: string;
+  payment_date?: string;
+  special_instructions?: string;
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+  
+  // Relations (populated when joined)
+  items?: TableOrderItem[];
+}
+
+export interface CreateTableOrderInput {
+  table_number: string;
+  table_id: number;
+  customer_name?: string;
+  order_type?: 'dine-in' | 'takeaway';
+  subtotal?: number;
+  tax_rate?: number;
+  tax_amount?: number;
+  total_amount?: number;
+  status?: 'pending' | 'preparing' | 'ready' | 'completed' | 'cancelled' | 'paid';
+  payment_method?: string;
+  payment_date?: string;
+  special_instructions?: string;
+  notes?: string;
+}
+
+export interface UpdateTableOrderInput {
+  table_number?: string;
+  table_id?: number;
+  customer_name?: string;
+  order_type?: 'dine-in' | 'takeaway';
+  subtotal?: number;
+  tax_rate?: number;
+  tax_amount?: number;
+  total_amount?: number;
+  status?: 'pending' | 'preparing' | 'ready' | 'completed' | 'cancelled' | 'paid';
+  payment_method?: string;
+  payment_date?: string;
+  special_instructions?: string;
+  notes?: string;
+}
+
+export interface TableOrderItem {
+  id: string;
+  order_id: string;
+  menu_item_id: string;
+  menu_item_name: string;
+  quantity: number;
+  unit_price: number;
+  total_price: number;
+  portion_size?: string;
+  customization_notes?: string;
+  status: 'pending' | 'preparing' | 'ready' | 'served';
+  created_at: string;
+  updated_at: string;
+  
+  // Relations (populated when joined)
+  order?: TableOrder;
+}
+
+export interface CreateTableOrderItemInput {
+  order_id: string;
+  menu_item_id: string;
+  menu_item_name: string;
+  quantity: number;
+  unit_price: number;
+  total_price: number;
+  portion_size?: string;
+  customization_notes?: string;
+  status?: 'pending' | 'preparing' | 'ready' | 'served';
+}
+
+export interface UpdateTableOrderItemInput {
+  menu_item_id?: string;
+  menu_item_name?: string;
+  quantity?: number;
+  unit_price?: number;
+  total_price?: number;
+  portion_size?: string;
+  customization_notes?: string;
+  status?: 'pending' | 'preparing' | 'ready' | 'served';
+}
+
+// =====================================================
 // DATABASE TABLES ENUM
 // =====================================================
 
@@ -495,7 +594,9 @@ export type DatabaseTable =
   | 'recipe_ingredients'
   | 'batches'
   | 'batch_ingredients'
-  | 'system_logs';
+  | 'system_logs'
+  | 'table_orders'
+  | 'table_order_items';
 
 // =====================================================
 // RELATIONSHIP TYPES

@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -41,6 +41,8 @@ interface UpsertPayload {
     quantity: number;
     unit: string;
     last_updated?: string;
+    reference_weight_per_bunch?: number;
+    reference_weight_unit?: string;
 }
 
 export function SupplierDeliveryDialog({ open, onOpenChange, ingredients, suppliers = [], onDeliverySuccess }: SupplierDeliveryDialogProps) {
@@ -52,6 +54,13 @@ export function SupplierDeliveryDialog({ open, onOpenChange, ingredients, suppli
   const [invoiceNumber, setInvoiceNumber] = useState("")
   const [notes, setNotes] = useState("")
   const [loading, setLoading] = useState(false)
+
+  // Reference weight prompt state
+  const [showReferenceWeightDialog, setShowReferenceWeightDialog] = useState(false)
+  const [referenceWeightIngredient, setReferenceWeightIngredient] = useState<Ingredient | null>(null)
+  const [referenceWeightValue, setReferenceWeightValue] = useState("")
+  const [referenceWeightUnit, setReferenceWeightUnit] = useState("g")
+  const [pendingDeliveryData, setPendingDeliveryData] = useState<any>(null)
 
   // Always call the hook at the top level
   const { suppliers: fetchedSuppliers } = useSuppliers()
@@ -156,33 +165,61 @@ export function SupplierDeliveryDialog({ open, onOpenChange, ingredients, suppli
     setSelectedIngredients(selectedIngredients.map(i => i.id === id ? { ...i, [field]: value } : i))
   }
 
-  const handleSubmit = async () => {
-    if (!selectedSupplier || !invoiceNumber || selectedIngredients.length === 0) {
+  // Handler for reference weight dialog submission
+  const handleReferenceWeightSubmit = async () => {
+    if (!referenceWeightIngredient || !pendingDeliveryData) return;
+    const value = parseFloat(referenceWeightValue)
+    if (!value || value <= 0) {
       toast({
-        title: "Missing Fields",
-        description: "Please fill all required fields and add at least one ingredient.",
-        variant: "destructive",
-        duration: 2000,
+        title: "Invalid Value",
+        description: "Please enter a valid positive number for the conversion.",
+        variant: "destructive"
       })
-      return
+      return;
     }
-    if (selectedIngredients.some((i) => !i.quantity || !i.unit || !i.cost)) {
-      toast({
-        title: "Missing Fields",
-        description: "Please enter quantity, unit, and cost for all ingredients.",
-        variant: "destructive",
-        duration: 2000,
-      })
-      return
+
+    // Update the pending delivery data with reference weight
+    const updatedPendingData = {
+      ...pendingDeliveryData,
+      referenceWeightData: {
+        ingredientId: referenceWeightIngredient.id,
+        value: value,
+        unit: referenceWeightUnit
+      }
     }
+    setPendingDeliveryData(updatedPendingData)
+
+    // Close the dialog and continue with delivery
+    setShowReferenceWeightDialog(false)
+    setReferenceWeightIngredient(null)
+    setReferenceWeightValue("")
+    setReferenceWeightUnit("g")
+
+    // Continue with the delivery process
+    await processDelivery(updatedPendingData)
+  }
+
+  // Separate function to process the actual delivery
+  const processDelivery = async (deliveryData?: any) => {
+    const data = deliveryData || {
+      selectedIngredients,
+      selectedSupplier,
+      invoiceNumber,
+      notes,
+      vatRate,
+      vatAmount,
+      total,
+      vatValue
+    }
+
     setLoading(true)
     try {
-      const supplierName = supplierList.find((s) => s.id === selectedSupplier)?.name || "Unknown"
+      const supplierName = supplierList.find((s) => s.id === data.selectedSupplier)?.name || "Unknown"
 
-      const kitchenUpdates = selectedIngredients.map(async (ing) => {
+      const kitchenUpdates = data.selectedIngredients.map(async (ing: any) => {
         const { data: existingItem, error } = await supabase
           .from("kitchen_storage")
-          .select("id, quantity")
+          .select("id, quantity, reference_weight_per_bunch, reference_weight_unit")
           .eq("ingredient_id", ing.id)
           .single()
 
@@ -203,6 +240,16 @@ export function SupplierDeliveryDialog({ open, onOpenChange, ingredients, suppli
           payload.id = existingItem.id
         }
 
+        // Add reference weight if this is a bunch ingredient and we have reference weight data
+        if (ing.unit === 'bunch' && data.referenceWeightData && data.referenceWeightData.ingredientId === ing.id) {
+          payload.reference_weight_per_bunch = data.referenceWeightData.value
+          payload.reference_weight_unit = data.referenceWeightData.unit
+        } else if (ing.unit === 'bunch' && existingItem?.reference_weight_per_bunch) {
+          // Keep existing reference weight if available
+          payload.reference_weight_per_bunch = existingItem.reference_weight_per_bunch
+          payload.reference_weight_unit = existingItem.reference_weight_unit
+        }
+
         await supabase.from("kitchen_storage").upsert(payload)
 
         // NOTE: Here you would also insert into a supplier delivery history table.
@@ -215,12 +262,12 @@ export function SupplierDeliveryDialog({ open, onOpenChange, ingredients, suppli
       const { data: newOrder, error: orderError } = await supabase
         .from("supplier_orders")
         .insert({
-          supplier_id: selectedSupplier,
-          invoice_number: invoiceNumber,
+          supplier_id: data.selectedSupplier,
+          invoice_number: data.invoiceNumber,
           order_date: new Date().toISOString(),
-          total_amount: total,
-          vat_amount: vatValue,
-          notes: notes,
+          total_amount: data.total,
+          vat_amount: data.vatValue,
+          notes: data.notes,
         })
         .select("id")
         .single()
@@ -232,7 +279,7 @@ export function SupplierDeliveryDialog({ open, onOpenChange, ingredients, suppli
       const orderId = newOrder.id
 
       // Step 2: Insert each item into supplier_order_items
-      const orderItemsPayload = selectedIngredients.map(ing => ({
+      const orderItemsPayload = data.selectedIngredients.map((ing: any) => ({
         order_id: orderId,
         ingredient_id: ing.id,
         quantity: parseFloat(ing.quantity) || 0,
@@ -252,7 +299,7 @@ export function SupplierDeliveryDialog({ open, onOpenChange, ingredients, suppli
       const { error: supplierUpdateError } = await supabase
         .from("suppliers")
         .update({ last_order_date: new Date().toISOString() })
-        .eq("id", selectedSupplier)
+        .eq("id", data.selectedSupplier)
 
       if (supplierUpdateError) {
         // Log this error but don't fail the whole operation, as the main delivery was recorded.
@@ -262,7 +309,7 @@ export function SupplierDeliveryDialog({ open, onOpenChange, ingredients, suppli
       await insertSystemLog({
         type: "storage",
         action: "Supplier Delivery",
-        details: `Supplier: ${supplierName}, Invoice: ${invoiceNumber}, Items: ${selectedIngredients.length}`,
+        details: `Supplier: ${supplierName}, Invoice: ${data.invoiceNumber}, Items: ${data.selectedIngredients.length}`,
         status: "success",
       })
 
@@ -271,6 +318,7 @@ export function SupplierDeliveryDialog({ open, onOpenChange, ingredients, suppli
       setSelectedSupplier("")
       setInvoiceNumber("")
       setNotes("")
+      setPendingDeliveryData(null)
       onDeliverySuccess?.()
       onOpenChange(false)
     } catch (e: any) {
@@ -281,156 +329,282 @@ export function SupplierDeliveryDialog({ open, onOpenChange, ingredients, suppli
     }
   }
 
+  const handleSubmit = async () => {
+    if (!selectedSupplier || !invoiceNumber || selectedIngredients.length === 0) {
+      toast({
+        title: "Missing Fields",
+        description: "Please fill all required fields and add at least one ingredient.",
+        variant: "destructive",
+        duration: 2000,
+      })
+      return
+    }
+    if (selectedIngredients.some((i) => !i.quantity || !i.unit || !i.cost)) {
+      toast({
+        title: "Missing Fields",
+        description: "Please enter quantity, unit, and cost for all ingredients.",
+        variant: "destructive",
+        duration: 2000,
+      })
+      return
+    }
+
+    // Check if any selected ingredient with unit 'bunch' is missing reference weight
+    for (const ingredient of selectedIngredients) {
+      if (ingredient.unit === 'bunch') {
+        // Check if kitchen storage already has reference_weight_per_bunch
+        const { data: existingItem } = await supabase
+          .from("kitchen_storage")
+          .select("reference_weight_per_bunch")
+          .eq("ingredient_id", ingredient.id)
+          .single()
+
+        if (!existingItem || !existingItem.reference_weight_per_bunch) {
+          // Show reference weight prompt
+          setReferenceWeightIngredient(ingredient)
+          setPendingDeliveryData({
+            selectedIngredients,
+            selectedSupplier,
+            invoiceNumber,
+            notes,
+            vatRate,
+            vatAmount,
+            total,
+            vatValue
+          })
+          setShowReferenceWeightDialog(true)
+          return // Pause delivery until user provides value
+        }
+      }
+    }
+
+    // If no bunch ingredients need reference weight, proceed with delivery
+    await processDelivery()
+  }
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
-        <DialogHeader>
-          <DialogTitle>Direct Supplier Delivery</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-4 flex-1 overflow-hidden flex flex-col">
-          <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
-            <Popover open={searchOpen} onOpenChange={setSearchOpen}>
-              <PopoverTrigger asChild>
-                <Button
-                  variant="outline"
-                  role="combobox"
-                  aria-expanded={searchOpen}
-                  className="w-full sm:w-[300px] justify-between"
-                >
-                  <Search className="h-4 w-4 mr-2" />
-                  {searchQuery ? searchQuery : "Search ingredients..."}
-                  <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-full sm:w-[300px] p-0">
-                <Command>
-                  <CommandInput 
-                    placeholder="Search ingredients..." 
-                    value={searchQuery}
-                    onValueChange={setSearchQuery}
-                  />
-                  <CommandEmpty>No ingredient found.</CommandEmpty>
-                  <CommandGroup>
-                    {filteredIngredients.map((ingredient) => (
-                      <CommandItem
-                        key={ingredient.id}
-                        onSelect={() => handleSelectIngredient(ingredient)}
-                      >
-                        {ingredient.name}
-                      </CommandItem>
-                    ))}
-                  </CommandGroup>
-                </Command>
-              </PopoverContent>
-            </Popover>
-            <Select value={selectedSupplier} onValueChange={setSelectedSupplier}>
-              <SelectTrigger className="w-full sm:w-[220px]">
-                <SelectValue placeholder="Select supplier" />
-              </SelectTrigger>
-              <SelectContent>
-                {supplierList.map((sup) => (
-                  <SelectItem key={sup.id} value={sup.id}>{sup.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Input
-              className="w-full sm:w-[180px]"
-              placeholder="Invoice number"
-              value={invoiceNumber}
-              onChange={e => setInvoiceNumber(e.target.value)}
-            />
-            <Input
-              className="w-full sm:w-[120px]"
-              placeholder="VAT rate %"
-              value={vatRate}
-              onChange={e => setVatRate(e.target.value)}
-              type="number"
-              min="0"
-              max="100"
-            />
-            <Input
-              className="w-full sm:w-[120px]"
-              placeholder="VAT amount"
-              value={vatAmount}
-              onChange={e => setVatAmount(e.target.value)}
-              type="number"
-              min="0"
-            />
-          </div>
-          <div className="flex-1 overflow-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Ingredient</TableHead>
-                  <TableHead>Quantity</TableHead>
-                  <TableHead>Unit</TableHead>
-                  <TableHead>Cost/Unit</TableHead>
-                  <TableHead></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {selectedIngredients.length === 0 ? (
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>Direct Supplier Delivery</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 flex-1 overflow-hidden flex flex-col">
+            <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+              <Popover open={searchOpen} onOpenChange={setSearchOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={searchOpen}
+                    className="w-full sm:w-[300px] justify-between"
+                  >
+                    <Search className="h-4 w-4 mr-2" />
+                    {searchQuery ? searchQuery : "Search ingredients..."}
+                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-full sm:w-[300px] p-0">
+                  <Command>
+                    <CommandInput 
+                      placeholder="Search ingredients..." 
+                      value={searchQuery}
+                      onValueChange={setSearchQuery}
+                    />
+                    <CommandEmpty>No ingredient found.</CommandEmpty>
+                    <CommandGroup>
+                      {filteredIngredients.map((ingredient) => (
+                        <CommandItem
+                          key={ingredient.id}
+                          onSelect={() => handleSelectIngredient(ingredient)}
+                        >
+                          {ingredient.name}
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+              <Select value={selectedSupplier} onValueChange={setSelectedSupplier}>
+                <SelectTrigger className="w-full sm:w-[220px]">
+                  <SelectValue placeholder="Select supplier" />
+                </SelectTrigger>
+                <SelectContent>
+                  {supplierList.map((sup) => (
+                    <SelectItem key={sup.id} value={sup.id}>{sup.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Input
+                className="w-full sm:w-[180px]"
+                placeholder="Invoice number"
+                value={invoiceNumber}
+                onChange={e => setInvoiceNumber(e.target.value)}
+              />
+              <Input
+                className="w-full sm:w-[120px]"
+                placeholder="VAT rate %"
+                value={vatRate}
+                onChange={e => setVatRate(e.target.value)}
+                type="number"
+                min="0"
+                max="100"
+              />
+              <Input
+                className="w-full sm:w-[120px]"
+                placeholder="VAT amount"
+                value={vatAmount}
+                onChange={e => setVatAmount(e.target.value)}
+                type="number"
+                min="0"
+              />
+            </div>
+            <div className="flex-1 overflow-auto">
+              <Table>
+                <TableHeader>
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center text-muted-foreground">No ingredients selected</TableCell>
+                    <TableHead>Ingredient</TableHead>
+                    <TableHead>Quantity</TableHead>
+                    <TableHead>Unit</TableHead>
+                    <TableHead>Cost/Unit</TableHead>
+                    <TableHead></TableHead>
                   </TableRow>
-                ) : (
-                  selectedIngredients.map((item) => (
-                    <TableRow key={item.id}>
-                      <TableCell>{item.name}</TableCell>
-                      <TableCell>
-                        <Input
-                          type="number"
-                          min="0"
-                          value={item.quantity}
-                          onChange={e => handleChange(item.id, "quantity", e.target.value)}
-                          className="w-24"
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Input
-                          value={item.unit}
-                          onChange={e => handleChange(item.id, "unit", e.target.value)}
-                          className="w-20"
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Input
-                          type="number"
-                          min="0"
-                          value={item.cost}
-                          onChange={e => handleChange(item.id, "cost", e.target.value)}
-                          className="w-24"
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Button variant="ghost" size="icon" onClick={() => handleRemoveIngredient(item.id)}>
-                          <X className="h-4 w-4" />
-                        </Button>
-                      </TableCell>
+                </TableHeader>
+                <TableBody>
+                  {selectedIngredients.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="text-center text-muted-foreground">No ingredients selected</TableCell>
                     </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          </div>
-          <div>
-            <Label>Notes</Label>
-            <Textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} />
-          </div>
-          {/* Totals summary */}
-          <div className="flex flex-col sm:flex-row gap-4 justify-end items-end mt-4">
-            <div className="flex flex-col gap-1 text-right">
-              <div>Subtotal: <span className="font-semibold">{subtotal.toFixed(2)}</span></div>
-              <div>VAT: <span className="font-semibold">{vatValue.toFixed(2)}</span></div>
-              <div>Total: <span className="font-bold">{total.toFixed(2)}</span></div>
+                  ) : (
+                    selectedIngredients.map((item) => (
+                      <TableRow key={item.id}>
+                        <TableCell>{item.name}</TableCell>
+                        <TableCell>
+                          <Input
+                            type="number"
+                            min="0"
+                            value={item.quantity}
+                            onChange={e => handleChange(item.id, "quantity", e.target.value)}
+                            className="w-24"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Input
+                            value={item.unit}
+                            onChange={e => handleChange(item.id, "unit", e.target.value)}
+                            className="w-20"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Input
+                            type="number"
+                            min="0"
+                            value={item.cost}
+                            onChange={e => handleChange(item.id, "cost", e.target.value)}
+                            className="w-24"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Button variant="ghost" size="icon" onClick={() => handleRemoveIngredient(item.id)}>
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+            <div>
+              <Label>Notes</Label>
+              <Textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} />
+            </div>
+            {/* Totals summary */}
+            <div className="flex flex-col sm:flex-row gap-4 justify-end items-end mt-4">
+              <div className="flex flex-col gap-1 text-right">
+                <div>Subtotal: <span className="font-semibold">{subtotal.toFixed(2)}</span></div>
+                <div>VAT: <span className="font-semibold">{vatValue.toFixed(2)}</span></div>
+                <div>Total: <span className="font-bold">{total.toFixed(2)}</span></div>
+              </div>
             </div>
           </div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>Cancel</Button>
-          <Button onClick={handleSubmit} disabled={loading}>{loading ? "Recording..." : "Record Delivery"}</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>Cancel</Button>
+            <Button onClick={handleSubmit} disabled={loading}>{loading ? "Recording..." : "Record Delivery"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reference Weight Dialog */}
+      <Dialog open={showReferenceWeightDialog} onOpenChange={setShowReferenceWeightDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Reference Weight Required</DialogTitle>
+            <DialogDescription>
+              {referenceWeightIngredient && (
+                <>
+                  <p className="mb-4">
+                    <strong>{referenceWeightIngredient.name}</strong> is measured in bunches. 
+                    Please provide the weight conversion for accurate inventory tracking.
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    This helps convert bunch quantities to weight for better inventory management.
+                  </p>
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="reference-weight">Weight per bunch</Label>
+                <Input
+                  id="reference-weight"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={referenceWeightValue}
+                  onChange={(e) => setReferenceWeightValue(e.target.value)}
+                  placeholder="e.g., 250"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="reference-unit">Unit</Label>
+                <Select value={referenceWeightUnit} onValueChange={setReferenceWeightUnit}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="g">Grams (g)</SelectItem>
+                    <SelectItem value="kg">Kilograms (kg)</SelectItem>
+                    <SelectItem value="oz">Ounces (oz)</SelectItem>
+                    <SelectItem value="lb">Pounds (lb)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowReferenceWeightDialog(false)
+                setReferenceWeightIngredient(null)
+                setReferenceWeightValue("")
+                setReferenceWeightUnit("g")
+                setPendingDeliveryData(null)
+              }}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleReferenceWeightSubmit} disabled={!referenceWeightValue}>
+              Continue Delivery
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 } 

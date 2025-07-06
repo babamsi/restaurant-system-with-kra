@@ -305,6 +305,71 @@ CREATE TABLE system_logs (
 );
 
 -- =====================================================
+-- POS SYSTEM - TABLE ORDERS
+-- =====================================================
+
+-- Table orders table
+-- Note: Business logic ensures only one active order per table
+-- Active orders are those with status: 'pending', 'preparing', 'ready'
+-- This is enforced at the application level, not database level
+CREATE TABLE table_orders (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    
+    -- Table information
+    table_number VARCHAR(20) NOT NULL,
+    table_id INTEGER NOT NULL, -- Reference to the table number (1, 2, 3, etc.)
+    
+    -- Order details
+    customer_name VARCHAR(255),
+    order_type VARCHAR(20) DEFAULT 'dine-in' CHECK (order_type IN ('dine-in', 'takeaway')),
+    
+    -- Financial
+    subtotal DECIMAL(15,2) DEFAULT 0,
+    tax_rate DECIMAL(5,2) DEFAULT 0,
+    tax_amount DECIMAL(15,2) DEFAULT 0,
+    total_amount DECIMAL(15,2) DEFAULT 0,
+    
+    -- Status
+    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'preparing', 'ready', 'completed', 'cancelled', 'paid')),
+    
+    -- Payment
+    payment_method VARCHAR(50),
+    payment_date TIMESTAMP WITH TIME ZONE,
+    
+    -- Notes and metadata
+    special_instructions TEXT,
+    notes TEXT,
+    
+    -- Timestamps
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Table order items table
+CREATE TABLE table_order_items (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    order_id UUID REFERENCES table_orders(id) ON DELETE CASCADE,
+    
+    -- Item details
+    menu_item_id VARCHAR(255) NOT NULL,
+    menu_item_name VARCHAR(255) NOT NULL,
+    quantity INTEGER NOT NULL DEFAULT 1,
+    unit_price DECIMAL(15,2) NOT NULL,
+    total_price DECIMAL(15,2) NOT NULL,
+    
+    -- Customization
+    portion_size VARCHAR(50),
+    customization_notes TEXT,
+    
+    -- Status
+    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'preparing', 'ready', 'served')),
+    
+    -- Timestamps
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- =====================================================
 -- INDEXES FOR PERFORMANCE
 -- =====================================================
 
@@ -344,6 +409,17 @@ CREATE INDEX idx_system_logs_status ON system_logs(status);
 CREATE INDEX idx_system_logs_created_at ON system_logs(created_at);
 CREATE INDEX idx_system_logs_entity ON system_logs(entity_type, entity_id);
 
+-- Table orders indexes
+CREATE INDEX idx_table_orders_table_id ON table_orders(table_id);
+CREATE INDEX idx_table_orders_status ON table_orders(status);
+CREATE INDEX idx_table_orders_created_at ON table_orders(created_at);
+CREATE INDEX idx_table_orders_table_status ON table_orders(table_id, status);
+
+-- Table order items indexes
+CREATE INDEX idx_table_order_items_order_id ON table_order_items(order_id);
+CREATE INDEX idx_table_order_items_status ON table_order_items(status);
+CREATE INDEX idx_table_order_items_menu_item ON table_order_items(menu_item_id);
+
 -- =====================================================
 -- TRIGGERS FOR UPDATED_AT
 -- =====================================================
@@ -368,6 +444,8 @@ CREATE TRIGGER update_recipes_updated_at BEFORE UPDATE ON recipes FOR EACH ROW E
 CREATE TRIGGER update_recipe_ingredients_updated_at BEFORE UPDATE ON recipe_ingredients FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_batches_updated_at BEFORE UPDATE ON batches FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_batch_ingredients_updated_at BEFORE UPDATE ON batch_ingredients FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_table_orders_updated_at BEFORE UPDATE ON table_orders FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_table_order_items_updated_at BEFORE UPDATE ON table_order_items FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- =====================================================
 -- SAMPLE DATA INSERTION

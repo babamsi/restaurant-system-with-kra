@@ -20,6 +20,7 @@ import {
   UtensilsCrossed,
   FileText,
   CheckCircle,
+  QrCode,
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { useCompletePOSStore, useCompletePOSStore as usePOSStore } from "@/stores/complete-pos-store"
@@ -28,6 +29,7 @@ import type { MenuItem, CartItem } from "@/types/unified-system"
 import { supabase } from "@/lib/supabase"
 import { tableOrdersService } from "@/lib/database"
 import Image from "next/image"
+import { QRCode } from "@/components/ui/qr-code"
 
 interface TableState {
   id: number
@@ -112,6 +114,30 @@ export function CorrectedPOSSystem() {
   const [showPendingOrders, setShowPendingOrders] = useState(false)
   const [pendingOrders, setPendingOrders] = useState<any[]>([])
   const [orderHistory, setOrderHistory] = useState<any[]>([])
+
+  const [showPaymentMethodDialog, setShowPaymentMethodDialog] = useState(false)
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<'cash' | 'mpesa' | 'card' | 'split' | null>(null)
+  const [splitAmounts, setSplitAmounts] = useState({ cash: '', mpesa: '', card: '' })
+  const [splitError, setSplitError] = useState<string | null>(null)
+
+  const [placingOrder, setPlacingOrder] = useState(false)
+  const [paymentLoading, setPaymentLoading] = useState(false)
+  const [cashReceived, setCashReceived] = useState('')
+  const [mpesaNumber, setMpesaNumber] = useState('')
+
+  const [showTransferDialog, setShowTransferDialog] = useState<null | { orderId: string; fromTable: TableState }>(null)
+  const [transferTargetTable, setTransferTargetTable] = useState<TableState | null>(null)
+  const [cancellingOrder, setCancellingOrder] = useState(false)
+  const [transferringOrder, setTransferringOrder] = useState(false)
+
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [sessionLoading, setSessionLoading] = useState(true)
+  const [showSessionDialog, setShowSessionDialog] = useState(false)
+  const [sessionError, setSessionError] = useState<string | null>(null)
+  const [sessionClosing, setSessionClosing] = useState(false)
+
+  const [showQRDialog, setShowQRDialog] = useState(false)
+  const [qrCodes, setQrCodes] = useState<Record<number, string>>({})
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000)
@@ -287,6 +313,11 @@ export function CorrectedPOSSystem() {
   }
 
   const handlePlaceOrder = async () => {
+    if (!sessionId) {
+      setShowSessionDialog(true)
+      toast({ title: 'No Open Session', description: 'Please open the day before placing orders.', variant: 'destructive' })
+      return
+    }
     if (!selectedTable || cart.length === 0) {
       toast({
         title: "Error",
@@ -295,7 +326,7 @@ export function CorrectedPOSSystem() {
       })
       return
     }
-
+    setPlacingOrder(true)
     try {
       const cartItems = cart.map(item => ({
         menu_item_id: item.id,
@@ -306,26 +337,21 @@ export function CorrectedPOSSystem() {
         portion_size: item.portionSize,
         customization_notes: item.customization
       }))
-
       const subtotal = getCartTotal()
       const taxRate = 16 // 16% tax rate
       const taxAmount = subtotal * (taxRate / 100)
       const totalAmount = subtotal + taxAmount
-
     if (editingOrderId) {
-        // Add items to existing order
         const { data, error } = await tableOrdersService.addItemsToOrder(editingOrderId, cartItems)
         if (error) {
           throw new Error(error)
         }
-        
         toast({
           title: "Order Updated",
           description: `Added items to ${selectedTable.number}`,
           duration: 2000,
         })
     } else {
-        // Create new order
         const { data, error } = await tableOrdersService.createOrderWithItems({
           table_number: selectedTable.number,
           table_id: selectedTable.id,
@@ -335,36 +361,29 @@ export function CorrectedPOSSystem() {
           tax_rate: taxRate,
           tax_amount: taxAmount,
           total_amount: totalAmount,
-          items: cartItems
+          items: cartItems,
+          session_id: sessionId
         })
-
         if (error) {
           throw new Error(error)
         }
-
-        // Update table status
-        setTables(prevTables => prevTables.map(table => 
-          table.id === selectedTable.id 
+        setTables(prevTables => prevTables.map(table =>
+          table.id === selectedTable.id
             ? { ...table, status: "occupied", orderId: data?.id, currentOrder: data }
             : table
         ))
-
         setEditingOrderId(data?.id || null)
-        
         toast({
           title: "Order Placed",
           description: `Order placed for ${selectedTable.number}`,
           duration: 2000,
         })
       }
-
-      // Update table orders state
       await loadTableOrders()
-      
-      // Clear cart and existing items
       clearCart()
       setExistingOrderItems([])
-      
+      setSelectedTable(null)
+      setEditingOrderId(null)
     } catch (error: any) {
       console.error("Error placing order:", error)
       toast({
@@ -372,6 +391,8 @@ export function CorrectedPOSSystem() {
         description: error.message || "Failed to place order",
         variant: "destructive",
       })
+    } finally {
+      setPlacingOrder(false)
     }
   }
 
@@ -493,56 +514,126 @@ export function CorrectedPOSSystem() {
     
     setShowPayment({ table: table, orderId: currentOrder.id })
       setShowTableOptions(null)
-  }
+    }
 
   const handleMarkAsPaid = async () => {
     if (!showPayment) return
+    setShowPaymentMethodDialog(true)
+  }
 
+  const handleConfirmPaymentMethod = async () => {
+    if (!showPayment) return
+    const order = tableOrders[showPayment.table.id] || showPayment.table.currentOrder
+    if (!order) return
+    let paymentMethod = selectedPaymentMethod
+    let paymentDetails: any = {}
+    setSplitError(null)
+    setPaymentLoading(true)
+    // Validation
+    if (!paymentMethod) {
+      setSplitError('Please select a payment method.')
+      setPaymentLoading(false)
+      return
+    }
+    if (paymentMethod === 'cash') {
+      const received = parseFloat(cashReceived)
+      if (isNaN(received) || received < order.total_amount) {
+        setSplitError('Amount received must be at least the total amount.')
+        setPaymentLoading(false)
+        return
+      }
+      paymentDetails = { received, change: received - order.total_amount }
+    }
+    if (paymentMethod === 'mpesa') {
+      if (!mpesaNumber || mpesaNumber.length < 8) {
+        setSplitError('Please enter a valid mobile number.')
+        setPaymentLoading(false)
+        return
+      }
+      paymentDetails = { mpesaNumber }
+    }
+    if (paymentMethod === 'split') {
+      const cash = parseFloat(splitAmounts.cash) || 0
+      const mpesa = parseFloat(splitAmounts.mpesa) || 0
+      const card = parseFloat(splitAmounts.card) || 0
+      const total = cash + mpesa + card
+      if (total !== order.total_amount) {
+        setSplitError('Split amounts must add up to the total.')
+        setPaymentLoading(false)
+        return
+      }
+      let splitDetail: any = { cash, mpesa, card }
+      if (cash > 0) {
+        const received = parseFloat(cashReceived)
+        if (isNaN(received) || received < cash) {
+          setSplitError('Cash received must be at least the cash split amount.')
+          setPaymentLoading(false)
+          return
+        }
+        splitDetail.cashReceived = received
+        splitDetail.cashChange = received - cash
+      }
+      if (mpesa > 0) {
+        if (!mpesaNumber || mpesaNumber.length < 8) {
+          setSplitError('Please enter a valid mobile number for Mpesa.')
+          setPaymentLoading(false)
+          return
+        }
+        splitDetail.mpesaNumber = mpesaNumber
+      }
+      paymentDetails = splitDetail
+    }
     try {
       const { data, error } = await tableOrdersService.markOrderAsPaid(
-        showPayment.orderId, 
-        "cash" // You can make this dynamic based on payment method selection
+        showPayment.orderId,
+        paymentMethod === 'cash' || paymentMethod === 'mpesa' ? paymentDetails : paymentMethod === 'split' ? paymentDetails : paymentMethod
       )
-
       if (error) {
         throw new Error(error)
       }
-
-      // Update table status to available
-      setTables(prevTables => prevTables.map(table => 
-        table.id === showPayment.table.id 
+      setTables(prevTables => prevTables.map(table =>
+        table.id === showPayment.table.id
           ? { ...table, status: "available", orderId: undefined, currentOrder: undefined }
           : table
       ))
-
-      // Clear the order from table orders state
       setTableOrders(prev => {
         const updated = { ...prev }
         delete updated[showPayment.table.id]
         return updated
       })
-
-      // Clear selected table if it's the same
       if (selectedTable?.id === showPayment.table.id) {
         setSelectedTable(null)
         setEditingOrderId(null)
         setExistingOrderItems([])
         clearCart()
       }
-
-      // Refresh pending orders and order history
       await Promise.all([
         loadTableOrders(),
         loadOrderHistory()
       ])
-
+      // Fetch the latest order data for the receipt
+      const { data: latestOrder } = await supabase
+        .from('table_orders')
+        .select('*, items:table_order_items(*)')
+        .eq('id', showPayment.orderId)
+        .single()
+      if (latestOrder) {
+        handlePrintReceipt(latestOrder)
+      } else {
+        handlePrintReceipt(order)
+      }
       toast({
         title: "Payment Complete",
         description: `Table ${showPayment.table.number} has been cleared`,
         duration: 2000,
       })
-
       setShowPayment(null)
+      setShowPaymentMethodDialog(false)
+      setSelectedPaymentMethod(null)
+      setSplitAmounts({ cash: '', mpesa: '', card: '' })
+      setSplitError(null)
+      setCashReceived('')
+      setMpesaNumber('')
     } catch (error: any) {
       console.error("Error marking order as paid:", error)
       toast({
@@ -550,6 +641,8 @@ export function CorrectedPOSSystem() {
         description: error.message || "Failed to process payment",
         variant: "destructive",
       })
+    } finally {
+      setPaymentLoading(false)
     }
   }
 
@@ -562,11 +655,11 @@ export function CorrectedPOSSystem() {
 
   const handlePrintReceipt = (order: any) => {
     const receiptContent = `
-      <div style="font-family: 'Courier New', monospace; font-size: 14px; line-height: 1.4; width: 384px; max-width: 384px; padding: 15px;">
-        <div style="text-align: center; margin-bottom: 15px;">
-          <h2 style="margin: 0; font-size: 18px; font-weight: bold; letter-spacing: 1px;">RESTAURANT NAME</h2>
-          <p style="margin: 8px 0; font-size: 12px; font-weight: 500;">123 Main Street, City</p>
-          <p style="margin: 8px 0; font-size: 12px; font-weight: 500;">Phone: (123) 456-7890</p>
+      <div style="font-family: 'Courier New', monospace; font-size: 14px; line-height: 1.4; width: 100%; max-width: 300px; margin: 0; padding: 8px 0 8px 8px; box-sizing: border-box;">
+        <div style="text-align: center; margin-bottom: 10px;">
+          <h2 style="margin: 0; font-size: 16px; font-weight: bold; letter-spacing: 1px;">RESTAURANT NAME</h2>
+          <p style="margin: 6px 0; font-size: 11px; font-weight: 500;">123 Main Street, City</p>
+          <p style="margin: 6px 0; font-size: 11px; font-weight: 500;">Phone: (123) 456-7890</p>
         </div>
         
         <div style="border-top: 2px dashed #000; border-bottom: 2px dashed #000; padding: 12px 0; margin: 15px 0;">
@@ -665,17 +758,18 @@ export function CorrectedPOSSystem() {
                 body {
                   margin: 0;
                   padding: 0;
-                  width: 384px;
-                  max-width: 384px;
+                  width: 100%;
+                  max-width: 300px;
                 }
                 .receipt-container {
-                  width: 384px;
-                  max-width: 384px;
+                  width: 100%;
+                  max-width: 300px;
                   margin: 0;
-                  padding: 15px;
+                  padding: 8px 0 8px 8px;
                   font-family: 'Courier New', monospace;
                   font-size: 14px;
                   line-height: 1.4;
+                  box-sizing: border-box;
                 }
                 @page {
                   size: 80mm auto;
@@ -687,44 +781,28 @@ export function CorrectedPOSSystem() {
                 font-size: 14px;
                 line-height: 1.4;
                 margin: 0;
-                padding: 15px;
+                padding: 8px 0 8px 8px;
                 background: white;
+                width: 100%;
+                max-width: 300px;
+                box-sizing: border-box;
               }
               .receipt-container {
-                width: 384px;
-                max-width: 384px;
+                width: 100%;
+                max-width: 300px;
                 margin: 0 auto;
                 background: white;
-                box-shadow: 0 0 15px rgba(0,0,0,0.15);
-                border-radius: 10px;
+                box-shadow: none;
+                border-radius: 0;
+                padding: 8px 0 8px 8px;
+                box-sizing: border-box;
               }
               .print-button {
-                position: fixed;
-                top: 15px;
-                right: 15px;
-                padding: 12px 24px;
-                background: #007bff;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                cursor: pointer;
-                font-size: 14px;
-                font-weight: bold;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-              }
-              .print-button:hover {
-                background: #0056b3;
-                transform: translateY(-1px);
-              }
-              @media print {
-                .print-button {
-                  display: none;
-                }
+                display: none;
               }
             </style>
           </head>
           <body>
-            <button class="print-button" onclick="window.print()">🖨️ Print Receipt</button>
             <div class="receipt-container">
               ${receiptContent}
             </div>
@@ -734,7 +812,6 @@ export function CorrectedPOSSystem() {
                   window.print();
                 }, 800);
               };
-              
               window.onafterprint = function() {
                 // Optional: close window after printing
                 // window.close();
@@ -746,6 +823,222 @@ export function CorrectedPOSSystem() {
       printWindow.document.close()
       printWindow.focus()
     }
+  }
+
+  // Helper to format payment method for order history
+  function formatPaymentMethod(payment_method: any): string {
+    if (!payment_method) return '';
+    if (typeof payment_method === 'string') {
+      return `Paid via ${capitalize(payment_method)}`;
+    }
+    if (typeof payment_method === 'object') {
+      // Cash only
+      if ('received' in payment_method) {
+        return `Paid via Cash (received: ${payment_method.received}, change: ${payment_method.change})`;
+      }
+      // Mpesa only
+      if ('mpesaNumber' in payment_method && Object.keys(payment_method).length === 1) {
+        return `Paid via Mpesa, Number: ${payment_method.mpesaNumber}`;
+      }
+      // Split
+      const parts = [];
+      if (payment_method.cash > 0) {
+        if ('cashReceived' in payment_method) {
+          parts.push(`Cash (received: ${payment_method.cashReceived}, change: ${payment_method.cashChange})`);
+        } else {
+          parts.push(`Cash (${payment_method.cash})`);
+        }
+      }
+      if (payment_method.mpesa > 0) {
+        if ('mpesaNumber' in payment_method) {
+          parts.push(`Mpesa (Number: ${payment_method.mpesaNumber}, amount: ${payment_method.mpesa})`);
+        } else {
+          parts.push(`Mpesa (${payment_method.mpesa})`);
+        }
+      }
+      if (payment_method.card > 0) {
+        parts.push(`Card (${payment_method.card})`);
+      }
+      return `Paid via Split: ${parts.join(', ')}`;
+    }
+    return '';
+  }
+
+  function capitalize(str: string) {
+    return str.charAt(0).toUpperCase() + str.slice(1);
+  }
+
+  // Cancel order logic
+  const handleCancelOrder = async () => {
+    if (!showTableOptions) return
+    const table = showTableOptions
+    const currentOrder = tableOrders[table.id] || table.currentOrder
+    if (!currentOrder) return
+    if (!window.confirm(`Are you sure you want to cancel the order for ${table.number}?`)) return
+    setCancellingOrder(true)
+    try {
+      const { error } = await tableOrdersService.updateOrderStatus(currentOrder.id, 'cancelled')
+      if (error) throw new Error(error)
+      setTables(prevTables => prevTables.map(t => t.id === table.id ? { ...t, status: 'available', orderId: undefined, currentOrder: undefined } : t))
+      setTableOrders(prev => { const updated = { ...prev }; delete updated[table.id]; return updated })
+      if (selectedTable?.id === table.id) {
+        setSelectedTable(null)
+        setEditingOrderId(null)
+        setExistingOrderItems([])
+        clearCart()
+      }
+      await Promise.all([loadTableOrders(), loadOrderHistory()])
+      toast({ title: 'Order Cancelled', description: `Order for ${table.number} has been cancelled.`, duration: 2000 })
+      setShowTableOptions(null)
+    } catch (error: any) {
+      toast({ title: 'Error', description: error.message || 'Failed to cancel order', variant: 'destructive' })
+    } finally {
+      setCancellingOrder(false)
+    }
+  }
+
+  // Transfer order logic
+  const handleTransferOrder = async () => {
+    if (!showTransferDialog || !transferTargetTable) return
+    setTransferringOrder(true)
+    try {
+      const { orderId, fromTable } = showTransferDialog
+      // Update order in DB (table_id and table_number)
+      const { data, error } = await supabase
+        .from('table_orders')
+        .update({ table_id: transferTargetTable.id, table_number: transferTargetTable.number })
+        .eq('id', orderId)
+        .select()
+        .single()
+      if (error) throw new Error(error.message || String(error))
+      // Update tables state
+      setTables(prevTables => prevTables.map(t => {
+        if (t.id === fromTable.id) return { ...t, status: 'available', orderId: undefined, currentOrder: undefined }
+        if (t.id === transferTargetTable.id) return { ...t, status: 'occupied', orderId, currentOrder: tableOrders[fromTable.id] }
+        return t
+      }))
+      setTableOrders(prev => {
+        const updated = { ...prev }
+        updated[transferTargetTable.id] = updated[fromTable.id]
+        delete updated[fromTable.id]
+        return updated
+      })
+      if (selectedTable?.id === fromTable.id) {
+        setSelectedTable(null)
+        setEditingOrderId(null)
+        setExistingOrderItems([])
+        clearCart()
+      }
+      await Promise.all([loadTableOrders(), loadOrderHistory()])
+      toast({ title: 'Order Transferred', description: `Order moved to ${transferTargetTable.number}.`, duration: 2000 })
+      setShowTransferDialog(null)
+      setTransferTargetTable(null)
+      setShowTableOptions(null)
+    } catch (error: any) {
+      toast({ title: 'Error', description: error.message || 'Failed to transfer order', variant: 'destructive' })
+    } finally {
+      setTransferringOrder(false)
+    }
+  }
+
+  // On mount, check for open session
+  useEffect(() => {
+    const checkSession = async () => {
+      setSessionLoading(true)
+      setSessionError(null)
+      // Always check DB for open session
+      const { data, error } = await supabase.from('sessions').select('*').is('closed_at', null).order('opened_at', { ascending: false }).limit(1).single()
+      if (data && !error) {
+        setSessionId(data.id)
+        localStorage.setItem('current_session_id', data.id)
+        setSessionLoading(false)
+      } else {
+        setSessionId(null)
+        localStorage.removeItem('current_session_id')
+        setShowSessionDialog(true)
+        setSessionLoading(false)
+      }
+    }
+    checkSession()
+  }, [])
+
+  // Open new session
+  const handleOpenSession = async () => {
+    setSessionLoading(true)
+    setSessionError(null)
+    // Check again for open session before creating
+    const { data: openSession, error: openError } = await supabase.from('sessions').select('*').is('closed_at', null).order('opened_at', { ascending: false }).limit(1).single()
+    if (openSession && !openError) {
+      setSessionId(openSession.id)
+      localStorage.setItem('current_session_id', openSession.id)
+      setShowSessionDialog(false)
+      setSessionLoading(false)
+      return
+    }
+    // No open session, create one
+    const { data, error } = await supabase.from('sessions').insert({ opened_by: 'POS' }).select().single()
+    if (data && !error) {
+      setSessionId(data.id)
+      localStorage.setItem('current_session_id', data.id)
+      setShowSessionDialog(false)
+    } else {
+      setSessionError('Failed to open session')
+    }
+    setSessionLoading(false)
+  }
+
+  // Close session
+  const handleCloseSession = async () => {
+    if (!sessionId) return
+    setSessionClosing(true)
+    // Check for any pending/processing orders in this session
+    const { data: openOrders, error: openOrdersError } = await supabase
+      .from('table_orders')
+      .select('id, status')
+      .eq('session_id', sessionId)
+      .in('status', ['pending', 'preparing', 'ready'])
+    if (openOrdersError) {
+      setSessionError('Failed to check open orders')
+      setSessionClosing(false)
+      return
+    }
+    if (openOrders && openOrders.length > 0) {
+      setSessionError('Cannot close day: There are still orders in progress or unpaid. Please complete or pay all orders before closing the day.')
+      setSessionClosing(false)
+      return
+    }
+    const { error } = await supabase.from('sessions').update({ closed_at: new Date().toISOString(), closed_by: 'POS' }).eq('id', sessionId)
+    if (!error) {
+      setSessionId(null)
+      localStorage.removeItem('current_session_id')
+      setShowSessionDialog(true)
+    } else {
+      setSessionError('Failed to close session')
+    }
+    setSessionClosing(false)
+  }
+
+  // Generate QR codes for all tables
+  const generateQRCodes = () => {
+    if (!sessionId) {
+      toast({
+        title: "No Open Session",
+        description: "Please open the day before generating QR codes",
+        variant: "destructive",
+      })
+      return
+    }
+
+    const baseUrl = window.location.origin
+    const qrCodesData: Record<number, string> = {}
+    
+    tables.forEach(table => {
+      const qrUrl = `${baseUrl}/customer-portal?table=${table.id}&session=${sessionId}`
+      qrCodesData[table.id] = qrUrl
+    })
+    
+    setQrCodes(qrCodesData)
+    setShowQRDialog(true)
   }
 
   return (
@@ -761,6 +1054,10 @@ export function CorrectedPOSSystem() {
             {currentTime.toLocaleDateString()}
           </div>
           <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={generateQRCodes} disabled={!sessionId}>
+              <QrCode className="h-4 w-4 mr-2" />
+              QR Codes
+            </Button>
             <Button variant="outline" size="sm" onClick={() => setShowPendingOrders(true)}>
               <FileText className="h-4 w-4 mr-2" />
               Pending Orders ({pendingOrders.length})
@@ -771,6 +1068,9 @@ export function CorrectedPOSSystem() {
             </Button>
             <Button variant="outline" size="icon">
               <Settings className="h-4 w-4" />
+            </Button>
+            <Button variant="destructive" size="sm" onClick={handleCloseSession} disabled={sessionClosing || !sessionId} className="ml-2">
+              {sessionClosing ? 'Closing...' : 'Close Day'}
             </Button>
           </div>
         </div>
@@ -836,6 +1136,18 @@ export function CorrectedPOSSystem() {
                         >
                           Manage Order
                         </Button>
+                        <Button
+                          size="sm"
+                          className="mt-2 w-full"
+                          variant="secondary"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setShowPayment({ table, orderId: currentOrder.id })
+                          }}
+                        >
+                          <CheckCircle className="h-5 w-5 mr-2" />
+                          Proceed to Payment
+                        </Button>
                       </div>
                     ) : (
                       <div className="mt-4 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -859,9 +1171,20 @@ export function CorrectedPOSSystem() {
             <Button size="lg" className="w-full" onClick={handleAddMoreOrders}>
               <Plus className="h-5 w-5 mr-2" /> Add More Orders
             </Button>
-            <Button size="lg" className="w-full" variant="secondary" onClick={handleProceedToPayment}>
-              <CheckCircle className="h-5 w-5 mr-2" /> Proceed to Payment
+            {showTableOptions && (showTableOptions.status === 'occupied') && (
+              <>
+                <Button size="lg" className="w-full" variant="destructive" onClick={handleCancelOrder} disabled={cancellingOrder}>
+                  {cancellingOrder ? (
+                    <span className="flex items-center justify-center"><span className="animate-spin rounded-full h-5 w-5 border-b-2 border-destructive mr-2"></span>Cancelling...</span>
+                  ) : (
+                    <><Trash2 className="h-5 w-5 mr-2" /> Cancel Order</>
+                  )}
             </Button>
+                <Button size="lg" className="w-full" variant="outline" onClick={() => setShowTransferDialog({ orderId: (tableOrders[showTableOptions.id] || showTableOptions.currentOrder)?.id, fromTable: showTableOptions })}>
+                  <Users className="h-5 w-5 mr-2" /> Transfer Order
+                </Button>
+              </>
+            )}
           </div>
         </DialogContent>
       </Dialog>
@@ -1256,9 +1579,15 @@ export function CorrectedPOSSystem() {
                   <span>Total:</span>
                     <span>Ksh {((getCartTotal() + existingOrderItems.reduce((sum, item) => sum + item.total_price, 0)) * 1.16).toFixed(2)}</span>
                 </div>
-                  <Button className="w-full" size="lg" onClick={handlePlaceOrder}>
+                  <Button className="w-full" size="lg" onClick={handlePlaceOrder} disabled={placingOrder}>
+                    {placingOrder ? (
+                      <span className="flex items-center justify-center"><span className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary mr-2"></span>Placing...</span>
+                    ) : (
+                      <>
                     <CheckCircle className="h-5 w-5 mr-2" />
-                    {editingOrderId ? "Add to Order" : "Place Order"}
+                        {editingOrderId ? "Add to Order" : "Place Order"}
+                      </>
+                    )}
               </Button>
             </div>
           )}
@@ -1317,11 +1646,19 @@ export function CorrectedPOSSystem() {
                       <p className="text-sm text-muted-foreground">
                         Table {order.table_number} • {new Date(order.created_at).toLocaleString()}
                       </p>
-                      <p className="text-sm text-muted-foreground">
+                      <p className="text-sm text-muted-foreground flex items-center gap-2">
                         Status: <Badge variant={order.status === "paid" ? "default" : "secondary"} className="ml-1">{order.status}</Badge>
                         {order.payment_method && (
-                          <span className="ml-2 text-xs text-muted-foreground">
-                            • Paid via {order.payment_method}
+                          <span className="ml-2 text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded font-semibold">
+                            {(() => {
+                              let pm = order.payment_method;
+                              if (typeof pm === 'string' && pm.startsWith('{') && pm.endsWith('}')) {
+                                try {
+                                  pm = JSON.parse(pm);
+                                } catch {}
+                              }
+                              return formatPaymentMethod(pm);
+                            })()}
                           </span>
                         )}
                       </p>
@@ -1367,6 +1704,292 @@ export function CorrectedPOSSystem() {
                 </div>
               ))
             )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showPaymentMethodDialog} onOpenChange={setShowPaymentMethodDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Select Payment Method</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-4 py-2">
+            <div className="flex gap-2">
+              <Button
+                variant={selectedPaymentMethod === 'cash' ? 'default' : 'outline'}
+                className="flex-1"
+                onClick={() => { setSelectedPaymentMethod('cash'); setSplitError(null); }}
+              >
+                Cash
+              </Button>
+              <Button
+                variant={selectedPaymentMethod === 'mpesa' ? 'default' : 'outline'}
+                className="flex-1"
+                onClick={() => { setSelectedPaymentMethod('mpesa'); setSplitError(null); }}
+              >
+                Mpesa
+              </Button>
+              <Button
+                variant={selectedPaymentMethod === 'card' ? 'default' : 'outline'}
+                className="flex-1"
+                onClick={() => { setSelectedPaymentMethod('card'); setSplitError(null); }}
+              >
+                Card
+              </Button>
+              <Button
+                variant={selectedPaymentMethod === 'split' ? 'default' : 'outline'}
+                className="flex-1"
+                onClick={() => { setSelectedPaymentMethod('split'); setSplitError(null); }}
+              >
+                Split
+              </Button>
+            </div>
+            {selectedPaymentMethod === 'cash' && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="w-32">Amount Received</span>
+                  <Input
+                    type="number"
+                    min="0"
+                    value={cashReceived}
+                    onChange={e => setCashReceived(e.target.value)}
+                    className="flex-1"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-32">Change to Give</span>
+                  <span className="font-bold">
+                    {(() => {
+                      const order = showPayment ? (tableOrders[showPayment.table.id] || showPayment.table.currentOrder) : null;
+                      const received = parseFloat(cashReceived) || 0;
+                      return order ? (received >= order.total_amount ? (received - order.total_amount).toFixed(2) : '0.00') : '0.00';
+                    })()}
+                  </span>
+                </div>
+              </div>
+            )}
+            {selectedPaymentMethod === 'mpesa' && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="w-32">Mobile Number</span>
+                  <Input
+                    type="tel"
+                    value={mpesaNumber}
+                    onChange={e => setMpesaNumber(e.target.value)}
+                    className="flex-1"
+                    placeholder="e.g. 0712345678"
+                  />
+                </div>
+              </div>
+            )}
+            {selectedPaymentMethod === 'split' && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="w-16">Cash</span>
+                  <Input
+                    type="number"
+                    min="0"
+                    value={splitAmounts.cash}
+                    onChange={e => setSplitAmounts(a => ({ ...a, cash: e.target.value }))}
+                    className="flex-1"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-16">Mpesa</span>
+                  <Input
+                    type="number"
+                    min="0"
+                    value={splitAmounts.mpesa}
+                    onChange={e => setSplitAmounts(a => ({ ...a, mpesa: e.target.value }))}
+                    className="flex-1"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-16">Card</span>
+                  <Input
+                    type="number"
+                    min="0"
+                    value={splitAmounts.card}
+                    onChange={e => setSplitAmounts(a => ({ ...a, card: e.target.value }))}
+                    className="flex-1"
+                  />
+                </div>
+                {parseFloat(splitAmounts.cash) > 0 && (
+                  <div className="flex items-center gap-2">
+                    <span className="w-32">Cash Received</span>
+                    <Input
+                      type="number"
+                      min="0"
+                      value={cashReceived}
+                      onChange={e => setCashReceived(e.target.value)}
+                      className="flex-1"
+                    />
+                  </div>
+                )}
+                {parseFloat(splitAmounts.cash) > 0 && (
+                  <div className="flex items-center gap-2">
+                    <span className="w-32">Change to Give</span>
+                    <span className="font-bold">
+                      {(() => {
+                        const cash = parseFloat(splitAmounts.cash) || 0;
+                        const received = parseFloat(cashReceived) || 0;
+                        return received >= cash ? (received - cash).toFixed(2) : '0.00';
+                      })()}
+                    </span>
+                  </div>
+                )}
+                {parseFloat(splitAmounts.mpesa) > 0 && (
+                  <div className="flex items-center gap-2">
+                    <span className="w-32">Mpesa Number</span>
+                    <Input
+                      type="tel"
+                      value={mpesaNumber}
+                      onChange={e => setMpesaNumber(e.target.value)}
+                      className="flex-1"
+                      placeholder="e.g. 0712345678"
+                    />
+                  </div>
+                )}
+                <div className="text-xs text-muted-foreground mt-1">
+                  Total must equal order total: <span className="font-bold">Ksh {(() => {
+                    const order = showPayment ? (tableOrders[showPayment.table.id] || showPayment.table.currentOrder) : null;
+                    return order ? order.total_amount.toFixed(2) : '0.00';
+                  })()}</span>
+                </div>
+                {splitError && <div className="text-xs text-destructive mt-1">{splitError}</div>}
+              </div>
+            )}
+            {selectedPaymentMethod && selectedPaymentMethod !== 'split' && selectedPaymentMethod !== 'cash' && selectedPaymentMethod !== 'mpesa' && (
+              <div className="text-sm text-muted-foreground mt-2">
+                Payment will be marked as <span className="font-bold capitalize">{selectedPaymentMethod}</span>.
+              </div>
+            )}
+            {splitError && <div className="text-xs text-destructive mt-1">{splitError}</div>}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowPaymentMethodDialog(false)} disabled={paymentLoading}>
+              Cancel
+            </Button>
+            <Button onClick={handleConfirmPaymentMethod} disabled={paymentLoading}>
+              {paymentLoading ? (
+                <span className="flex items-center justify-center"><span className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary mr-2"></span>Processing...</span>
+              ) : (
+                'Confirm Payment'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!showTransferDialog} onOpenChange={(open) => { if (!open) { setShowTransferDialog(null); setTransferTargetTable(null); }}}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Transfer Order</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>Select a table to transfer the order to:</div>
+            <div className="grid grid-cols-3 gap-2">
+              {tables.filter(t => t.status === 'available').map(t => (
+                <Button key={t.id} variant={transferTargetTable?.id === t.id ? 'default' : 'outline'} className="w-full" onClick={() => setTransferTargetTable(t)}>
+                  {t.number}
+                </Button>
+              ))}
+            </div>
+            {transferTargetTable && (
+              <div className="text-sm text-muted-foreground">Order will be moved to <span className="font-bold">{transferTargetTable.number}</span>.</div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => { setShowTransferDialog(null); setTransferTargetTable(null); }} disabled={transferringOrder}>Cancel</Button>
+            <Button onClick={handleTransferOrder} disabled={!transferTargetTable || transferringOrder}>
+              {transferringOrder ? (
+                <span className="flex items-center justify-center"><span className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary mr-2"></span>Transferring...</span>
+              ) : (
+                'Confirm Transfer'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showSessionDialog} onOpenChange={setShowSessionDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{sessionId ? 'Session Closed' : 'Open Day'}</DialogTitle>
+          </DialogHeader>
+          <div className="py-4">
+            {sessionId ? (
+              <>
+                <p className="mb-2">The day is now closed. Please open a new session to start taking orders.</p>
+                <Button onClick={handleOpenSession} disabled={sessionLoading}>Open New Day</Button>
+              </>
+            ) : (
+              <>
+                <p className="mb-2">Start a new day to begin taking orders.</p>
+                <Button onClick={handleOpenSession} disabled={sessionLoading}>Open Day</Button>
+              </>
+            )}
+            {sessionError && <div className="text-destructive mt-2">{sessionError}</div>}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* QR Codes Dialog */}
+      <Dialog open={showQRDialog} onOpenChange={setShowQRDialog}>
+        <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <QrCode className="h-5 w-5" />
+              Table QR Codes
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-6">
+            <div className="text-sm text-muted-foreground">
+              Customers can scan these QR codes to place orders directly from their table.
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+              {tables.map((table) => (
+                <Card key={table.id} className="p-4 text-center">
+                  <div className="mb-3">
+                    <h3 className="font-bold text-lg mb-1">{table.number}</h3>
+                    <Badge variant={table.status === "occupied" ? "destructive" : "secondary"}>
+                      {table.status}
+                    </Badge>
+                  </div>
+                  <div className="flex justify-center mb-3">
+                    <QRCode 
+                      value={qrCodes[table.id] || ""} 
+                      size={150}
+                      className="border rounded-lg p-2 bg-white"
+                    />
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full"
+                    onClick={() => {
+                      if (qrCodes[table.id]) {
+                        window.open(qrCodes[table.id], '_blank')
+                      }
+                    }}
+                    disabled={!qrCodes[table.id]}
+                  >
+                    Test QR Code
+                  </Button>
+                </Card>
+              ))}
+            </div>
+            <div className="text-center pt-4 border-t">
+              <p className="text-sm text-muted-foreground mb-2">
+                Instructions for customers:
+              </p>
+              <ol className="text-sm text-muted-foreground space-y-1 text-left max-w-md mx-auto">
+                <li>1. Scan the QR code at your table</li>
+                <li>2. Browse the menu and add items to cart</li>
+                <li>3. Place your order - it will be prepared and served to your table</li>
+                <li>4. You can add more items to your existing order anytime</li>
+              </ol>
+            </div>
           </div>
         </DialogContent>
       </Dialog>

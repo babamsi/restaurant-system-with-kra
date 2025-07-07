@@ -45,7 +45,7 @@ export function OrderCard({ order, onMoveNext }: OrderCardProps) {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Clock className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm text-muted-foreground">{getTimeElapsed(order.created_at)}</span>
+              <span className="text-sm text-muted-foreground">{getTimeElapsed(order.createdAt.toISOString())}</span>
             </div>
             <div className="flex items-center gap-2">
               <Badge className={getStatusColor(order.status)}>{order.status}</Badge>
@@ -59,41 +59,38 @@ export function OrderCard({ order, onMoveNext }: OrderCardProps) {
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <User className="h-4 w-4 text-muted-foreground" />
-              <span className="font-medium">{order.customer_name}</span>
+              <span className="font-medium">{order.customerName}</span>
             </div>
             <div className="flex items-center gap-2">
               <MapPin className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm text-muted-foreground">{order.table_number}</span>
+              <span className="text-sm text-muted-foreground">{order.tableNumber}</span>
             </div>
           </div>
 
           {/* Order Items */}
           <div className="space-y-2">
             {order.items.map((item, index) => (
-              <div key={index} className="flex justify-between items-center text-sm">
-                <div className="flex-1">
-                  <span className="font-medium">{item.name}</span>
-                  {item.type === "individual" && item.display_unit && (
-                    <span className="text-muted-foreground ml-1">
-                      ({item.quantity}
-                      {item.display_unit})
-                    </span>
-                  )}
-                  {item.type === "recipe" && (
-                    <span className="text-muted-foreground ml-1">
-                      ({item.quantity} meal{item.quantity > 1 ? "s" : ""})
-                    </span>
-                  )}
+              <div key={index} className="flex flex-col gap-0.5 text-sm">
+                <div className="flex justify-between items-center">
+                  <div className="flex-1">
+                    <span className="font-medium">{item.name}</span>
+                    <span className="text-muted-foreground ml-1">(x{item.quantity})</span>
+                  </div>
                 </div>
+                {item.customization && (
+                  <div className="ml-2 mt-0.5 inline-block px-2 py-0.5 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-200 rounded text-xs font-medium">
+                    {item.customization}
+                  </div>
+                )}
               </div>
             ))}
           </div>
 
           {/* Special Instructions */}
-          {order.special_instructions && (
+          {order.specialInstructions && (
             <div className="p-2 bg-muted/20 rounded text-sm">
               <span className="font-medium">Note: </span>
-              {order.special_instructions}
+              {order.specialInstructions}
             </div>
           )}
 

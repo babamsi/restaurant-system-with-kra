@@ -1142,7 +1142,8 @@ export const tableOrdersService = {
     total_amount = 0,
     special_instructions,
     notes,
-    items
+    items,
+    session_id
   }: {
     table_number: string;
     table_id: number;
@@ -1163,6 +1164,7 @@ export const tableOrdersService = {
       portion_size?: string;
       customization_notes?: string;
     }>;
+    session_id?: string;
   }) {
     try {
       // Check for existing active order on this table
@@ -1184,7 +1186,8 @@ export const tableOrdersService = {
           tax_amount,
           total_amount,
           special_instructions,
-          notes
+          notes,
+          session_id
         })
         .select()
         .single();

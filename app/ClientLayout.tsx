@@ -8,6 +8,7 @@ import { Toaster } from "@/components/ui/toaster"
 import { useCompleteInventoryStore } from "@/stores/complete-inventory-store"
 import { useCompleteKitchenStore } from "@/stores/complete-kitchen-store"
 import { useCompletePOSStore } from "@/stores/complete-pos-store"
+import { usePathname } from "next/navigation"
 
 export default function ClientLayout({
   children,
@@ -18,6 +19,7 @@ export default function ClientLayout({
   const inventoryStore = useCompleteInventoryStore()
   const kitchenStore = useCompleteKitchenStore()
   const posStore = useCompletePOSStore()
+  const pathname = usePathname()
 
   useEffect(() => {
     // Set up cross-module event listeners for real-time sync
@@ -52,7 +54,8 @@ export default function ClientLayout({
   return (
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange={false}>
       <div className="app-layout">
-        <Sidebar />
+        {/* Only show Sidebar if not on customer portal or other public pages */}
+        {!(pathname.startsWith("/customer-portal") || pathname.startsWith("/qr-codes")) && <Sidebar />}
         <main className="app-main">{children}</main>
       </div>
       <Toaster />

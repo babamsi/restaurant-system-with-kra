@@ -76,7 +76,7 @@ export function CompleteCustomerPortal() {
   const searchParams = useSearchParams()
   const tableId = searchParams.get('table')
   const sessionId = searchParams.get('session')
-  
+
   const [searchTerm, setSearchTerm] = useState("")
   const [selectedCategory, setSelectedCategory] = useState("All")
   const [selectedRestaurant, setSelectedRestaurant] = useState<"all" | "Omel Dunia" | "Mamma Mia">("all")
@@ -88,6 +88,9 @@ export function CompleteCustomerPortal() {
   const [existingOrder, setExistingOrder] = useState<any>(null)
   const [placingOrder, setPlacingOrder] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [addingToExisting, setAddingToExisting] = useState(false)
+  const [showPaymentDialog, setShowPaymentDialog] = useState(false)
+  const [showOrderStatus, setShowOrderStatus] = useState(false)
 
   // Recipe and cart state
   const [recipes, setRecipes] = useState<Recipe[]>([])
@@ -227,16 +230,14 @@ export function CompleteCustomerPortal() {
   const handleConfirmAddToCart = () => {
     if (!customizingItem) return
 
-    const { menuItem } = customizingItem
-    let displayText = menuItem.name
-
-    const cartItemId = `${menuItem.id}${customizationNotes ? `-${customizationNotes}` : ""}`
+    let displayText = customizingItem.name
+    const cartItemId = `${customizingItem.id}${customizationNotes ? `-${customizationNotes}` : ""}`
 
     const newCartItem: CartItem = {
-      ...menuItem,
+      ...customizingItem,
       id: cartItemId,
       quantity: 1,
-      total_price: menuItem.price,
+      total_price: customizingItem.price,
       customization: customizationNotes,
     }
 
@@ -366,11 +367,11 @@ export function CompleteCustomerPortal() {
         })
       }
 
-      setShowCheckout(false)
-      setShowCart(false)
+    setShowCheckout(false)
+    setShowCart(false)
       clearCart()
-      setCustomerName("")
-      setCustomerPhone("")
+    setCustomerName("")
+    setCustomerPhone("")
     } catch (error: any) {
       console.error("Error placing order:", error)
       toast({
@@ -382,6 +383,27 @@ export function CompleteCustomerPortal() {
       setPlacingOrder(false)
     }
   }
+
+  // Helper to get readable status
+  const getOrderStatusLabel = (status: string) => {
+    switch (status) {
+      case 'pending': return 'Pending (awaiting confirmation)';
+      case 'preparing': return 'Preparing';
+      case 'ready': return 'Ready for Pickup/Serving';
+      case 'completed': return 'Completed';
+      case 'paid': return 'Paid';
+      default: return status.charAt(0).toUpperCase() + status.slice(1);
+    }
+  }
+
+  // Show order status after placing order or if there's an active order and not adding more
+  useEffect(() => {
+    if (existingOrder && !addingToExisting) {
+      setShowOrderStatus(true)
+    } else {
+      setShowOrderStatus(false)
+    }
+  }, [existingOrder, addingToExisting])
 
   if (loading) {
     return (
@@ -396,74 +418,128 @@ export function CompleteCustomerPortal() {
 
   return (
     <div className="min-h-screen bg-background overflow-hidden">
-      {/* Mobile Header */}
-      <div className="flex-shrink-0 border-b border-border bg-card/50 backdrop-blur-sm">
-        <div className="flex items-center justify-between p-4">
-          <div className="flex items-center gap-3">
-            <h1 className="text-lg font-bold text-primary">Maamul Cafeteria</h1>
-            {isTableOrder && tableInfo && (
-              <Badge variant="default" className="text-xs">
-                <Table className="h-3 w-3 mr-1" />
-                {tableInfo.number}
-              </Badge>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" className="relative" onClick={() => setShowCart(true)}>
-              <ShoppingCart className="h-4 w-4 mr-1" />
-              <span className="hidden sm:inline">Cart</span>
-              {getCartItemCount() > 0 && (
-                <Badge className="absolute -top-2 -right-2 h-5 w-5 rounded-full p-0 flex items-center justify-center text-xs">
-                  {getCartItemCount()}
-                </Badge>
-              )}
-            </Button>
-          </div>
-        </div>
-      </div>
-
-      {/* Table Order Info */}
-      {isTableOrder && tableInfo && (
-        <div className="bg-primary/10 border-b border-primary/20">
-          <div className="px-4 py-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2">
-                  <Users className="h-4 w-4 text-primary" />
-                  <span className="font-medium text-sm">Table {tableInfo.number}</span>
+      {/* Order Status Card (show after placing order or if there's an active order and not adding more) */}
+      {showOrderStatus && isTableOrder && existingOrder && !addingToExisting && (
+        <div className="flex flex-col items-center justify-center min-h-[60vh] px-3 py-8">
+          <Card className="w-full max-w-xs mx-auto shadow-lg border-yellow-300 border-2 bg-yellow-50 dark:bg-yellow-900/20">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Activity className="h-5 w-5 text-yellow-600 animate-pulse" />
+                <span className="font-semibold text-yellow-800 dark:text-yellow-200 text-base">
+                  Order for <span className="font-bold">{tableInfo?.number}</span>
+                </span>
+              </div>
+              <div className="text-xs text-yellow-700 dark:text-yellow-200 mb-2">
+                Status: <span className="font-semibold">{getOrderStatusLabel(existingOrder.status)}</span>
+              </div>
+              <div className="mb-3">
+                <div className="font-semibold text-sm mb-1">Items in your order:</div>
+                <div className="space-y-2 max-h-40 overflow-auto">
+                  {existingOrder.items && existingOrder.items.length > 0 ? (
+                    existingOrder.items.map((item: any) => (
+                      <div key={item.id} className="flex items-center justify-between bg-yellow-100 dark:bg-yellow-900/40 rounded px-2 py-1">
+                        <div className="flex-1">
+                          <span className="font-medium text-sm">{item.menu_item_name}</span>
+                          {item.portion_size && <span className="text-xs text-muted-foreground ml-1">({item.portion_size})</span>}
+                          {item.customization_notes && <span className="block text-xs text-yellow-700 dark:text-yellow-200 italic">{item.customization_notes}</span>}
+                        </div>
+                        <span className="text-xs font-semibold">x{item.quantity}</span>
+                        <span className="text-xs font-semibold ml-2">Ksh {item.total_price?.toFixed(2)}</span>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-xs text-muted-foreground">No items in this order yet.</div>
+                  )}
                 </div>
-                {existingOrder && (
-                  <div className="flex items-center gap-2">
-                    <Activity className="h-3 w-3 text-green-600" />
-                    <span className="text-xs text-green-700">Order: #{existingOrder.id.slice(-6)}</span>
-                  </div>
-                )}
               </div>
-              <div className="text-xs text-muted-foreground">
-                Scan QR code to order
+              <div className="flex flex-col gap-2 mt-4">
+                <Button
+                  size="sm"
+                  className="rounded-full px-4 py-1 text-xs h-9 bg-yellow-500 hover:bg-yellow-600 text-yellow-50 font-semibold"
+                  onClick={() => { setAddingToExisting(true); setShowOrderStatus(false); }}
+                >
+                  Add More Items
+                </Button>
               </div>
-            </div>
-          </div>
+            </CardContent>
+          </Card>
         </div>
       )}
 
-      {/* Mobile Filters */}
-      <div className="bg-white dark:bg-gray-900 border-b">
-        <div className="p-4">
-          <div className="flex items-center gap-2 flex-wrap">
-            <Select value={selectedRestaurant} onValueChange={(value) => setSelectedRestaurant(value as "all" | "Omel Dunia" | "Mamma Mia")}>
-              <SelectTrigger className="w-32 text-xs">
-                <SelectValue placeholder="Restaurant" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All</SelectItem>
-                <SelectItem value="Omel Dunia">Omel Dunia</SelectItem>
-                <SelectItem value="Mamma Mia">Mamma Mia</SelectItem>
-              </SelectContent>
-            </Select>
+      {/* Payment Dialog (placeholder, you can expand this as needed) */}
+      <Dialog open={showPaymentDialog} onOpenChange={setShowPaymentDialog}>
+        <DialogContent className="max-w-xs w-full mx-auto rounded-xl p-0 overflow-hidden">
+          <DialogHeader className="p-3 border-b">
+            <DialogTitle>Payment Coming Soon</DialogTitle>
+          </DialogHeader>
+          <div className="p-4 text-center text-muted-foreground">
+            Payment processing will be available soon. Please pay at the counter or ask a staff member.
+            </div>
+          <DialogFooter className="p-3 pt-0 flex gap-2">
+            <Button onClick={() => setShowPaymentDialog(false)} className="w-full">Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Recipes, Cart, and Checkout (always show unless order just placed or user is viewing status) */}
+      {(!showOrderStatus || addingToExisting || !isTableOrder) && (
+        <>
+          {/* Mobile Header */}
+          <div className="flex-shrink-0 border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-20">
+            <div className="flex items-center justify-between p-3">
+              <div className="flex items-center gap-2">
+                <h1 className="text-base font-bold text-primary tracking-tight">Maamul Cafeteria</h1>
+                {isTableOrder && tableInfo && (
+                  <Badge variant="default" className="text-xs px-2 py-0.5">
+                    <Table className="h-3 w-3 mr-1" />
+                    {tableInfo.number}
+                  </Badge>
+                )}
+              </div>
+              <Button variant="outline" size="icon" className="relative rounded-full h-9 w-9 p-0" onClick={() => setShowCart(true)}>
+                <ShoppingCart className="h-5 w-5" />
+                {getCartItemCount() > 0 && (
+                  <Badge className="absolute -top-2 -right-2 h-5 w-5 rounded-full p-0 flex items-center justify-center text-xs">
+                    {getCartItemCount()}
+                  </Badge>
+                )}
+              </Button>
+            </div>
+          </div>
+
+          {/* Table Order Info */}
+          {isTableOrder && tableInfo && (
+            <div className="bg-primary/10 border-b border-primary/20">
+              <div className="px-3 py-2 text-xs flex items-center gap-2 justify-between">
+                <span className="flex items-center gap-1 text-primary font-medium">
+                  <Users className="h-4 w-4" /> Table {tableInfo.number}
+                </span>
+                {existingOrder && (
+                  <span className="flex items-center gap-1 text-green-700">
+                    <Activity className="h-3 w-3" /> Order: #{existingOrder.id.slice(-6)}
+                  </span>
+                )}
+                <span className="text-muted-foreground">Scan QR to order</span>
+        </div>
+      </div>
+          )}
+
+          {/* Mobile Filters */}
+          <div className="bg-white dark:bg-gray-900 border-b sticky top-[48px] z-10">
+            <div className="p-3 flex items-center gap-2 flex-wrap">
+              <Select value={selectedRestaurant} onValueChange={(value) => setSelectedRestaurant(value as "all" | "Omel Dunia" | "Mamma Mia")}>
+                <SelectTrigger className="w-28 text-xs h-8">
+                  <SelectValue placeholder="Restaurant" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="Omel Dunia">Omel Dunia</SelectItem>
+                  <SelectItem value="Mamma Mia">Mamma Mia</SelectItem>
+                </SelectContent>
+              </Select>
             <Select value={selectedCategory} onValueChange={setSelectedCategory}>
-              <SelectTrigger className="w-32 text-xs">
-                <SelectValue placeholder="Category" />
+                <SelectTrigger className="w-28 text-xs h-8">
+                  <SelectValue placeholder="Category" />
               </SelectTrigger>
               <SelectContent>
                 {categories.map((category) => (
@@ -473,258 +549,229 @@ export function CompleteCustomerPortal() {
                 ))}
               </SelectContent>
             </Select>
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Search menu..."
-                className="pl-10 text-sm"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
+              <div className="relative flex-1 min-w-[120px]">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Search menu..."
+                  className="pl-9 text-xs h-8 rounded-full"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                />
+              </div>
             </div>
           </div>
-        </div>
-      </div>
 
-      {/* Mobile Menu Items */}
-      <div className="flex-1 overflow-auto p-4 bg-muted/20">
-        {loading ? (
-          <div className="flex items-center justify-center h-full">
-            <div className="text-center">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
-              <p className="text-muted-foreground">Loading recipes...</p>
-            </div>
+          {/* Mobile Menu Items */}
+          <div className="flex-1 overflow-auto p-2 bg-muted/20">
+            {loading ? (
+              <div className="flex items-center justify-center h-full">
+                <div className="text-center">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
+                  <p className="text-muted-foreground">Loading recipes...</p>
+        </div>
           </div>
         ) : (
-          <div>
-            {Object.entries(groupedRecipes).map(([category, items]) => (
-              <div key={category} className="mb-6">
-                <h2 className="text-lg font-bold mb-3">{category}</h2>
-                <div className="grid grid-cols-1 gap-3">
-                  {items.map(item => (
-                    <Card
-                      key={item.id}
-                      className="overflow-hidden group transition-all duration-300 hover:shadow-lg border-2 border-transparent hover:border-primary/70"
-                    >
-                      <CardContent className="p-0">
-                        <div className="aspect-[4/3] bg-muted relative overflow-hidden">
-                          <div className="flex items-center justify-center h-full text-4xl text-muted-foreground/30">
-                            🍽️
-                          </div>
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/30 to-transparent" />
-                          <h3 className="absolute bottom-2 left-3 font-bold text-white text-base drop-shadow-lg">
-                            {item.name}
-                          </h3>
-                          <Badge variant="secondary" className="absolute top-2 right-2 text-xs">
-                            {item.restaurant}
-                          </Badge>
-                        </div>
-                        <div className="p-3 space-y-2">
-                          <div className="flex items-center justify-between">
-                            <span className="font-bold text-lg text-primary">Ksh {item.price}</span>
-                            <p className="text-xs text-muted-foreground line-clamp-2 max-w-[120px] text-right">{item.description}</p>
-                          </div>
-                          <Button
-                            size="sm"
-                            className="w-full rounded-full"
-                            onClick={() => handleOpenCustomization(item)}
-                            disabled={item.available_quantity === 0}
-                          >
-                            <Plus className="h-4 w-4 mr-1" />
-                            Add to Order
-                          </Button>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ))}
-                </div>
-              </div>
+              <div>
+                {Object.entries(groupedRecipes).map(([category, items]) => (
+                  <div key={category} className="mb-4">
+                    <h2 className="text-base font-semibold mb-2 px-1 text-primary/80 tracking-tight">{category}</h2>
+                    <div className="flex flex-col gap-2">
+                      {items.map(item => (
+                        <Card
+                          key={item.id}
+                          className="overflow-hidden group border border-border rounded-xl bg-white dark:bg-card shadow-sm"
+                        >
+                          <CardContent className="p-0 flex items-center gap-3">
+                            <div className="w-20 h-20 flex-shrink-0 flex items-center justify-center bg-muted rounded-l-xl">
+                              <span className="text-3xl text-muted-foreground/30">🍽️</span>
+                    </div>
+                            <div className="flex-1 py-2 pr-2">
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="font-semibold text-base text-primary line-clamp-1">{item.name}</span>
+                                <Badge variant="secondary" className="text-[10px] px-2 py-0.5 ml-2">{item.restaurant}</Badge>
+                  </div>
+                              <p className="text-xs text-muted-foreground line-clamp-2 mb-1">{item.description}</p>
+                              <div className="flex items-center justify-between mt-2">
+                                <span className="font-bold text-lg text-primary">Ksh {item.price}</span>
+                      <Button
+                        size="sm"
+                                  className="rounded-full px-4 py-1 text-xs h-8"
+                                  onClick={() => handleOpenCustomization(item)}
+                        disabled={item.available_quantity === 0}
+                      >
+                                  <Plus className="h-4 w-4 mr-1" />Add
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
             ))}
-            {Object.keys(groupedRecipes).length === 0 && !loading && (
-              <div className="text-center py-12 text-muted-foreground">
-                <p className="text-lg mb-2">No recipes found</p>
-                <p className="text-sm">Try adjusting your search or filters</p>
-              </div>
-            )}
+                    </div>
+                  </div>
+                ))}
+                {Object.keys(groupedRecipes).length === 0 && !loading && (
+                  <div className="text-center py-12 text-muted-foreground">
+                    <p className="text-lg mb-2">No recipes found</p>
+                    <p className="text-sm">Try adjusting your search or filters</p>
+                  </div>
+                )}
           </div>
         )}
       </div>
 
-      {/* Cart Dialog */}
+          {/* Cart & Checkout Dialog: single step */}
       <Dialog open={showCart} onOpenChange={setShowCart}>
-        <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>
-              <div className="flex items-center gap-2">
-                <ShoppingCart className="h-5 w-5" />
-                Your Order
-                {isTableOrder && tableInfo && (
-                  <Badge variant="outline" className="ml-2">
-                    {tableInfo.number}
-                  </Badge>
-                )}
-              </div>
+            <DialogContent className="max-w-xs w-full mx-auto rounded-xl p-0 overflow-hidden">
+              <DialogHeader className="p-3 border-b">
+                <DialogTitle>
+                  <div className="flex items-center gap-2">
+              <ShoppingCart className="h-5 w-5" />
+                    Your Order
+                    {isTableOrder && tableInfo && (
+                      <Badge variant="outline" className="ml-2">
+                        {tableInfo.number}
+                      </Badge>
+                    )}
+                  </div>
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
+              <div className="space-y-3 p-3">
             {cart.length === 0 ? (
               <div className="text-center py-8">
-                <ShoppingCart className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                    <ShoppingCart className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
                 <p className="text-muted-foreground">Your cart is empty</p>
               </div>
             ) : (
               <>
-                <div className="space-y-3 max-h-64 overflow-auto">
+                    <div className="space-y-2 max-h-56 overflow-auto">
                   {cart.map((item) => (
-                    <div key={item.id} className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
-                      <div className="flex-1">
-                        <h4 className="font-medium">{item.name}</h4>
-                        <p className="text-sm text-muted-foreground">
-                          Ksh {item.price.toFixed(2)} × {item.quantity}
-                        </p>
-                        {item.customization && (
-                          <p className="text-xs text-primary/80 bg-primary/10 p-1 rounded mt-1">
-                            {item.customization}
-                          </p>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold">Ksh {item.total_price.toFixed(2)}</span>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8"
-                          onClick={() => removeFromCart(item.id)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
+                        <div key={item.id} className="flex items-center justify-between p-2 bg-muted/50 rounded-lg">
+                          <div className="flex-1">
+                            <h4 className="font-medium text-sm line-clamp-1">{item.name}</h4>
+                            <p className="text-xs text-muted-foreground">
+                              Ksh {item.price.toFixed(2)} × {item.quantity}
+                            </p>
+                            {item.customization && (
+                              <p className="text-xs text-primary/80 bg-primary/10 p-1 rounded mt-1">
+                                {item.customization}
+                              </p>
+                            )}
+                          </div>
+                          <div className="flex flex-col items-end gap-1">
+                            <span className="font-bold text-sm">Ksh {item.total_price.toFixed(2)}</span>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              onClick={() => removeFromCart(item.id)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-                <Separator />
-                <div className="space-y-2">
-                  <div className="flex justify-between">
+                    <Separator />
+                    <div className="space-y-1 text-sm">
+                      <div className="flex justify-between">
                     <span>Subtotal:</span>
-                    <span>Ksh {getCartTotal().toFixed(2)}</span>
+                        <span>Ksh {getCartTotal().toFixed(2)}</span>
                   </div>
-                  <div className="flex justify-between text-sm text-muted-foreground">
+                      <div className="flex justify-between text-xs text-muted-foreground">
                     <span>Tax (16%):</span>
-                    <span>Ksh {(getCartTotal() * 0.16).toFixed(2)}</span>
+                        <span>Ksh {(getCartTotal() * 0.16).toFixed(2)}</span>
                   </div>
-                  <div className="flex justify-between font-bold text-lg">
+                      <div className="flex justify-between font-bold text-base">
                     <span>Total:</span>
-                    <span>Ksh {getTotal().toFixed(2)}</span>
+                        <span className="font-bold">Ksh {getTotal().toFixed(2)}</span>
                   </div>
                 </div>
-                <Button className="w-full" onClick={() => setShowCheckout(true)}>
-                  Proceed to Checkout
-                </Button>
+                    {/* Single step checkout: name/phone and place order */}
+                    {!existingOrder && (
+                      <>
+                        <div>
+                          <label className="text-xs font-medium">Name (Optional)</label>
+                          <Input
+                            placeholder="Your name"
+                            value={customerName}
+                            onChange={(e) => setCustomerName(e.target.value)}
+                            className="h-8 text-xs"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium">Phone (Optional)</label>
+                          <Input
+                            placeholder="Your phone number"
+                            value={customerPhone}
+                            onChange={(e) => setCustomerPhone(e.target.value)}
+                            className="h-8 text-xs"
+                          />
+                </div>
+                      </>
+                    )}
+                    <Button 
+                      className="w-full mt-2" 
+                      onClick={async () => {
+                        await completeOrder();
+                        setShowCart(false);
+                        setShowOrderStatus(true);
+                        setAddingToExisting(false);
+                      }}
+                      disabled={placingOrder}
+                    >
+                      {placingOrder ? (
+                        <span className="flex items-center justify-center">
+                          <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></span>
+                          Placing...
+                        </span>
+                      ) : (
+                        <>
+                          <CheckCircle className="h-4 w-4 mr-2" />
+                          {isTableOrder ? "Place Table Order" : "Place Order"}
+                        </>
+                      )}
+                    </Button>
               </>
             )}
           </div>
         </DialogContent>
       </Dialog>
 
-      {/* Checkout Dialog */}
-      <Dialog open={showCheckout} onOpenChange={setShowCheckout}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Complete Your Order</DialogTitle>
+          {/* Customization Dialog */}
+          <Dialog open={isCustomizing} onOpenChange={setIsCustomizing}>
+            <DialogContent className="max-w-xs w-full mx-auto rounded-xl p-0 overflow-hidden">
+              <DialogHeader className="p-3 border-b">
+                <DialogTitle>Customize Item</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
-            {!isTableOrder && (
-              <>
-                <div>
-                  <label className="text-sm font-medium">Name (Optional)</label>
-                  <Input
-                    placeholder="Your name"
-                    value={customerName}
-                    onChange={(e) => setCustomerName(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium">Phone (Optional)</label>
-                  <Input
-                    placeholder="Your phone number"
-                    value={customerPhone}
-                    onChange={(e) => setCustomerPhone(e.target.value)}
-                  />
-                </div>
-              </>
-            )}
-            
-            {isTableOrder && (
-              <div className="bg-primary/10 p-4 rounded-lg">
-                <div className="flex items-center gap-2 mb-2">
-                  <Table className="h-4 w-4 text-primary" />
-                  <span className="font-medium">Table Order</span>
-                </div>
-                <p className="text-sm text-muted-foreground">
-                  Your order will be prepared and served to your table. 
-                  {existingOrder ? " This will be added to your existing order." : ""}
-                </p>
-              </div>
-            )}
-
-            <div className="space-y-2">
-              <div className="flex justify-between">
-                <span>Total:</span>
-                <span className="font-bold">Ksh {getTotal().toFixed(2)}</span>
-              </div>
-            </div>
-            
-            <Button 
-              className="w-full" 
-              onClick={completeOrder}
-              disabled={placingOrder}
-            >
-              {placingOrder ? (
-                <span className="flex items-center justify-center">
-                  <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></span>
-                  Placing Order...
-                </span>
-              ) : (
-                <>
-                  <CheckCircle className="h-4 w-4 mr-2" />
-                  {isTableOrder ? "Place Table Order" : "Place Order"}
-                </>
-              )}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Customization Dialog */}
-      <Dialog open={isCustomizing} onOpenChange={setIsCustomizing}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Customize Item</DialogTitle>
-          </DialogHeader>
-          {customizingItem && (
-            <div className="space-y-4">
-              <div>
-                <h3 className="font-semibold">{customizingItem.name}</h3>
-                {customizingItem.portionSize && (
-                  <p className="text-sm text-muted-foreground capitalize">{customizingItem.portionSize}</p>
-                )}
-              </div>
-              <Textarea
-                placeholder="e.g., No onions, extra spicy..."
-                value={customizationNotes}
-                onChange={(e) => setCustomizationNotes(e.target.value)}
-                rows={4}
+              <div className="p-3">
+                {customizingItem && (
+            <div className="space-y-3">
+                    <div>
+                      <h3 className="font-semibold text-base">{customizingItem.name}</h3>
+                      {customizingItem.portionSize && (
+                        <p className="text-xs text-muted-foreground capitalize">{customizingItem.portionSize}</p>
+                      )}
+                    </div>
+                    <Textarea
+                      placeholder="e.g., No onions, extra spicy..."
+                      value={customizationNotes}
+                      onChange={(e) => setCustomizationNotes(e.target.value)}
+                      rows={3}
+                      className="text-xs"
               />
             </div>
-          )}
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setIsCustomizing(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleConfirmAddToCart}>Add to Order</Button>
-          </DialogFooter>
+                )}
+              </div>
+              <DialogFooter className="p-3 pt-0 flex gap-2">
+                <Button variant="ghost" onClick={() => setIsCustomizing(false)} className="flex-1">
+                Cancel
+              </Button>
+                <Button onClick={handleConfirmAddToCart} className="flex-1">Add to Order</Button>
+              </DialogFooter>
         </DialogContent>
       </Dialog>
+        </>
+      )}
     </div>
   )
 }

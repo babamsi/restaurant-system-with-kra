@@ -155,6 +155,49 @@ CREATE TABLE purchase_order_items (
 );
 
 -- =====================================================
+-- SUPPLIER ORDERS
+-- =====================================================
+
+-- Supplier orders table
+CREATE TABLE supplier_orders (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    supplier_id UUID REFERENCES suppliers(id) ON DELETE RESTRICT,
+    
+    -- Order details
+    invoice_number VARCHAR(100) NOT NULL,
+    order_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    
+    -- Financial
+    total_amount DECIMAL(15,2) DEFAULT 0,
+    vat_amount DECIMAL(15,2) DEFAULT 0,
+    
+    -- Status
+    status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('pending', 'partially_paid', 'paid', 'cancelled')),
+    
+    -- Notes and metadata
+    notes TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Supplier order items table
+CREATE TABLE supplier_order_items (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    order_id UUID REFERENCES supplier_orders(id) ON DELETE CASCADE,
+    ingredient_id UUID REFERENCES ingredients(id) ON DELETE RESTRICT,
+    
+    -- Item details
+    quantity DECIMAL(15,3) NOT NULL,
+    cost_per_unit DECIMAL(15,2) NOT NULL,
+    total_cost DECIMAL(15,2) NOT NULL,
+    
+    -- Notes
+    notes TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- =====================================================
 -- KITCHEN MANAGEMENT
 -- =====================================================
 
@@ -370,6 +413,40 @@ CREATE TABLE table_order_items (
 );
 
 -- =====================================================
+-- SUPPLIER RECEIPTS STORAGE
+-- =====================================================
+
+-- Supplier receipts table for storing receipt images and metadata
+CREATE TABLE supplier_receipts (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    supplier_id UUID REFERENCES suppliers(id) ON DELETE RESTRICT,
+    
+    -- Receipt details
+    receipt_date DATE NOT NULL,
+    invoice_number VARCHAR(100),
+    total_amount DECIMAL(15,2) DEFAULT 0,
+    
+    -- Image storage
+    image_url TEXT NOT NULL, -- URL to the stored image in Supabase Storage
+    image_filename VARCHAR(255) NOT NULL,
+    file_size INTEGER, -- File size in bytes
+    mime_type VARCHAR(100), -- e.g., 'image/jpeg', 'image/png'
+    
+    -- OCR and processing
+    ocr_text TEXT, -- Extracted text from OCR
+    is_processed BOOLEAN DEFAULT false,
+    processed_at TIMESTAMP WITH TIME ZONE,
+    
+    -- Status and metadata
+    status VARCHAR(50) DEFAULT 'uploaded' CHECK (status IN ('uploaded', 'processing', 'processed', 'error')),
+    notes TEXT,
+    
+    -- Timestamps
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- =====================================================
 -- INDEXES FOR PERFORMANCE
 -- =====================================================
 
@@ -388,6 +465,16 @@ CREATE INDEX idx_ingredients_stock ON ingredients(current_stock);
 CREATE INDEX idx_purchase_orders_supplier ON purchase_orders(supplier_id);
 CREATE INDEX idx_purchase_orders_status ON purchase_orders(status);
 CREATE INDEX idx_purchase_orders_date ON purchase_orders(order_date);
+
+-- Supplier orders indexes
+CREATE INDEX idx_supplier_orders_supplier ON supplier_orders(supplier_id);
+CREATE INDEX idx_supplier_orders_status ON supplier_orders(status);
+CREATE INDEX idx_supplier_orders_date ON supplier_orders(order_date);
+CREATE INDEX idx_supplier_orders_invoice ON supplier_orders(invoice_number);
+
+-- Supplier order items indexes
+CREATE INDEX idx_supplier_order_items_order ON supplier_order_items(order_id);
+CREATE INDEX idx_supplier_order_items_ingredient ON supplier_order_items(ingredient_id);
 
 -- Kitchen storage indexes
 CREATE INDEX idx_kitchen_storage_ingredient ON kitchen_storage(ingredient_id);
@@ -420,6 +507,12 @@ CREATE INDEX idx_table_order_items_order_id ON table_order_items(order_id);
 CREATE INDEX idx_table_order_items_status ON table_order_items(status);
 CREATE INDEX idx_table_order_items_menu_item ON table_order_items(menu_item_id);
 
+-- Supplier receipts indexes
+CREATE INDEX idx_supplier_receipts_supplier ON supplier_receipts(supplier_id);
+CREATE INDEX idx_supplier_receipts_date ON supplier_receipts(receipt_date);
+CREATE INDEX idx_supplier_receipts_status ON supplier_receipts(status);
+CREATE INDEX idx_supplier_receipts_processed ON supplier_receipts(is_processed);
+
 -- =====================================================
 -- TRIGGERS FOR UPDATED_AT
 -- =====================================================
@@ -444,6 +537,7 @@ CREATE TRIGGER update_recipes_updated_at BEFORE UPDATE ON recipes FOR EACH ROW E
 CREATE TRIGGER update_recipe_ingredients_updated_at BEFORE UPDATE ON recipe_ingredients FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_batches_updated_at BEFORE UPDATE ON batches FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_batch_ingredients_updated_at BEFORE UPDATE ON batch_ingredients FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_supplier_receipts_updated_at BEFORE UPDATE ON supplier_receipts FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_table_orders_updated_at BEFORE UPDATE ON table_orders FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_table_order_items_updated_at BEFORE UPDATE ON table_order_items FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
@@ -499,6 +593,7 @@ ALTER TABLE recipe_ingredients ENABLE ROW LEVEL SECURITY;
 ALTER TABLE batches ENABLE ROW LEVEL SECURITY;
 ALTER TABLE batch_ingredients ENABLE ROW LEVEL SECURITY;
 ALTER TABLE system_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE supplier_receipts ENABLE ROW LEVEL SECURITY;
 
 -- Note: RLS policies will be created when authentication is set up
 -- For now, we'll create basic policies that allow all operations
@@ -517,6 +612,7 @@ CREATE POLICY "Allow all operations on recipe_ingredients" ON recipe_ingredients
 CREATE POLICY "Allow all operations on batches" ON batches FOR ALL USING (true);
 CREATE POLICY "Allow all operations on batch_ingredients" ON batch_ingredients FOR ALL USING (true);
 CREATE POLICY "Allow all operations on system_logs" ON system_logs FOR ALL USING (true);
+CREATE POLICY "Allow all operations on supplier_receipts" ON supplier_receipts FOR ALL USING (true);
 
 -- =====================================================
 -- COMMENTS FOR DOCUMENTATION
@@ -534,6 +630,7 @@ COMMENT ON TABLE recipe_ingredients IS 'Ingredients required for each recipe';
 COMMENT ON TABLE batches IS 'Batch preparation records';
 COMMENT ON TABLE batch_ingredients IS 'Ingredients used in each batch';
 COMMENT ON TABLE system_logs IS 'System activity logs for auditing';
+COMMENT ON TABLE supplier_receipts IS 'Stores images and metadata of supplier receipts';
 
 COMMENT ON COLUMN ingredients.current_stock IS 'Current available quantity in main inventory';
 COMMENT ON COLUMN ingredients.minimum_stock IS 'Minimum stock level before reorder';
@@ -542,3 +639,19 @@ COMMENT ON COLUMN kitchen_storage.used_grams IS 'Track used grams for ingredient
 COMMENT ON COLUMN batches.status IS 'Current status of batch preparation';
 COMMENT ON COLUMN batch_ingredients.is_batch IS 'Whether this ingredient is another batch';
 COMMENT ON COLUMN batch_ingredients.source_batch_id IS 'Reference to source batch if is_batch is true'; 
+
+-- =====================================================
+-- STORAGE BUCKETS
+-- =====================================================
+
+-- Create storage bucket for receipt images
+-- Note: This requires the storage extension to be enabled
+-- Run this in Supabase SQL editor after enabling storage
+
+-- INSERT INTO storage.buckets (id, name, public) VALUES ('receipts', 'receipts', true);
+
+-- Storage policy for receipts bucket (run after creating bucket)
+-- CREATE POLICY "Public Access" ON storage.objects FOR SELECT USING (bucket_id = 'receipts');
+-- CREATE POLICY "Authenticated users can upload receipts" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'receipts' AND auth.role() = 'authenticated');
+-- CREATE POLICY "Users can update their own receipts" ON storage.objects FOR UPDATE USING (bucket_id = 'receipts' AND auth.uid()::text = (storage.foldername(name))[1]);
+-- CREATE POLICY "Users can delete their own receipts" ON storage.objects FOR DELETE USING (bucket_id = 'receipts' AND auth.uid()::text = (storage.foldername(name))[1]); 

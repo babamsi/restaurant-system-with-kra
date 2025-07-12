@@ -1122,6 +1122,79 @@ export const supplierOrdersService = {
     } catch (error) {
       return { success: false, error: handleSupabaseError(error) }
     }
+  },
+
+  // Mark order as paid with payment details
+  async markOrderAsPaid(order_id: string, payment_method: string, payment_amount?: number) {
+    try {
+      // Since supplier_orders table doesn't have payment columns, we'll use the notes field
+      // to store payment information and update status
+      const paymentInfo = {
+        method: payment_method,
+        amount: payment_amount,
+        date: new Date().toISOString()
+      }
+      
+      // Get current order to check if it's already partially paid
+      const { data: currentOrder } = await supabase
+        .from('supplier_orders')
+        .select('*')
+        .eq('id', order_id)
+        .single()
+      
+      if (!currentOrder) {
+        throw new Error('Order not found')
+      }
+      
+      // Parse existing payment info from notes if any
+      let existingPayments: any[] = []
+      if (currentOrder.notes) {
+        try {
+          const parsed = JSON.parse(currentOrder.notes)
+          if (parsed.payments && Array.isArray(parsed.payments)) {
+            existingPayments = parsed.payments
+          }
+        } catch (e) {
+          // If notes is not JSON, treat as regular notes
+        }
+      }
+      
+      // Add new payment
+      existingPayments.push(paymentInfo)
+      
+      // Calculate total paid amount
+      const totalPaid = existingPayments.reduce((sum, payment) => sum + (payment.amount || 0), 0)
+      
+      // Determine status based on payment amount
+      let status = 'pending'
+      if (totalPaid >= currentOrder.total_amount) {
+        status = 'paid'
+      } else if (totalPaid > 0) {
+        status = 'partially_paid'
+      }
+      
+      // Update order with payment info in notes
+      const updatedNotes = {
+        original_notes: currentOrder.notes,
+        payments: existingPayments,
+        total_paid: totalPaid,
+        remaining_amount: Math.max(0, currentOrder.total_amount - totalPaid)
+      }
+      
+      const { data, error } = await supabase
+        .from('supplier_orders')
+        .update({ 
+          status,
+          notes: JSON.stringify(updatedNotes)
+        })
+        .eq('id', order_id)
+        .select()
+        .single()
+      
+      return { data, error: error?.message || null }
+    } catch (error) {
+      return { data: null, error: handleSupabaseError(error) }
+    }
   }
 };
 
@@ -1367,6 +1440,264 @@ export const tableOrdersService = {
       return { data, error: error?.message || null };
     } catch (error) {
       return { data: null, error: handleSupabaseError(error) };
+    }
+  },
+
+  // Helper to recalculate and update order totals
+  async recalculateOrderTotals(order_id: string) {
+    // Get all items for this order
+    const { data: items, error: itemsError } = await supabase
+      .from('table_order_items')
+      .select('total_price')
+      .eq('order_id', order_id)
+    if (itemsError) return { error: itemsError.message }
+    const subtotal = items?.reduce((sum, item) => sum + item.total_price, 0) || 0
+    const taxAmount = subtotal * 0.16
+    const totalAmount = subtotal + taxAmount
+    const { error: updateError } = await supabase
+      .from('table_orders')
+      .update({
+        subtotal,
+        tax_amount: taxAmount,
+        total_amount: totalAmount
+      })
+      .eq('id', order_id)
+    return { error: updateError?.message || null }
+  },
+
+  // After editing an item
+  async updateOrderItem(order_id: string, menu_item_id: string, updateData: any) {
+    const { data: orderItem, error } = await supabase
+      .from('table_order_items')
+      .update(updateData)
+      .eq('order_id', order_id)
+      .eq('menu_item_id', menu_item_id)
+      .select()
+      .single()
+    if (error) return { error: error.message }
+    await this.recalculateOrderTotals(order_id)
+    return { data: orderItem, error: null }
+  },
+
+  // After removing an item
+  async removeOrderItem(order_id: string, menu_item_id: string) {
+    const { error } = await supabase
+      .from('table_order_items')
+      .delete()
+      .eq('order_id', order_id)
+      .eq('menu_item_id', menu_item_id)
+    if (error) return { error: error.message }
+    await this.recalculateOrderTotals(order_id)
+    return { error: null }
+  },
+
+  // After replacing an item (update menu_item_id, etc.)
+  async replaceOrderItem(order_id: string, old_menu_item_id: string, newItemData: any) {
+    const { data: orderItem, error } = await supabase
+      .from('table_order_items')
+      .update(newItemData)
+      .eq('order_id', order_id)
+      .eq('menu_item_id', old_menu_item_id)
+      .select()
+      .single()
+    if (error) return { error: error.message }
+    await this.recalculateOrderTotals(order_id)
+    return { data: orderItem, error: null }
+  }
+};
+
+// =====================================================
+// SUPPLIER RECEIPTS SERVICE
+// =====================================================
+
+export const supplierReceiptsService = {
+  // Upload a new supplier receipt
+  async uploadReceipt({
+    supplier_id,
+    receipt_date,
+    invoice_number,
+    total_amount,
+    image_url,
+    image_filename,
+    file_size,
+    mime_type,
+    notes
+  }: {
+    supplier_id: string
+    receipt_date: string
+    invoice_number?: string
+    total_amount: number
+    image_url: string
+    image_filename: string
+    file_size: number
+    mime_type: string
+    notes?: string
+  }) {
+    try {
+      const { data, error } = await supabase
+        .from('supplier_receipts')
+        .insert({
+          supplier_id,
+          receipt_date,
+          invoice_number: invoice_number || null,
+          total_amount,
+          image_url,
+          image_filename,
+          file_size,
+          mime_type,
+          notes: notes || null,
+          status: 'uploaded'
+        })
+        .select()
+        .single()
+
+      if (error) {
+        throw new Error(error.message)
+      }
+
+      return { data, success: true }
+    } catch (error) {
+      return { data: null, success: false, error: handleSupabaseError(error) }
+    }
+  },
+
+  // Get all receipts with supplier and order information
+  async getReceipts() {
+    try {
+      const { data, error } = await supabase
+        .from('supplier_receipts')
+        .select(`
+          *,
+          suppliers (
+            name,
+            contact_person
+          )
+        `)
+        .order('created_at', { ascending: false })
+
+      if (error) {
+        throw new Error(error.message)
+      }
+
+      // For each receipt, try to find a linked supplier order
+      const receiptsWithOrders = await Promise.all((data || []).map(async (receipt) => {
+        if (receipt.invoice_number) {
+          const { data: orderData } = await supabase
+            .from('supplier_orders')
+            .select('*')
+            .eq('invoice_number', receipt.invoice_number)
+            .eq('supplier_id', receipt.supplier_id)
+            .single()
+          
+          return {
+            ...receipt,
+            linked_order: orderData || null
+          }
+        }
+        return receipt
+      }))
+
+      return { data: receiptsWithOrders, success: true }
+    } catch (error) {
+      return { data: null, success: false, error: handleSupabaseError(error) }
+    }
+  },
+
+  // Get receipts by supplier
+  async getReceiptsBySupplier(supplier_id: string) {
+    try {
+      const { data, error } = await supabase
+        .from('supplier_receipts')
+        .select(`
+          *,
+          suppliers (
+            name,
+            contact_person
+          )
+        `)
+        .eq('supplier_id', supplier_id)
+        .order('created_at', { ascending: false })
+
+      if (error) {
+        throw new Error(error.message)
+      }
+
+      return { data, success: true }
+    } catch (error) {
+      return { data: null, success: false, error: handleSupabaseError(error) }
+    }
+  },
+
+  // Get supplier orders for receipt linking
+  async getSupplierOrders(supplier_id: string) {
+    try {
+      const { data, error } = await supabase
+        .from('supplier_orders')
+        .select('*')
+        .eq('supplier_id', supplier_id)
+        .order('order_date', { ascending: false })
+
+      if (error) {
+        throw new Error(error.message)
+      }
+
+      return { data, success: true }
+    } catch (error) {
+      return { data: null, success: false, error: handleSupabaseError(error) }
+    }
+  },
+
+  // Link receipt to supplier order
+  async linkReceiptToOrder(receipt_id: string, order_id: string) {
+    try {
+      // Get the order details
+      const { data: order, error: orderError } = await supabase
+        .from('supplier_orders')
+        .select('*')
+        .eq('id', order_id)
+        .single()
+
+      if (orderError || !order) {
+        throw new Error('Order not found')
+      }
+
+      // Update the receipt with order information
+      const { data, error } = await supabase
+        .from('supplier_receipts')
+        .update({
+          invoice_number: order.invoice_number,
+          total_amount: order.total_amount,
+          notes: `Linked to order ${order.invoice_number}`
+        })
+        .eq('id', receipt_id)
+        .select()
+        .single()
+
+      if (error) {
+        throw new Error(error.message)
+      }
+
+      return { data, success: true }
+    } catch (error) {
+      return { data: null, success: false, error: handleSupabaseError(error) }
+    }
+  },
+
+  // Delete receipt
+  async deleteReceipt(receipt_id: string) {
+    try {
+      const { error } = await supabase
+        .from('supplier_receipts')
+        .delete()
+        .eq('id', receipt_id)
+
+      if (error) {
+        throw new Error(error.message)
+      }
+
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: handleSupabaseError(error) }
     }
   }
 }

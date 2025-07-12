@@ -21,6 +21,9 @@ import {
   FileText,
   CheckCircle,
   QrCode,
+  Pencil,
+  XCircle,
+  RefreshCw,
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { useCompletePOSStore, useCompletePOSStore as usePOSStore } from "@/stores/complete-pos-store"
@@ -138,6 +141,16 @@ export function CorrectedPOSSystem() {
 
   const [showQRDialog, setShowQRDialog] = useState(false)
   const [qrCodes, setQrCodes] = useState<Record<number, string>>({})
+
+  // Add state for editing an existing item
+  const [editingExistingItem, setEditingExistingItem] = useState<null | { item: CartItem; index: number }>(null)
+  const [editItemQuantity, setEditItemQuantity] = useState(1)
+  const [editItemCustomization, setEditItemCustomization] = useState("")
+  const [editItemPortionSize, setEditItemPortionSize] = useState<string | undefined>(undefined)
+
+  // Add state for replacing an existing item
+  const [replacingExistingItem, setReplacingExistingItem] = useState<null | { item: CartItem; index: number }>(null)
+  const [replaceSelectedMenuItem, setReplaceSelectedMenuItem] = useState<ExtendedMenuItem | null>(null)
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000)
@@ -1041,6 +1054,127 @@ export function CorrectedPOSSystem() {
     setShowQRDialog(true)
   }
 
+  // Handler to start editing an existing item
+  const handleEditExistingItem = (item: CartItem, index: number) => {
+    setEditingExistingItem({ item, index })
+    setEditItemQuantity(item.quantity)
+    setEditItemCustomization(item.customization || "")
+    setEditItemPortionSize(item.portionSize)
+  }
+
+  // Handler to save the edited item
+  const handleSaveEditExistingItem = async () => {
+    if (!editingExistingItem || !editingOrderId) return
+    const item = editingExistingItem.item
+    // Update the item in the database
+    try {
+      // Find the order item in the DB
+      const { data: orderItem } = await supabase
+        .from('table_order_items')
+        .select('*')
+        .eq('order_id', editingOrderId)
+        .eq('menu_item_id', item.id)
+        .single()
+      if (!orderItem) throw new Error('Order item not found')
+      // Update the item
+      const { error } = await supabase
+        .from('table_order_items')
+        .update({
+          quantity: editItemQuantity,
+          customization_notes: editItemCustomization,
+          portion_size: editItemPortionSize,
+          total_price: item.unit_price * editItemQuantity,
+        })
+        .eq('id', orderItem.id)
+      if (error) throw new Error(error.message)
+      toast({ title: 'Item Updated', description: `${item.name} updated in order.` })
+      setEditingExistingItem(null)
+      await loadTableOrders()
+      setExistingOrderItems((prev) => prev.map((ci, idx) => idx === editingExistingItem.index ? {
+        ...ci,
+        quantity: editItemQuantity,
+        customization: editItemCustomization,
+        portionSize: editItemPortionSize,
+        total_price: item.unit_price * editItemQuantity,
+      } : ci))
+    } catch (error: any) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' })
+    }
+  }
+
+  // Handler to remove an item from the order
+  const handleRemoveExistingItem = async (item: CartItem, index: number) => {
+    if (!editingOrderId) return
+    if (!window.confirm(`Remove ${item.name} from the order?`)) return
+    try {
+      // Find the order item in the DB
+      const { data: orderItem } = await supabase
+        .from('table_order_items')
+        .select('*')
+        .eq('order_id', editingOrderId)
+        .eq('menu_item_id', item.id)
+        .single()
+      if (!orderItem) throw new Error('Order item not found')
+      // Delete the item
+      const { error } = await supabase
+        .from('table_order_items')
+        .delete()
+        .eq('id', orderItem.id)
+      if (error) throw new Error(error.message)
+      toast({ title: 'Item Removed', description: `${item.name} removed from order.` })
+      setExistingOrderItems((prev) => prev.filter((_, idx) => idx !== index))
+      await loadTableOrders()
+    } catch (error: any) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' })
+    }
+  }
+
+  // Handler to start replacing an existing item
+  const handleReplaceExistingItem = (item: CartItem, index: number) => {
+    setReplacingExistingItem({ item, index })
+    setReplaceSelectedMenuItem(null)
+  }
+
+  // Handler to save the replaced item
+  const handleSaveReplaceExistingItem = async () => {
+    if (!replacingExistingItem || !editingOrderId || !replaceSelectedMenuItem) return
+    const oldItem = replacingExistingItem.item
+    try {
+      // Use backend helper to replace and recalculate totals
+      const { data, error } = await tableOrdersService.replaceOrderItem(
+        editingOrderId,
+        oldItem.id,
+        {
+          menu_item_id: replaceSelectedMenuItem.id,
+          menu_item_name: replaceSelectedMenuItem.name,
+          unit_price: replaceSelectedMenuItem.price,
+          quantity: 1,
+          total_price: replaceSelectedMenuItem.price,
+          portion_size: undefined,
+          customization_notes: '',
+        }
+      )
+      if (error) throw new Error(error)
+      toast({ title: 'Item Replaced', description: `${oldItem.name} replaced with ${replaceSelectedMenuItem.name}.` })
+      setReplacingExistingItem(null)
+      // Always reload table orders to get updated totals
+      await loadTableOrders()
+      // Optionally, update local existingOrderItems for immediate UI feedback
+      setExistingOrderItems((prev) => prev.map((ci, idx) => idx === replacingExistingItem.index ? {
+        ...ci,
+        id: replaceSelectedMenuItem.id,
+        name: replaceSelectedMenuItem.name,
+        unit_price: replaceSelectedMenuItem.price,
+        quantity: 1,
+        total_price: replaceSelectedMenuItem.price,
+        portionSize: undefined,
+        customization: '',
+      } : ci))
+    } catch (error: any) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' })
+    }
+  }
+
   return (
     <div className="h-screen flex flex-col bg-background overflow-hidden">
       <div className="flex-shrink-0 border-b border-border bg-card/50 backdrop-blur-sm">
@@ -1463,7 +1597,7 @@ export function CorrectedPOSSystem() {
                           <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
                           Previous Order Items
                         </h3>
-                        {existingOrderItems.map((item: CartItem) => (
+                        {existingOrderItems.map((item: CartItem, idx) => (
                           <div key={`existing-${item.id}`} className="bg-blue-50 dark:bg-blue-950/20 p-3 rounded-lg border border-blue-200 dark:border-blue-800 mb-2">
                             <div className="flex items-start justify-between">
                               <div>
@@ -1482,6 +1616,18 @@ export function CorrectedPOSSystem() {
                             <div className="flex items-center justify-between mt-2">
                               <span className="text-xs text-muted-foreground">Qty: {item.quantity}</span>
                               <Badge variant="outline" className="text-xs">Previous</Badge>
+                            </div>
+                            {/* Action row: edit, remove, replace */}
+                            <div className="flex gap-2 mt-3 justify-end">
+                              <Button size="sm" variant="outline" className="h-7 px-2 py-1 text-xs flex items-center gap-1" onClick={() => handleEditExistingItem(item, idx)}>
+                                <Pencil className="h-4 w-4" /> Edit
+                              </Button>
+                              <Button size="sm" variant="outline" className="h-7 px-2 py-1 text-xs flex items-center gap-1 text-destructive" onClick={() => handleRemoveExistingItem(item, idx)}>
+                                <XCircle className="h-4 w-4" /> Remove
+                              </Button>
+                              <Button size="sm" variant="outline" className="h-7 px-2 py-1 text-xs flex items-center gap-1" onClick={() => handleReplaceExistingItem(item, idx)}>
+                                <RefreshCw className="h-4 w-4" /> Replace
+                              </Button>
                             </div>
                           </div>
                         ))}
@@ -1991,6 +2137,84 @@ export function CorrectedPOSSystem() {
               </ol>
             </div>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog for editing an existing item */}
+      <Dialog open={!!editingExistingItem} onOpenChange={() => setEditingExistingItem(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Item</DialogTitle>
+          </DialogHeader>
+          {editingExistingItem && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="font-semibold">{editingExistingItem.item.name}</h3>
+                {editingExistingItem.item.portionSize && (
+                  <p className="text-sm text-muted-foreground capitalize">{editingExistingItem.item.portionSize}</p>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <span>Qty:</span>
+                <Input
+                  type="number"
+                  min={1}
+                  value={editItemQuantity}
+                  onChange={e => setEditItemQuantity(Number(e.target.value))}
+                  className="w-20"
+                />
+              </div>
+              <div>
+                <Textarea
+                  placeholder="Customization notes"
+                  value={editItemCustomization}
+                  onChange={e => setEditItemCustomization(e.target.value)}
+                  rows={3}
+                />
+              </div>
+              {/* Optionally, add portion size selector if needed */}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setEditingExistingItem(null)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveEditExistingItem}>Save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog for replacing an existing item */}
+      <Dialog open={!!replacingExistingItem} onOpenChange={() => setReplacingExistingItem(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Replace Item</DialogTitle>
+          </DialogHeader>
+          {replacingExistingItem && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="font-semibold">Replace {replacingExistingItem.item.name}</h3>
+              </div>
+              <div>
+                <Select value={replaceSelectedMenuItem?.id || ""} onValueChange={id => setReplaceSelectedMenuItem(recipesAsMenuItems.find(mi => mi.id === id) || null)}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Select new item" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {recipesAsMenuItems.map(mi => (
+                      <SelectItem key={mi.id} value={mi.id}>{mi.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setReplacingExistingItem(null)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveReplaceExistingItem} disabled={!replaceSelectedMenuItem}>Replace</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
       </div>

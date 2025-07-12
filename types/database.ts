@@ -579,6 +579,35 @@ export interface UpdateTableOrderItemInput {
 }
 
 // =====================================================
+// SUPPLIER RECEIPTS
+// =====================================================
+
+export interface SupplierReceipt {
+  id: string;
+  supplier_id: string;
+  receipt_date: string;
+  invoice_number?: string;
+  total_amount: number;
+  image_url: string;
+  image_filename: string;
+  file_size: number;
+  mime_type: string;
+  ocr_text?: string;
+  is_processed: boolean;
+  processed_at?: string;
+  status: 'uploaded' | 'processing' | 'processed' | 'error';
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+  
+  // Relations (populated when joined)
+  suppliers?: {
+    name: string;
+    contact_person?: string;
+  };
+}
+
+// =====================================================
 // DATABASE TABLES ENUM
 // =====================================================
 
@@ -596,7 +625,8 @@ export type DatabaseTable =
   | 'batch_ingredients'
   | 'system_logs'
   | 'table_orders'
-  | 'table_order_items';
+  | 'table_order_items'
+  | 'supplier_receipts';
 
 // =====================================================
 // RELATIONSHIP TYPES

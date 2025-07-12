@@ -1324,47 +1324,47 @@ const handleReferenceWeightSubmit = async () => {
       // --- SPLIT LOGIC: Check for ingredients available in both kitchen and freezer ---
       for (const ingredient of batch.ingredients as ExtendedBatchIngredient[]) {
         const ingredientName = getIngredientName(ingredient.ingredientId, ingredient.isBatch);
-        if (ingredient.isBatch) {
-          const sourceBatch = batches.find(b => b.id === ingredient.ingredientId);
-          if (!sourceBatch) {
-            validationErrors.push(`Referenced batch not found for ingredient: ${ingredient.ingredientId}`);
-            continue;
-          }
-          if (sourceBatch.status !== 'ready') {
-            validationErrors.push(`Batch "${sourceBatch.name}" must be READY (current status: ${sourceBatch.status}) to use as an ingredient.`);
-            continue;
-          }
-            // NEW: Support useYield toggle
-            if ((ingredient as ExtendedBatchIngredient).useYield) {
-              const yieldToUse = (ingredient as ExtendedBatchIngredient).yieldAmount ?? 0;
-              const batchYield = sourceBatch.yield ?? 0;
-              if (batchYield < yieldToUse) {
-                validationErrors.push(`Insufficient yield in batch "${sourceBatch.name}": Need ${yieldToUse}${sourceBatch.yield_unit}, have ${batchYield}${sourceBatch.yield_unit}`);
-              } else {
-                batchUpdateInstructions.push({
-                  batchToUpdate: sourceBatch,
-                  newYield: batchYield - yieldToUse,
-                  newPortions: (batchYield - yieldToUse) <= 0 ? 0 : (sourceBatch.portions ?? 0)
-                });
-              }
-            } else {
-              // Default: use portions
-          if (!sourceBatch.portions || sourceBatch.portions < ingredient.requiredQuantity) {
-              validationErrors.push(
-                `Insufficient portions for batch "${sourceBatch?.name || 'Unknown'}": Need ${ingredient.requiredQuantity}, have ${sourceBatch?.portions || 0}`
-              );
+      if (ingredient.isBatch) {
+        const sourceBatch = batches.find(b => b.id === ingredient.ingredientId);
+        if (!sourceBatch) {
+          validationErrors.push(`Referenced batch not found for ingredient: ${ingredient.ingredientId}`);
+          continue;
+        }
+        if (sourceBatch.status !== 'ready') {
+          validationErrors.push(`Batch "${sourceBatch.name}" must be READY (current status: ${sourceBatch.status}) to use as an ingredient.`);
+          continue;
+        }
+          // NEW: Support useYield toggle
+          if ((ingredient as ExtendedBatchIngredient).useYield) {
+            const yieldToUse = (ingredient as ExtendedBatchIngredient).yieldAmount ?? 0;
+            const batchYield = sourceBatch.yield ?? 0;
+            if (batchYield < yieldToUse) {
+              validationErrors.push(`Insufficient yield in batch "${sourceBatch.name}": Need ${yieldToUse}${sourceBatch.yield_unit}, have ${batchYield}${sourceBatch.yield_unit}`);
             } else {
               batchUpdateInstructions.push({
                 batchToUpdate: sourceBatch,
-                newPortions: sourceBatch.portions - ingredient.requiredQuantity,
-                  newYield: sourceBatch.yield // unchanged
+                newYield: batchYield - yieldToUse,
+                newPortions: (batchYield - yieldToUse) <= 0 ? 0 : (sourceBatch.portions ?? 0)
+              });
+            }
+          } else {
+            // Default: use portions
+        if (!sourceBatch.portions || sourceBatch.portions < ingredient.requiredQuantity) {
+            validationErrors.push(
+              `Insufficient portions for batch "${sourceBatch?.name || 'Unknown'}": Need ${ingredient.requiredQuantity}, have ${sourceBatch?.portions || 0}`
+            );
+          } else {
+            batchUpdateInstructions.push({
+              batchToUpdate: sourceBatch,
+              newPortions: sourceBatch.portions - ingredient.requiredQuantity,
+                newYield: sourceBatch.yield // unchanged
           });
         }
           }
           continue;
-        } else {
-          const kitchenItem = kitchenStorage.find(item => item.ingredient_id === ingredient.ingredientId);
-          const inventoryIngredient = inventoryIngredientsList.find(i => i.id.toString() === ingredient.ingredientId);
+      } else {
+            const kitchenItem = kitchenStorage.find(item => item.ingredient_id === ingredient.ingredientId);
+            const inventoryIngredient = inventoryIngredientsList.find(i => i.id.toString() === ingredient.ingredientId);
           // Find freezer item for this ingredient
           const freezerItem = freezerItems.find(fz => fz.ingredientId === ingredient.ingredientId && (fz.portions > 0 || fz.yieldPerPortion > 0));
           const kitchenQty = kitchenItem ? kitchenItem.quantity : 0;
@@ -1411,121 +1411,121 @@ const handleReferenceWeightSubmit = async () => {
             // ---
             // --- Bunch logic ---
             if (kitchenItem && kitchenItem.unit === 'bunch' && ['g', 'kg'].includes(ingredient.unit)) {
-              const refWeight = kitchenItem.reference_weight_per_bunch;
-              const refUnit = kitchenItem.reference_weight_unit || 'g';
-              if (!refWeight) {
-                validationErrors.push(`No reference weight set for ${ingredientName} (bunch to grams). Please edit kitchen storage to set this value.`);
+          const refWeight = kitchenItem.reference_weight_per_bunch;
+          const refUnit = kitchenItem.reference_weight_unit || 'g';
+          if (!refWeight) {
+            validationErrors.push(`No reference weight set for ${ingredientName} (bunch to grams). Please edit kitchen storage to set this value.`);
               } else {
                 let requestedGrams = useKitchenQty;
-                if (ingredient.unit === 'kg') requestedGrams *= 1000;
-                let refWeightInGrams = refWeight;
-                if (refUnit === 'kg') refWeightInGrams = refWeight * 1000;
-                let openRemaining = kitchenItem.open_container_remaining ?? 0;
-                let openUnit = kitchenItem.open_container_unit || 'g';
-                if (openUnit === 'kg') openRemaining *= 1000;
-                let bunches = kitchenItem.quantity;
-                let gramsToDeduct = requestedGrams;
-                let newOpenRemaining = openRemaining;
-                let newBunches = bunches;
-                if (openRemaining > 0) {
-                  if (gramsToDeduct <= openRemaining) {
-                    newOpenRemaining = openRemaining - gramsToDeduct;
-                    gramsToDeduct = 0;
-                  } else {
-                    gramsToDeduct -= openRemaining;
-                    newOpenRemaining = 0;
-                  }
-                }
-                while (gramsToDeduct > 0 && newBunches > 0) {
-                  if (gramsToDeduct >= refWeightInGrams) {
-                    gramsToDeduct -= refWeightInGrams;
-                    newBunches -= 1;
-                    newOpenRemaining = 0;
-                  } else {
-                    newBunches -= 1;
-                    newOpenRemaining = refWeightInGrams - gramsToDeduct;
-                    gramsToDeduct = 0;
-                  }
-                }
-                if (gramsToDeduct > 0) {
-                  validationErrors.push(`Not enough bunches of ${ingredientName}: Need more to fulfill ${requestedGrams}g, have only ${(bunches * refWeightInGrams + openRemaining)}g`);
+          if (ingredient.unit === 'kg') requestedGrams *= 1000;
+          let refWeightInGrams = refWeight;
+          if (refUnit === 'kg') refWeightInGrams = refWeight * 1000;
+          let openRemaining = kitchenItem.open_container_remaining ?? 0;
+          let openUnit = kitchenItem.open_container_unit || 'g';
+          if (openUnit === 'kg') openRemaining *= 1000;
+          let bunches = kitchenItem.quantity;
+          let gramsToDeduct = requestedGrams;
+          let newOpenRemaining = openRemaining;
+          let newBunches = bunches;
+          if (openRemaining > 0) {
+            if (gramsToDeduct <= openRemaining) {
+              newOpenRemaining = openRemaining - gramsToDeduct;
+              gramsToDeduct = 0;
+            } else {
+              gramsToDeduct -= openRemaining;
+              newOpenRemaining = 0;
+            }
+          }
+          while (gramsToDeduct > 0 && newBunches > 0) {
+            if (gramsToDeduct >= refWeightInGrams) {
+              gramsToDeduct -= refWeightInGrams;
+              newBunches -= 1;
+              newOpenRemaining = 0;
+            } else {
+              newBunches -= 1;
+              newOpenRemaining = refWeightInGrams - gramsToDeduct;
+              gramsToDeduct = 0;
+            }
+          }
+          if (gramsToDeduct > 0) {
+            validationErrors.push(`Not enough bunches of ${ingredientName}: Need more to fulfill ${requestedGrams}g, have only ${(bunches * refWeightInGrams + openRemaining)}g`);
                 } else {
-                  storageUpdateInstructions.push({
-                    item: kitchenItem,
-                    ingredientName,
-                    newQuantity: newBunches,
-                    newOpenContainerRemaining: newOpenRemaining,
-                    openContainerUnit: 'g',
-                  });
-                }
+          storageUpdateInstructions.push({
+            item: kitchenItem,
+            ingredientName,
+            newQuantity: newBunches,
+            newOpenContainerRemaining: newOpenRemaining,
+            openContainerUnit: 'g',
+          });
+        }
               }
             } else if (kitchenItem) {
               // --- All other kitchen deduction logic (countable, weight, volume, etc) ---
-              const countableUnits = ["piece", "pieces", "bunch", "tray", "pack", "packet", "pcs"];
-              const isCountable = countableUnits.includes(kitchenItem.unit.toLowerCase());
-              const isWeight = ["kg", "g"].includes(kitchenItem.unit.toLowerCase());
-              const isVolume = ["l", "ml"].includes(kitchenItem.unit.toLowerCase());
-              if (isCountable && (["kg", "g", "l", "ml"].includes(ingredient.unit)) && kitchenItem.unit !== 'bunch') {
-                const packSize = extractPackSize(inventoryIngredient?.name || ingredientName, ingredient.unit);
-                if (!packSize) {
-                  validationErrors.push(`Cannot determine pack size for ${ingredientName}`);
+        const countableUnits = ["piece", "pieces", "bunch", "tray", "pack", "packet", "pcs"];
+        const isCountable = countableUnits.includes(kitchenItem.unit.toLowerCase());
+        const isWeight = ["kg", "g"].includes(kitchenItem.unit.toLowerCase());
+        const isVolume = ["l", "ml"].includes(kitchenItem.unit.toLowerCase());
+        if (isCountable && (["kg", "g", "l", "ml"].includes(ingredient.unit)) && kitchenItem.unit !== 'bunch') {
+          const packSize = extractPackSize(inventoryIngredient?.name || ingredientName, ingredient.unit);
+          if (!packSize) {
+            validationErrors.push(`Cannot determine pack size for ${ingredientName}`);
                 } else {
                   let requested = useKitchenQty;
-                  let openRemaining = kitchenItem.open_container_remaining ?? 0;
-                  let openUnit = kitchenItem.open_container_unit || ingredient.unit;
-                  if (ingredient.unit !== openUnit) {
-                    if ((ingredient.unit === 'g' || ingredient.unit === 'ml') && openUnit === 'kg') openRemaining *= 1000;
-                    if ((ingredient.unit === 'g' || ingredient.unit === 'ml') && openUnit === 'l') openRemaining *= 1000;
-                  }
-                  let packs = kitchenItem.quantity;
-                  let toDeduct = requested;
-                  let newOpenRemaining = openRemaining;
-                  let newPacks = packs;
-                  if (openRemaining > 0) {
-                    if (toDeduct <= openRemaining) {
-                      newOpenRemaining = openRemaining - toDeduct;
-                      toDeduct = 0;
-                    } else {
-                      toDeduct -= openRemaining;
-                      newOpenRemaining = 0;
-                    }
-                  }
-                  while (toDeduct > 0 && newPacks > 0) {
-                    if (toDeduct >= packSize) {
-                      toDeduct -= packSize;
+          let openRemaining = kitchenItem.open_container_remaining ?? 0;
+          let openUnit = kitchenItem.open_container_unit || ingredient.unit;
+          if (ingredient.unit !== openUnit) {
+            if ((ingredient.unit === 'g' || ingredient.unit === 'ml') && openUnit === 'kg') openRemaining *= 1000;
+            if ((ingredient.unit === 'g' || ingredient.unit === 'ml') && openUnit === 'l') openRemaining *= 1000;
+          }
+          let packs = kitchenItem.quantity;
+          let toDeduct = requested;
+          let newOpenRemaining = openRemaining;
+          let newPacks = packs;
+          if (openRemaining > 0) {
+            if (toDeduct <= openRemaining) {
+              newOpenRemaining = openRemaining - toDeduct;
+              toDeduct = 0;
+        } else {
+              toDeduct -= openRemaining;
+              newOpenRemaining = 0;
+            }
+          }
+          while (toDeduct > 0 && newPacks > 0) {
+            if (toDeduct >= packSize) {
+              toDeduct -= packSize;
                       newPacks -= 1;
-                      newOpenRemaining = 0;
-                    } else {
+              newOpenRemaining = 0;
+                } else {
                       newPacks -= 1;
-                      newOpenRemaining = packSize - toDeduct;
-                      toDeduct = 0;
-                    }
-                  }
-                  if (toDeduct > 0) {
-                    validationErrors.push(`Not enough packs of ${ingredientName}: Need more to fulfill ${requested} ${ingredient.unit}, have only ${(packs * packSize + openRemaining)} ${ingredient.unit}`);
+              newOpenRemaining = packSize - toDeduct;
+              toDeduct = 0;
+            }
+          }
+          if (toDeduct > 0) {
+            validationErrors.push(`Not enough packs of ${ingredientName}: Need more to fulfill ${requested} ${ingredient.unit}, have only ${(packs * packSize + openRemaining)} ${ingredient.unit}`);
                   } else {
-                    storageUpdateInstructions.push({
-                      item: kitchenItem,
-                      ingredientName,
-                      newQuantity: newPacks,
-                      newOpenContainerRemaining: newOpenRemaining,
-                      openContainerUnit: ingredient.unit,
-                    });
+          storageUpdateInstructions.push({
+            item: kitchenItem,
+            ingredientName,
+            newQuantity: newPacks,
+            newOpenContainerRemaining: newOpenRemaining,
+            openContainerUnit: ingredient.unit,
+          });
                   }
                 }
               } else if (isWeight || isVolume) {
                 let requestedInStorageUnit = convertUnit(useKitchenQty, ingredient.unit, kitchenItem.unit, ingredientName);
-                if (requestedInStorageUnit > kitchenItem.quantity) {
+          if (requestedInStorageUnit > kitchenItem.quantity) {
                   validationErrors.push(`Insufficient ${ingredientName}: Need ${useKitchenQty} ${ingredient.unit} (${requestedInStorageUnit}${kitchenItem.unit}), have ${kitchenItem.quantity}${kitchenItem.unit}`);
-                } else {
-                  storageUpdateInstructions.push({ item: kitchenItem, ingredientName, newQuantity: kitchenItem.quantity - requestedInStorageUnit });
-                }
+          } else {
+            storageUpdateInstructions.push({ item: kitchenItem, ingredientName, newQuantity: kitchenItem.quantity - requestedInStorageUnit });
+          }
               } else {
                 const requiredQuantityInStorageUnit = convertUnit(useKitchenQty, ingredient.unit, kitchenItem.unit, ingredientName);
-                if (requiredQuantityInStorageUnit > kitchenItem.quantity) {
+              if (requiredQuantityInStorageUnit > kitchenItem.quantity) {
                   validationErrors.push(`Insufficient ${ingredientName}: Need ${useKitchenQty} ${ingredient.unit}, have ${kitchenItem.quantity} ${kitchenItem.unit}`);
-                } else {
-                  storageUpdateInstructions.push({ item: kitchenItem, ingredientName, newQuantity: kitchenItem.quantity - requiredQuantityInStorageUnit });
+              } else {
+                storageUpdateInstructions.push({ item: kitchenItem, ingredientName, newQuantity: kitchenItem.quantity - requiredQuantityInStorageUnit });
                 }
               }
             } else if (useKitchenQty > 0) {
@@ -1555,15 +1555,15 @@ const handleReferenceWeightSubmit = async () => {
             });
           } else if (useFreezerQty > 0 && !freezerItem) {
             validationErrors.push(`Not enough in freezer for ${ingredientName}`);
+            }
           }
         }
-      }
 
       if (validationErrors.length > 0) {
         toast({ title: "Cannot Start Batch", description: validationErrors.join('\n'), variant: "destructive" });
         setIsStartingBatch(false);
-        return;
-      }
+      return;
+    }
 
       const updatePromises: Promise<any>[] = [];
       const updateLogs: string[] = [];

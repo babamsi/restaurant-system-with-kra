@@ -17,6 +17,8 @@ import { supplierNames } from "@/data/mock-data"
 import type { BaseIngredient } from "@/types/operational"
 import { ReceiptUploadDialog } from "./receipt-upload-dialog"
 import type { ReceiptItem } from "./receipt-upload-dialog"
+import { SupplierReceiptUploadDialog } from "./supplier-receipt-upload-dialog"
+import { SupplierReceiptsList } from "./supplier-receipts-list"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -95,6 +97,7 @@ export function SynchronizedInventoryManager() {
   const [showLogs, setShowLogs] = useState(false)
   const [selectedIngredientLogs, setSelectedIngredientLogs] = useState<SystemLog[]>([])
   const [showReceiptUpload, setShowReceiptUpload] = useState(false)
+  const [showSupplierReceiptUpload, setShowSupplierReceiptUpload] = useState(false)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [ingredientToDelete, setIngredientToDelete] = useState<DatabaseIngredient | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
@@ -259,7 +262,7 @@ export function SynchronizedInventoryManager() {
       if (result.success) {
         toast({
           title: "Cost Updated",
-          description: `Updated cost for ${ingredient.name} to $${updatedCost.toFixed(2)}/${ingredient.unit}.`,
+          description: `Updated cost for ${ingredient.name} to Ksh ${updatedCost.toFixed(2)}/${ingredient.unit}.`,
         })
         setEditingIngredient(null)
         setNewCost("")
@@ -497,7 +500,7 @@ export function SynchronizedInventoryManager() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-muted-foreground">Total Inventory Value</p>
-                <p className="text-2xl font-bold">${getTotalValue().toFixed(2)}</p>
+                <p className="text-2xl font-bold">Ksh {getTotalValue().toFixed(2)}</p>
               </div>
               <TrendingUp className="h-8 w-8 text-green-500" />
             </div>
@@ -532,7 +535,7 @@ export function SynchronizedInventoryManager() {
       {/* Bulk Update and Receipt List */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <BulkInventoryUpdate onInventoryUpdated={loadIngredients} />
-        <ReceiptList />
+        <SupplierReceiptsList />
       </div>
 
       {/* Filters */}
@@ -781,11 +784,11 @@ export function SynchronizedInventoryManager() {
 
       {/* Logs Dialog */}
       <Dialog open={showLogs} onOpenChange={setShowLogs}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
+        <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col p-0">
+          <DialogHeader className="p-6 pb-4 flex-shrink-0">
             <DialogTitle>Inventory Change History</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
+          <div className="flex-1 overflow-y-auto p-6 pt-0 space-y-4">
             {selectedIngredientLogs.length === 0 ? (
               <p className="text-center text-muted-foreground">No changes recorded</p>
             ) : (
@@ -818,9 +821,9 @@ export function SynchronizedInventoryManager() {
       <div className="flex justify-between items-center">
         <h3 className="text-lg font-medium">Ingredient Inventory</h3>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => setShowReceiptUpload(true)}>
+          <Button variant="outline" onClick={() => setShowSupplierReceiptUpload(true)}>
             <Receipt className="h-4 w-4 mr-2" />
-            Upload Receipt
+            New Receipt
           </Button>
           <Dialog open={isAddingIngredient} onOpenChange={setIsAddingIngredient}>
             <DialogTrigger asChild>
@@ -980,6 +983,18 @@ export function SynchronizedInventoryManager() {
         onProcessReceipt={handleProcessReceipt}
       />
 
+      {/* Supplier Receipt Upload Dialog */}
+      <SupplierReceiptUploadDialog
+        open={showSupplierReceiptUpload}
+        onOpenChange={setShowSupplierReceiptUpload}
+        onReceiptUploaded={(receiptId) => {
+          toast({
+            title: "Receipt Uploaded",
+            description: "Supplier receipt has been uploaded successfully.",
+          })
+        }}
+      />
+
       {/* Inventory Table */}
       <Card>
         <CardContent className="p-0">
@@ -1009,7 +1024,7 @@ export function SynchronizedInventoryManager() {
                         {ingredient.current_stock}
                       </TableCell>
                       <TableCell>{ingredient.unit}</TableCell>
-                      <TableCell>${ingredient.cost_per_unit.toFixed(2)}</TableCell>
+                      <TableCell>Ksh {ingredient.cost_per_unit.toFixed(2)}</TableCell>
                       <TableCell>
                         <Badge variant={status.variant} className={status.className}>
                           <status.icon className="h-3 w-3 mr-1" />

@@ -60,7 +60,7 @@ import {
 } from "@/lib/kitchenSupabase"
 import { supabase } from "@/lib/supabase"
 import { WastageManager, type WastageEvent } from "./wastage-manager"
-import { RecipeManager } from "./recipe-manager"
+// import { RecipeManager } from "./recipe-manager"
 import { FreezerManager, type FreezerItem } from "./FreezerManager"
 import { CookedFreezerManager } from "./CookedFreezerManager"
 import { SupplierDeliveryDialog } from "./SupplierDeliveryDialog"
@@ -2597,7 +2597,7 @@ const handleReferenceWeightSubmit = async () => {
         <TabsList>
           <TabsTrigger value="storage">Kitchen Storage</TabsTrigger>
           <TabsTrigger value="batches">Batches</TabsTrigger>
-          <TabsTrigger value="recipes">Recipes</TabsTrigger>
+          {/* <TabsTrigger value="recipes">Recipes</TabsTrigger> */}
           <TabsTrigger value="wastage">Wastage</TabsTrigger>
           <TabsTrigger value="freezer">Freezer</TabsTrigger>
           <TabsTrigger value="cooked-freezer">Cooked Freezer</TabsTrigger>
@@ -2780,7 +2780,7 @@ const handleReferenceWeightSubmit = async () => {
           </Card>
                 </TabsContent>
 
-        <TabsContent value="recipes">
+        {/* <TabsContent value="recipes">
           <RecipeManager 
             recipes={recipes}
             // @ts-ignore
@@ -2789,7 +2789,7 @@ const handleReferenceWeightSubmit = async () => {
             publishRecipe={publishRecipe}
             unpublishRecipe={unpublishRecipe}
           />
-        </TabsContent>
+        </TabsContent> */}
 
         <TabsContent value="wastage">
           <WastageManager

@@ -123,30 +123,93 @@ body {
   display: flex;
   min-height: 100vh;
   background-color: hsl(var(--background));
+  position: relative;
 }
 
 .app-sidebar {
   flex-shrink: 0;
   height: 100vh;
-  position: sticky;
+  position: fixed;
   top: 0;
+  left: 0;
   z-index: 40;
+  transition: width 0.3s ease-in-out, transform 0.3s ease-in-out;
 }
 
 .app-main {
   flex: 1;
   overflow: auto;
   min-width: 0;
+  transition: margin-left 0.3s ease-in-out;
+  width: 100%;
 }
 
-/* Responsive adjustments */
-@media (max-width: 768px) {
+/* Mobile-first responsive design */
+@media (max-width: 767px) {
   .app-layout {
     flex-direction: column;
   }
 
   .app-sidebar {
-    height: auto;
-    position: relative;
+    display: none; /* Hide desktop sidebar on mobile */
   }
+
+  .app-main {
+    margin-left: 0;
+    padding-top: 0; /* No top padding needed since sidebar is overlay */
+  }
+}
+
+/* Tablet breakpoint */
+@media (min-width: 768px) and (max-width: 1023px) {
+  .app-sidebar {
+    width: 4rem; /* 64px - icon only */
+  }
+  
+  .app-main {
+    margin-left: 4rem; /* Account for collapsed sidebar */
+  }
+}
+
+/* Desktop breakpoint */
+@media (min-width: 1024px) {
+  .app-sidebar {
+    width: 16rem; /* 256px - full sidebar */
+  }
+  
+  .app-main {
+    margin-left: 16rem; /* Account for full sidebar */
+  }
+}
+
+/* Ensure smooth transitions for collapsed state */
+.app-sidebar[data-collapsed="true"] {
+  width: 4rem;
+}
+
+/* Mobile menu trigger positioning */
+@media (max-width: 767px) {
+  .mobile-menu-trigger {
+    position: fixed;
+    top: 1rem;
+    left: 1rem;
+    z-index: 50;
+  }
+}
+
+/* Sheet (mobile sidebar) styles */
+[data-radix-popper-content-wrapper] {
+  z-index: 60 !important;
+}
+
+/* Ensure proper stacking context */
+.app-layout {
+  isolation: isolate;
+}
+
+/* Smooth transitions for all interactive elements */
+* {
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 150ms;
 }

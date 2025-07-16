@@ -22,15 +22,28 @@ export interface RecipeCardProps {
   available: boolean;
   onDelete?: (id: string) => void;
   onViewDetails?: () => void;
+  itemCd?: string | null;
+  kra_status?: string | null;
+  kra_error?: string | null;
+  onRegisterKRA?: () => void;
 }
 
-export const RecipeCard: React.FC<RecipeCardProps> = ({ id, name, description, restaurant, price, components, available, onDelete, onViewDetails }) => {
+export const RecipeCard: React.FC<RecipeCardProps> = ({ id, name, description, restaurant, price, components, available, onDelete, onViewDetails, itemCd, kra_status, kra_error, onRegisterKRA }) => {
   const handleCardClick = (e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest('button')) {
       return;
     }
     onViewDetails?.();
   };
+
+  let kraBadge = null;
+  if (!itemCd) {
+    kraBadge = <Badge variant="secondary" className="bg-yellow-100 text-yellow-800">Not KRA Registered</Badge>;
+  } else if (kra_status === 'ok') {
+    kraBadge = <Badge variant="secondary" className="bg-green-100 text-green-800">KRA OK</Badge>;
+  } else if (kra_status === 'error') {
+    kraBadge = <Badge variant="secondary" className="bg-red-100 text-red-800">KRA Error</Badge>;
+  }
 
   return (
     <Card 
@@ -48,6 +61,7 @@ export const RecipeCard: React.FC<RecipeCardProps> = ({ id, name, description, r
                 {price.toFixed(2)}
               </span>
             )}
+            {kraBadge}
           </div>
           {onDelete && id && (
             <Button
@@ -72,6 +86,19 @@ export const RecipeCard: React.FC<RecipeCardProps> = ({ id, name, description, r
           )}
         </div>
         {description && <p className="text-sm text-muted-foreground mb-2">{description}</p>}
+        {/* KRA error message and register button */}
+        {(!itemCd || kra_status === 'error') && (
+          <div className="flex items-center gap-2 mt-2">
+            {kra_status === 'error' && kra_error && (
+              <span className="text-xs text-red-600">{kra_error}</span>
+            )}
+            {onRegisterKRA && (
+              <Button size="sm" variant="outline" onClick={e => { e.stopPropagation(); onRegisterKRA(); }}>
+                {itemCd ? 'Retry KRA Registration' : 'Register Item to KRA'}
+              </Button>
+            )}
+          </div>
+        )}
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         <div className="mb-2">

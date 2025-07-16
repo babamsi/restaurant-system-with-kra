@@ -509,7 +509,7 @@ export default function SupplierDetailsPage({ params }: { params: { id: string }
                         </div>
                       ))}
                     </div>
-                  </div>
+              </div>
                 )
               })()}
 
@@ -739,8 +739,8 @@ export default function SupplierDetailsPage({ params }: { params: { id: string }
                 </>
               ) : (
                 <>
-                  <CheckCircle className="h-4 w-4 mr-2" />
-                  Confirm Payment
+              <CheckCircle className="h-4 w-4 mr-2" />
+              Confirm Payment
                 </>
               )}
             </Button>

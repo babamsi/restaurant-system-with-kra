@@ -152,6 +152,33 @@ export function CorrectedPOSSystem() {
   const [replacingExistingItem, setReplacingExistingItem] = useState<null | { item: CartItem; index: number }>(null)
   const [replaceSelectedMenuItem, setReplaceSelectedMenuItem] = useState<ExtendedMenuItem | null>(null)
 
+  // KRA eTIMS: Print/display KRA receipt info
+  const [kraReceipt, setKraReceipt] = useState<any>(null)
+
+  // Add these helpers inside the component, after your useState hooks:
+  const TAX_RATE = 0.16;
+  const TAX_FACTOR = TAX_RATE / (1 + TAX_RATE);
+
+  function calcCartSubtotal() {
+    return cart.reduce((sum, item) => sum + (item.unit_price * item.quantity) / (1 + TAX_RATE), 0);
+  }
+  function calcCartTax() {
+    return cart.reduce((sum, item) => sum + (item.unit_price * item.quantity) * TAX_RATE / (1 + TAX_RATE), 0);
+  }
+  function calcCartTotal() {
+    return cart.reduce((sum, item) => sum + (item.unit_price * item.quantity), 0);
+  }
+
+  function calcOrderSubtotal(items: any[]) {
+    return items.reduce((sum: number, item: any) => sum + (item.unit_price * item.quantity) / (1 + TAX_RATE), 0);
+  }
+  function calcOrderTax(items: any[]) {
+    return items.reduce((sum: number, item: any) => sum + (item.unit_price * item.quantity) * TAX_RATE / (1 + TAX_RATE), 0);
+  }
+  function calcOrderTotal(items: any[]) {
+    return items.reduce((sum: number, item: any) => sum + (item.unit_price * item.quantity), 0);
+  }
+
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000)
     return () => clearInterval(timer)
@@ -350,10 +377,10 @@ export function CorrectedPOSSystem() {
         portion_size: item.portionSize,
         customization_notes: item.customization
       }))
-      const subtotal = getCartTotal()
-      const taxRate = 16 // 16% tax rate
-      const taxAmount = subtotal * (taxRate / 100)
-      const totalAmount = subtotal + taxAmount
+      const subtotal = calcCartTotal()
+      const taxRate = 0 // Tax is included in price
+      const taxAmount = 0 // No extra tax
+      const totalAmount = subtotal // No extra tax added
     if (editingOrderId) {
         const { data, error } = await tableOrdersService.addItemsToOrder(editingOrderId, cartItems)
         if (error) {
@@ -597,12 +624,117 @@ export function CorrectedPOSSystem() {
       paymentDetails = splitDetail
     }
     try {
+      // 1. Mark order as paid in your DB
       const { data, error } = await tableOrdersService.markOrderAsPaid(
         showPayment.orderId,
         paymentMethod === 'cash' || paymentMethod === 'mpesa' ? paymentDetails : paymentMethod === 'split' ? paymentDetails : paymentMethod
       )
       if (error) {
         throw new Error(error)
+      }
+      // 2. KRA eTIMS: Transmit sale to KRA
+      // Gather all items (from order.items)
+      // --- KRA CODE PATCH START ---
+      const TAX_RATE = 0.16;
+      const TAX_FACTOR = TAX_RATE / (1 + TAX_RATE); // 0.16 / 1.16
+      let items = order.items.map((item: any): any => ({
+        id: item.menu_item_id,
+        name: item.menu_item_name,
+        price: item.unit_price, // tax-inclusive
+        qty: item.quantity,
+        itemCd: item.itemCd, // KRA item code from recipes table
+        itemClsCd: item.itemClsCd, // from recipes table
+      }))
+      // Ensure all items have itemCd and itemClsCd
+      for (let i = 0; i < items.length; i++) {
+        if (!items[i].itemCd || !items[i].itemClsCd) {
+          const { data: recipe, error } = await supabase
+            .from('recipes')
+            .select('itemCd, itemClsCd')
+            .eq('id', items[i].id)
+            .single();
+          if (recipe) {
+            items[i].itemCd = recipe.itemCd;
+            items[i].itemClsCd = recipe.itemClsCd;
+          }
+        }
+      }
+      if (items.some((i: any) => !i.itemCd)) {
+        console.error('KRA Compliance Error: Items missing itemCd:', items.filter((i: any) => !i.itemCd));
+        toast({ title: 'KRA Compliance Error', description: 'One or more items are not KRA registered. Sale blocked.', variant: 'destructive' });
+        setPaymentLoading(false);
+        // return;
+      }
+      // Calculate tax-inclusive breakdown for each item
+      items = items.map((item: any): any => {
+        const total = item.price * item.qty;
+        const taxAmount = total * TAX_FACTOR;
+        const netAmount = total - taxAmount;
+        return { ...item, total, taxAmount, netAmount };
+      });
+      // Calculate order-level totals
+      const orderTotal = items.reduce((sum: number, item: any) => sum + item.total, 0);
+      const orderTax = items.reduce((sum: number, item: any) => sum + item.taxAmount, 0);
+      const orderNet = items.reduce((sum: number, item: any) => sum + item.netAmount, 0);
+      // --- KRA CODE PATCH END ---
+      // Payment method mapping
+      const kraPaymentMethod = paymentMethod
+      // Customer info (optional, can be extended)
+      const customer = { tin: '', name: '' }
+      // Call KRA API
+      const kraRes = await fetch('/api/kra/save-sale', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items,
+          payment: { method: kraPaymentMethod },
+          customer,
+          saleId: order.id,
+          orderTotal,
+          orderTax,
+          orderNet,
+        }),
+      })
+      const kraData = await kraRes.json()
+      if (!kraData.success) {
+        // Save to sales_invoices with status 'error' and error message, but DO NOT block order completion
+        await supabase.from('sales_invoices').insert({
+          trdInvcNo: kraData.invcNo,
+          order_id: order.id,
+          payment_method: paymentMethod,
+          total_items: order.items.length,
+          gross_amount: orderTotal,
+          net_amount: orderNet,
+          tax_amount: orderTax,
+          kra_status: 'error',
+          kra_error: kraData.error || kraData.kraData?.resultMsg || 'KRA push failed',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+        toast({ title: 'KRA Sale Error', description: kraData.error || 'Failed to transmit sale to KRA. Order completed, but not sent to KRA.', variant: 'warning' })
+        // DO NOT return or block order completion!
+      } else if (kraData.kraData) {
+        // console.log("checking.. KRAData: ", kraData.kra)
+        const { curRcptNo, totRcptNo, intrlData, rcptSign, sdcDateTime } = kraData.kraData.data
+        await supabase.from('sales_invoices').insert({
+          trdInvcNo: kraData.invcNo,
+          order_id: order.id,
+          payment_method: paymentMethod,
+          total_items: order.items.length,
+          gross_amount: orderTotal,
+          net_amount: orderNet,
+          tax_amount: orderTax,
+          kra_curRcptNo: curRcptNo,
+          kra_totRcptNo: totRcptNo,
+          kra_intrlData: intrlData,
+          kra_rcptSign: rcptSign,
+          kra_sdcDateTime: sdcDateTime,
+          kra_status: 'ok',
+          kra_error: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        setKraReceipt(kraData.kraData)
       }
       setTables(prevTables => prevTables.map(table =>
         table.id === showPayment.table.id
@@ -631,9 +763,9 @@ export function CorrectedPOSSystem() {
         .eq('id', showPayment.orderId)
         .single()
       if (latestOrder) {
-        handlePrintReceipt(latestOrder)
+        handlePrintReceipt(latestOrder, kraData.kraData)
       } else {
-        handlePrintReceipt(order)
+        handlePrintReceipt(order, kraData.kraData)
       }
       toast({
         title: "Payment Complete",
@@ -666,7 +798,8 @@ export function CorrectedPOSSystem() {
     setExistingOrderItems([])
   }
 
-  const handlePrintReceipt = (order: any) => {
+  // Print receipt with KRA info
+  const handlePrintReceipt = (order: any, kraData?: any) => {
     const receiptContent = `
       <div style="font-family: 'Courier New', monospace; font-size: 14px; line-height: 1.4; width: 100%; max-width: 300px; margin: 0; padding: 8px 0 8px 8px; box-sizing: border-box;">
         <div style="text-align: center; margin-bottom: 10px;">
@@ -674,7 +807,6 @@ export function CorrectedPOSSystem() {
           <p style="margin: 6px 0; font-size: 11px; font-weight: 500;">123 Main Street, City</p>
           <p style="margin: 6px 0; font-size: 11px; font-weight: 500;">Phone: (123) 456-7890</p>
         </div>
-        
         <div style="border-top: 2px dashed #000; border-bottom: 2px dashed #000; padding: 12px 0; margin: 15px 0;">
           <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px; font-weight: 500;">
             <span style="font-weight: bold;">Order #:</span>
@@ -697,7 +829,6 @@ export function CorrectedPOSSystem() {
             <span style="text-transform: uppercase; font-weight: bold; font-size: 13px;">${order.status}</span>
           </div>
         </div>
-        
         <div style="margin: 15px 0;">
           <div style="border-bottom: 2px solid #000; padding-bottom: 8px; margin-bottom: 12px;">
             <div style="display: flex; justify-content: space-between; font-weight: bold; font-size: 13px;">
@@ -707,7 +838,6 @@ export function CorrectedPOSSystem() {
               <span style="width: 30%; text-align: right;">TOTAL</span>
             </div>
           </div>
-          
           ${order.items?.map((item: any) => `
             <div style="margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dotted #999;">
               <div style="font-weight: bold; font-size: 13px; margin-bottom: 4px; line-height: 1.3;">
@@ -727,30 +857,33 @@ export function CorrectedPOSSystem() {
             </div>
           `).join('')}
         </div>
-        
         <div style="border-top: 2px dashed #000; padding-top: 15px; margin: 15px 0;">
           <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 6px; font-weight: 500;">
-            <span style="font-weight: bold;">Subtotal:</span>
-            <span style="font-weight: 600;">Ksh ${order.subtotal.toFixed(2)}</span>
+            <span style="font-weight: bold;">Total:</span>
+            <span style="font-weight: 600;">Ksh ${order.total_amount.toFixed(2)}</span>
           </div>
-          <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 6px; font-weight: 500;">
-            <span style="font-weight: bold;">Tax (16%):</span>
-            <span style="font-weight: 600;">Ksh ${order.tax_amount.toFixed(2)}</span>
+          <div style="display: flex; justify-content: space-between; font-size: 11px; color: #555; margin-top: 2px;">
+            <span>Subtotal (before tax):</span>
+            <span>Ksh ${calcOrderSubtotal(order.items).toFixed(2)}</span>
           </div>
-          <div style="border-top: 2px solid #000; padding-top: 8px; margin-top: 8px;">
-            <div style="display: flex; justify-content: space-between; font-weight: bold; font-size: 16px;">
-              <span>TOTAL:</span>
-              <span>Ksh ${order.total_amount.toFixed(2)}</span>
-            </div>
+          <div style="display: flex; justify-content: space-between; font-size: 11px; color: #555; margin-top: 2px;">
+            <span>Tax (16% VAT):</span>
+            <span>Ksh ${calcOrderTax(order.items).toFixed(2)}</span>
           </div>
         </div>
-        
         <div style="text-align: center; margin: 20px 0; padding: 15px 0; border-top: 2px dashed #000; border-bottom: 2px dashed #000;">
           <p style="margin: 8px 0; font-size: 14px; font-weight: bold;">Thank you for dining with us!</p>
           <p style="margin: 8px 0; font-size: 13px; font-weight: 500;">Please come again</p>
           <p style="margin: 8px 0; font-size: 12px; font-weight: 500;">www.restaurant.com</p>
         </div>
-        
+        ${kraData ? `
+        <div style="text-align: center; margin-top: 20px; border-top: 2px dashed #000; padding-top: 10px;">
+          <div style="font-size: 12px; font-weight: bold; color: #222;">KRA eTIMS Receipt</div>
+          <div style="font-size: 12px;">Invoice No: <b>${kraData.curRcptNo || ''}</b></div>
+          <div style="font-size: 12px;">Signature: <b>${kraData.rcptSign || ''}</b></div>
+          ${kraData.qrCodeUrl ? `<img src="${kraData.qrCodeUrl}" alt="KRA QR Code" style="margin: 10px auto; display: block; width: 120px; height: 120px;" />` : ''}
+        </div>
+        ` : ''}
         <div style="text-align: center; margin-top: 20px;">
           <div style="font-size: 10px; color: #777; border-top: 1px solid #ccc; padding-top: 10px; font-weight: 500;">
             Receipt printed on: ${new Date().toLocaleString()}
@@ -758,7 +891,6 @@ export function CorrectedPOSSystem() {
         </div>
       </div>
     `
-
     const printWindow = window.open('', '_blank', 'width=450,height=700')
     if (printWindow) {
       printWindow.document.write(`
@@ -989,11 +1121,18 @@ export function CorrectedPOSSystem() {
       return
     }
     // No open session, create one
-    const { data, error } = await supabase.from('sessions').insert({ opened_by: 'POS' }).select().single()
-    if (data && !error) {
-      setSessionId(data.id)
-      localStorage.setItem('current_session_id', data.id)
-      setShowSessionDialog(false)
+    // Fix: do not use .select().single() on insert, just await insert and check for error
+    const { error: sessionInsertError } = await supabase.from('sessions').insert({ opened_by: 'POS' })
+    if (!sessionInsertError) {
+      // Refetch the open session to get its ID
+      const { data: newSession, error: fetchSessionError } = await supabase.from('sessions').select('*').is('closed_at', null).order('opened_at', { ascending: false }).limit(1).single()
+      if (newSession && !fetchSessionError) {
+        setSessionId(newSession.id)
+        localStorage.setItem('current_session_id', newSession.id)
+        setShowSessionDialog(false)
+      } else {
+        setSessionError('Session created but could not fetch session ID')
+      }
     } else {
       setSessionError('Failed to open session')
     }
@@ -1438,17 +1577,17 @@ export function CorrectedPOSSystem() {
                   </div>
                   
                   <div className="border-t pt-3">
-                    <div className="flex justify-between text-sm text-muted-foreground">
-                      <span>Subtotal:</span>
-                      <span>Ksh {order.subtotal.toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between text-sm text-muted-foreground">
-                      <span>Tax (16%):</span>
-                      <span>Ksh {order.tax_amount.toFixed(2)}</span>
-                    </div>
                     <div className="flex justify-between font-semibold text-lg">
                       <span>Total:</span>
                       <span className="text-primary">Ksh {order.total_amount.toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>Subtotal (before tax):</span>
+                      <span>Ksh {calcCartSubtotal().toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>Tax (16% VAT):</span>
+                      <span>Ksh {calcCartTax().toFixed(2)}</span>
                     </div>
                   </div>
                 </div>
@@ -1700,30 +1839,31 @@ export function CorrectedPOSSystem() {
                       <div className="flex justify-between text-sm text-muted-foreground">
                         <span>Previous Order:</span>
                         <span>Ksh {existingOrderItems.reduce((sum, item) => sum + item.total_price, 0).toFixed(2)}</span>
-                      </div>
+                  </div>
                     </div>
                   )}
                   
                   {cart.length > 0 && (
                     <div className="pb-2 border-b border-border">
-                      <div className="flex justify-between text-sm text-muted-foreground">
+                  <div className="flex justify-between text-sm text-muted-foreground">
                         <span>New Items:</span>
-                        <span>Ksh {getCartTotal().toFixed(2)}</span>
-                      </div>
+                        <span>Ksh {calcCartTotal().toFixed(2)}</span>
+                  </div>
                     </div>
                   )}
                   
+                  
+                  <div className="flex justify-between text-xs text-muted-foreground">
+                    <span>Subtotal (before tax):</span>
+                    <span>Ksh {calcCartSubtotal().toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between text-xs text-muted-foreground">
+                    <span>Tax (16% VAT):</span>
+                    <span>Ksh {calcCartTax().toFixed(2)}</span>
+                  </div>
                   <div className="flex justify-between font-semibold">
-                    <span>Subtotal:</span>
-                    <span>Ksh {(getCartTotal() + existingOrderItems.reduce((sum, item) => sum + item.total_price, 0)).toFixed(2)}</span>
-                  </div>
-                  <div className="flex justify-between text-sm text-muted-foreground">
-                    <span>Tax (16%):</span>
-                    <span>Ksh {((getCartTotal() + existingOrderItems.reduce((sum, item) => sum + item.total_price, 0)) * 0.16).toFixed(2)}</span>
-                  </div>
-                <div className="flex justify-between text-lg font-bold">
                   <span>Total:</span>
-                    <span>Ksh {((getCartTotal() + existingOrderItems.reduce((sum, item) => sum + item.total_price, 0)) * 1.16).toFixed(2)}</span>
+                    <span>Ksh {(calcCartTotal() + existingOrderItems.reduce((sum, item) => sum + item.total_price, 0)).toFixed(2)}</span>
                 </div>
                   <Button className="w-full" size="lg" onClick={handlePlaceOrder} disabled={placingOrder}>
                     {placingOrder ? (
@@ -1834,17 +1974,17 @@ export function CorrectedPOSSystem() {
                   </div>
                   
                   <div className="border-t pt-3">
-                    <div className="flex justify-between text-sm text-muted-foreground">
-                      <span>Subtotal:</span>
-                      <span>Ksh {order.subtotal.toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between text-sm text-muted-foreground">
-                      <span>Tax (16%):</span>
-                      <span>Ksh {order.tax_amount.toFixed(2)}</span>
-                    </div>
                     <div className="flex justify-between font-semibold text-lg">
                       <span>Total:</span>
-                      <span className="text-primary">Ksh {order.total_amount.toFixed(2)}</span>
+                      <span className="text-primary">Ksh {calcOrderTotal(order.items).toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>Subtotal (before tax):</span>
+                      <span>Ksh {calcOrderSubtotal(order.items).toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>Tax (16% VAT):</span>
+                      <span>Ksh {calcOrderTax(order.items).toFixed(2)}</span>
                     </div>
                   </div>
                 </div>

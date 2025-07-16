@@ -4,6 +4,7 @@ import type React from "react"
 import { useEffect } from "react"
 import { ThemeProvider } from "@/components/theme-provider"
 import { Sidebar } from "@/components/sidebar"
+import { ResponsiveLayout } from "@/components/responsive-layout"
 import { Toaster } from "@/components/ui/toaster"
 import { useCompleteInventoryStore } from "@/stores/complete-inventory-store"
 import { useCompleteKitchenStore } from "@/stores/complete-kitchen-store"
@@ -51,13 +52,18 @@ export default function ClientLayout({
     }
   }, [])
 
+  // Check if we should show the sidebar
+  const shouldShowSidebar = !(pathname.startsWith("/customer-portal") || pathname.startsWith("/qr-codes"))
+
   return (
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange={false}>
-      <div className="app-layout">
-        {/* Only show Sidebar if not on customer portal or other public pages */}
-        {!(pathname.startsWith("/customer-portal") || pathname.startsWith("/qr-codes")) && <Sidebar />}
-        <main className="app-main">{children}</main>
-      </div>
+      <ResponsiveLayout showSidebar={shouldShowSidebar}>
+        {/* Responsive Sidebar */}
+        {shouldShowSidebar && <Sidebar />}
+        
+        {/* Main Content */}
+        {children}
+      </ResponsiveLayout>
       <Toaster />
     </ThemeProvider>
   )

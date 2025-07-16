@@ -131,6 +131,33 @@ export default function RecipesPage() {
     fetchRecipes();
   }, []);
 
+  // Register recipe with KRA
+  const handleRegisterKRA = async (recipe: any) => {
+    try {
+      const res = await fetch('/api/kra/register-item', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: recipe.id,
+          name: recipe.name,
+          price: recipe.price,
+          description: recipe.description,
+          itemCd: recipe.itemCd || undefined,
+        }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        toast({ title: 'Registered with KRA', description: `itemCd: ${data.itemCd}` })
+        await fetchRecipes()
+      } else {
+        toast({ title: 'KRA Registration Failed', description: data.error || 'Unknown error', variant: 'destructive' })
+        await fetchRecipes()
+      }
+    } catch (e: any) {
+      toast({ title: 'KRA Registration Error', description: e.message, variant: 'destructive' })
+    }
+  }
+
   // Add a new recipe and its components
   const handleAddRecipe = async (data: any) => {
     try {
@@ -207,6 +234,14 @@ export default function RecipesPage() {
         
         await supabase.from("recipe_components").insert(componentsToInsert);
         
+        // Register with KRA
+        await handleRegisterKRA({
+          id: newRecipe.id,
+          name: newRecipe.name,
+          price: newRecipe.price,
+          description: newRecipe.description,
+          itemCd: newRecipe.itemCd,
+        })
         // After successful add, refetch recipes from DB for consistency
         await fetchRecipes();
         setShowRecipeForm(false);
@@ -411,6 +446,7 @@ export default function RecipesPage() {
                   recipes={catRecipes} 
                   onDelete={handleDeleteRecipe}
                   onViewDetails={handleViewDetails}
+                  onRegisterKRA={handleRegisterKRA}
                 />
               </div>
             );
@@ -426,6 +462,7 @@ export default function RecipesPage() {
                   recipes={uncategorized} 
                   onDelete={handleDeleteRecipe}
                   onViewDetails={handleViewDetails}
+                  onRegisterKRA={handleRegisterKRA}
                 />
               </div>
             );

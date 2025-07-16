@@ -272,6 +272,9 @@ export interface Database {
           notes: string | null
           created_at: string
           updated_at: string
+          itemCd: string | null // KRA item code
+          kra_status: string | null // 'ok', 'error', or null
+          kra_error: string | null // error message if any
         }
         Insert: {
           id?: string
@@ -297,6 +300,9 @@ export interface Database {
           notes?: string | null
           created_at?: string
           updated_at?: string
+          itemCd?: string | null
+          kra_status?: string | null
+          kra_error?: string | null
         }
         Update: {
           id?: string
@@ -322,6 +328,9 @@ export interface Database {
           notes?: string | null
           created_at?: string
           updated_at?: string
+          itemCd?: string | null
+          kra_status?: string | null
+          kra_error?: string | null
         }
       }
       recipe_ingredients: {

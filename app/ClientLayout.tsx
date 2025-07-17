@@ -10,6 +10,7 @@ import { useCompleteInventoryStore } from "@/stores/complete-inventory-store"
 import { useCompleteKitchenStore } from "@/stores/complete-kitchen-store"
 import { useCompletePOSStore } from "@/stores/complete-pos-store"
 import { usePathname } from "next/navigation"
+import { UserSessionProvider } from '@/context/UserSessionContext';
 
 export default function ClientLayout({
   children,
@@ -53,18 +54,23 @@ export default function ClientLayout({
   }, [])
 
   // Check if we should show the sidebar
-  const shouldShowSidebar = !(pathname.startsWith("/customer-portal") || pathname.startsWith("/qr-codes"))
+  const shouldShowSidebar = !(
+    pathname.startsWith("/customer-portal") ||
+    pathname.startsWith("/qr-codes") ||
+    pathname === "/login"
+  );
 
   return (
-    <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange={false}>
-      <ResponsiveLayout showSidebar={shouldShowSidebar}>
-        {/* Responsive Sidebar */}
-        {shouldShowSidebar && <Sidebar />}
-        
-        {/* Main Content */}
-        {children}
-      </ResponsiveLayout>
-      <Toaster />
-    </ThemeProvider>
+    <UserSessionProvider>
+      <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange={false}>
+        <ResponsiveLayout showSidebar={shouldShowSidebar}>
+          {/* Responsive Sidebar */}
+          {shouldShowSidebar && <Sidebar />}
+          {/* Main Content */}
+          {children}
+        </ResponsiveLayout>
+        <Toaster />
+      </ThemeProvider>
+    </UserSessionProvider>
   )
 }

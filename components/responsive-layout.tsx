@@ -3,6 +3,7 @@
 import { ReactNode } from "react"
 import { cn } from "@/lib/utils"
 import { useSidebarState } from "@/hooks/use-responsive"
+import SwitchUserButton from './SwitchUserButton';
 
 interface ResponsiveLayoutProps {
   children: ReactNode
@@ -25,6 +26,9 @@ export function ResponsiveLayout({ children, showSidebar = true, className }: Re
           !showSidebar && "ml-0" // No margin when sidebar is hidden
         )}
       >
+        <div className="flex justify-end items-center py-2 px-2">
+          <SwitchUserButton />
+        </div>
         {children}
       </main>
     </div>

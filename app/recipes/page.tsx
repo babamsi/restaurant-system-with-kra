@@ -11,6 +11,7 @@ import { RecipeList } from "@/components/recipes/RecipeList";
 import { RecipeForm } from "@/components/recipes/RecipeForm";
 import { RecipeDetailsDialog } from "@/components/recipes/RecipeDetailsDialog";
 import { useToast } from "@/hooks/use-toast";
+import ProtectedRoute from '@/components/ui/ProtectedRoute';
 
 export default function RecipesPage() {
   const { toast } = useToast();
@@ -295,214 +296,216 @@ export default function RecipesPage() {
   };
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-8">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
-        <h1 className="text-3xl font-bold">Recipe Menu</h1>
-        <Button onClick={() => {
-          setEditMode(false);
-          setRecipeToEdit(null);
-          setShowRecipeForm(true);
-        }}>
-          <Plus className="h-5 w-5 mr-2" />
-          Add Recipe
-        </Button>
-      </div>
-
-      {/* Search and Filters Section */}
-      <div className="mb-6 space-y-4">
-        {/* Search Bar */}
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground h-4 w-4" />
-          <Input
-            placeholder="Search recipes by name or description..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="pl-10 pr-4"
-          />
-          {searchTerm && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="absolute right-2 top-1/2 transform -translate-y-1/2 h-6 w-6"
-              onClick={() => setSearchTerm("")}
-            >
-              <X className="h-3 w-3" />
-            </Button>
-          )}
+    <ProtectedRoute>
+      <div className="max-w-5xl mx-auto px-4 py-8">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+          <h1 className="text-3xl font-bold">Recipe Menu</h1>
+          <Button onClick={() => {
+            setEditMode(false);
+            setRecipeToEdit(null);
+            setShowRecipeForm(true);
+          }}>
+            <Plus className="h-5 w-5 mr-2" />
+            Add Recipe
+          </Button>
         </div>
 
-        {/* Filters */}
-        <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowFilters(!showFilters)}
-              className="flex items-center gap-2"
-            >
-              <Filter className="h-4 w-4" />
-              Filters
-            </Button>
-            {hasActiveFilters && (
+        {/* Search and Filters Section */}
+        <div className="mb-6 space-y-4">
+          {/* Search Bar */}
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground h-4 w-4" />
+            <Input
+              placeholder="Search recipes by name or description..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-10 pr-4"
+            />
+            {searchTerm && (
               <Button
                 variant="ghost"
-                size="sm"
-                onClick={clearFilters}
-                className="text-muted-foreground hover:text-foreground"
+                size="icon"
+                className="absolute right-2 top-1/2 transform -translate-y-1/2 h-6 w-6"
+                onClick={() => setSearchTerm("")}
               >
-                Clear all
+                <X className="h-3 w-3" />
               </Button>
             )}
           </div>
-          
-          {showFilters && (
-            <div className="flex flex-col sm:flex-row gap-4 w-full sm:w-auto">
-              <div className="flex-1 sm:w-48">
-                <Select value={selectedRestaurant} onValueChange={setSelectedRestaurant}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="All Restaurants" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Restaurants</SelectItem>
-                    <SelectItem value="Omel Dunia">Omel Dunia</SelectItem>
-                    <SelectItem value="Mamma Mia">Mamma Mia</SelectItem>
-                  </SelectContent>
-                </Select>
+
+          {/* Filters */}
+          <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowFilters(!showFilters)}
+                className="flex items-center gap-2"
+              >
+                <Filter className="h-4 w-4" />
+                Filters
+              </Button>
+              {hasActiveFilters && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={clearFilters}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  Clear all
+                </Button>
+              )}
+            </div>
+            
+            {showFilters && (
+              <div className="flex flex-col sm:flex-row gap-4 w-full sm:w-auto">
+                <div className="flex-1 sm:w-48">
+                  <Select value={selectedRestaurant} onValueChange={setSelectedRestaurant}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="All Restaurants" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Restaurants</SelectItem>
+                      <SelectItem value="Omel Dunia">Omel Dunia</SelectItem>
+                      <SelectItem value="Mamma Mia">Mamma Mia</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex-1 sm:w-48">
+                  <Select value={selectedCategory} onValueChange={setSelectedCategory}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="All Categories" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Categories</SelectItem>
+                      {staticCategories.map((cat) => (
+                        <SelectItem key={cat} value={cat}>{cat}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
-              <div className="flex-1 sm:w-48">
-                <Select value={selectedCategory} onValueChange={setSelectedCategory}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="All Categories" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Categories</SelectItem>
-                    {staticCategories.map((cat) => (
-                      <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+            )}
+          </div>
+
+          {/* Active Filters Display */}
+          {hasActiveFilters && (
+            <div className="flex flex-wrap gap-2">
+              {searchTerm && (
+                <Badge variant="secondary" className="flex items-center gap-1">
+                  Search: "{searchTerm}"
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-4 w-4 p-0"
+                    onClick={() => setSearchTerm("")}
+                  >
+                    <X className="h-2 w-2" />
+                  </Button>
+                </Badge>
+              )}
+              {selectedRestaurant !== "all" && (
+                <Badge variant="secondary" className="flex items-center gap-1">
+                  Restaurant: {selectedRestaurant}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-4 w-4 p-0"
+                    onClick={() => setSelectedRestaurant("all")}
+                  >
+                    <X className="h-2 w-2" />
+                  </Button>
+                </Badge>
+              )}
+              {selectedCategory !== "all" && (
+                <Badge variant="secondary" className="flex items-center gap-1">
+                  Category: {selectedCategory}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-4 w-4 p-0"
+                    onClick={() => setSelectedCategory("all")}
+                  >
+                    <X className="h-2 w-2" />
+                  </Button>
+                </Badge>
+              )}
             </div>
           )}
         </div>
 
-        {/* Active Filters Display */}
-        {hasActiveFilters && (
-          <div className="flex flex-wrap gap-2">
-            {searchTerm && (
-              <Badge variant="secondary" className="flex items-center gap-1">
-                Search: "{searchTerm}"
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-4 w-4 p-0"
-                  onClick={() => setSearchTerm("")}
-                >
-                  <X className="h-2 w-2" />
+        {loading ? (
+          <div className="text-center py-12 text-muted-foreground">Loading recipes...</div>
+        ) : (
+          <div className="space-y-10">
+            {staticCategories.map((cat) => {
+              const catRecipes = filteredRecipes.filter(r => (r.category || '').toLowerCase() === cat.toLowerCase());
+              if (!catRecipes.length) return null;
+              return (
+                <div key={cat}>
+                  <h2 className="text-2xl font-bold mb-4 text-primary">{cat}</h2>
+                  <RecipeList 
+                    recipes={catRecipes} 
+                    onDelete={handleDeleteRecipe}
+                    onViewDetails={handleViewDetails}
+                    onRegisterKRA={handleRegisterKRA}
+                  />
+                </div>
+              );
+            })}
+            {/* Handle Uncategorized recipes */}
+            {(() => {
+              const uncategorized = filteredRecipes.filter(r => !r.category || !staticCategories.some(cat => cat.toLowerCase() === (r.category || '').toLowerCase()));
+              if (!uncategorized.length) return null;
+              return (
+                <div>
+                  <h2 className="text-2xl font-bold mb-4 text-primary">Uncategorized</h2>
+                  <RecipeList 
+                    recipes={uncategorized} 
+                    onDelete={handleDeleteRecipe}
+                    onViewDetails={handleViewDetails}
+                    onRegisterKRA={handleRegisterKRA}
+                  />
+                </div>
+              );
+            })()}
+            
+            {/* No results message */}
+            {filteredRecipes.length === 0 && recipes.length > 0 && (
+              <div className="text-center py-12 text-muted-foreground">
+                <p className="text-lg mb-2">No recipes found</p>
+                <p className="text-sm">Try adjusting your search or filters</p>
+                <Button variant="outline" onClick={clearFilters} className="mt-4">
+                  Clear all filters
                 </Button>
-              </Badge>
-            )}
-            {selectedRestaurant !== "all" && (
-              <Badge variant="secondary" className="flex items-center gap-1">
-                Restaurant: {selectedRestaurant}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-4 w-4 p-0"
-                  onClick={() => setSelectedRestaurant("all")}
-                >
-                  <X className="h-2 w-2" />
-                </Button>
-              </Badge>
-            )}
-            {selectedCategory !== "all" && (
-              <Badge variant="secondary" className="flex items-center gap-1">
-                Category: {selectedCategory}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-4 w-4 p-0"
-                  onClick={() => setSelectedCategory("all")}
-                >
-                  <X className="h-2 w-2" />
-                </Button>
-              </Badge>
+              </div>
             )}
           </div>
         )}
+        <RecipeForm
+          open={showRecipeForm}
+          onOpenChange={(open) => {
+            setShowRecipeForm(open);
+            if (!open) {
+              // Reset edit mode when form is closed
+              setEditMode(false);
+              setRecipeToEdit(null);
+            }
+          }}
+          onSubmit={handleAddRecipe}
+          ingredientOptions={ingredientOptions}
+          batchOptions={batchOptions}
+          categories={staticCategories}
+          editMode={editMode}
+          recipe={recipeToEdit}
+        />
+        <RecipeDetailsDialog
+          open={showRecipeDetails}
+          onOpenChange={setShowRecipeDetails}
+          recipe={selectedRecipe}
+          onEdit={handleEditRecipe}
+        />
       </div>
-
-      {loading ? (
-        <div className="text-center py-12 text-muted-foreground">Loading recipes...</div>
-      ) : (
-        <div className="space-y-10">
-          {staticCategories.map((cat) => {
-            const catRecipes = filteredRecipes.filter(r => (r.category || '').toLowerCase() === cat.toLowerCase());
-            if (!catRecipes.length) return null;
-            return (
-              <div key={cat}>
-                <h2 className="text-2xl font-bold mb-4 text-primary">{cat}</h2>
-                <RecipeList 
-                  recipes={catRecipes} 
-                  onDelete={handleDeleteRecipe}
-                  onViewDetails={handleViewDetails}
-                  onRegisterKRA={handleRegisterKRA}
-                />
-              </div>
-            );
-          })}
-          {/* Handle Uncategorized recipes */}
-          {(() => {
-            const uncategorized = filteredRecipes.filter(r => !r.category || !staticCategories.some(cat => cat.toLowerCase() === (r.category || '').toLowerCase()));
-            if (!uncategorized.length) return null;
-            return (
-              <div>
-                <h2 className="text-2xl font-bold mb-4 text-primary">Uncategorized</h2>
-                <RecipeList 
-                  recipes={uncategorized} 
-                  onDelete={handleDeleteRecipe}
-                  onViewDetails={handleViewDetails}
-                  onRegisterKRA={handleRegisterKRA}
-                />
-              </div>
-            );
-          })()}
-          
-          {/* No results message */}
-          {filteredRecipes.length === 0 && recipes.length > 0 && (
-            <div className="text-center py-12 text-muted-foreground">
-              <p className="text-lg mb-2">No recipes found</p>
-              <p className="text-sm">Try adjusting your search or filters</p>
-              <Button variant="outline" onClick={clearFilters} className="mt-4">
-                Clear all filters
-              </Button>
-            </div>
-          )}
-        </div>
-      )}
-      <RecipeForm
-        open={showRecipeForm}
-        onOpenChange={(open) => {
-          setShowRecipeForm(open);
-          if (!open) {
-            // Reset edit mode when form is closed
-            setEditMode(false);
-            setRecipeToEdit(null);
-          }
-        }}
-        onSubmit={handleAddRecipe}
-        ingredientOptions={ingredientOptions}
-        batchOptions={batchOptions}
-        categories={staticCategories}
-        editMode={editMode}
-        recipe={recipeToEdit}
-      />
-      <RecipeDetailsDialog
-        open={showRecipeDetails}
-        onOpenChange={setShowRecipeDetails}
-        recipe={selectedRecipe}
-        onEdit={handleEditRecipe}
-      />
-    </div>
+    </ProtectedRoute>
   );
 } 

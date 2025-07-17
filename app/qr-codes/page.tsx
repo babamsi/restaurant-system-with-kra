@@ -8,6 +8,7 @@ import { QRCode } from "@/components/ui/qr-code"
 import { Table, QrCode, Printer, Download } from "lucide-react"
 import { supabase } from "@/lib/supabase"
 import { useToast } from "@/hooks/use-toast"
+import ProtectedRoute from '@/components/ui/ProtectedRoute';
 
 interface TableQR {
   id: number
@@ -106,107 +107,109 @@ export default function QRCodesPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background p-6">
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="mb-8">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold flex items-center gap-2">
-                <QrCode className="h-8 w-8 text-primary" />
-                Table QR Codes
-              </h1>
-              <p className="text-muted-foreground mt-2">
-                Print these QR codes and place them at each table for customer ordering
-              </p>
+    <ProtectedRoute>
+      <div className="min-h-screen bg-background p-6">
+        <div className="max-w-7xl mx-auto">
+          {/* Header */}
+          <div className="mb-8">
+            <div className="flex items-center justify-between">
+              <div>
+                <h1 className="text-3xl font-bold flex items-center gap-2">
+                  <QrCode className="h-8 w-8 text-primary" />
+                  Table QR Codes
+                </h1>
+                <p className="text-muted-foreground mt-2">
+                  Print these QR codes and place them at each table for customer ordering
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={handlePrintAll}>
+                  <Printer className="h-4 w-4 mr-2" />
+                  Print All
+                </Button>
+              </div>
             </div>
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={handlePrintAll}>
-                <Printer className="h-4 w-4 mr-2" />
-                Print All
-              </Button>
+          </div>
+
+          {/* QR Codes Grid */}
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-6">
+            {tables.map((table) => (
+              <Card key={table.id} className="print:break-inside-avoid">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-center flex items-center justify-center gap-2">
+                    <Table className="h-5 w-5" />
+                    {table.number}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="text-center space-y-4">
+                  <div className="flex justify-center">
+                    <QRCode 
+                      value={table.qrUrl} 
+                      size={120}
+                      className="border rounded-lg p-2 bg-white"
+                      dataTable={table.id}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Badge variant="secondary" className="w-full">
+                      Scan to Order
+                    </Badge>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="w-full"
+                      onClick={() => handleDownloadQR(table)}
+                    >
+                      <Download className="h-4 w-4 mr-2" />
+                      Download
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+
+          {/* Instructions */}
+          <div className="mt-12 p-6 bg-muted/50 rounded-lg print:hidden">
+            <h3 className="text-lg font-semibold mb-4">Instructions</h3>
+            <div className="grid md:grid-cols-2 gap-6">
+              <div>
+                <h4 className="font-medium mb-2">For Staff:</h4>
+                <ol className="text-sm text-muted-foreground space-y-1">
+                  <li>1. Print all QR codes</li>
+                  <li>2. Cut out each QR code</li>
+                  <li>3. Place QR codes at their respective tables</li>
+                  <li>4. Ensure QR codes are easily visible to customers</li>
+                </ol>
+              </div>
+              <div>
+                <h4 className="font-medium mb-2">For Customers:</h4>
+                <ol className="text-sm text-muted-foreground space-y-1">
+                  <li>1. Scan the QR code at your table</li>
+                  <li>2. Browse the menu and add items to cart</li>
+                  <li>3. Place your order - it will be prepared and served to your table</li>
+                  <li>4. You can add more items to your existing order anytime</li>
+                </ol>
+              </div>
             </div>
           </div>
         </div>
 
-        {/* QR Codes Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-6">
-          {tables.map((table) => (
-            <Card key={table.id} className="print:break-inside-avoid">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-center flex items-center justify-center gap-2">
-                  <Table className="h-5 w-5" />
-                  {table.number}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="text-center space-y-4">
-                <div className="flex justify-center">
-                  <QRCode 
-                    value={table.qrUrl} 
-                    size={120}
-                    className="border rounded-lg p-2 bg-white"
-                    dataTable={table.id}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Badge variant="secondary" className="w-full">
-                    Scan to Order
-                  </Badge>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="w-full"
-                    onClick={() => handleDownloadQR(table)}
-                  >
-                    <Download className="h-4 w-4 mr-2" />
-                    Download
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-
-        {/* Instructions */}
-        <div className="mt-12 p-6 bg-muted/50 rounded-lg print:hidden">
-          <h3 className="text-lg font-semibold mb-4">Instructions</h3>
-          <div className="grid md:grid-cols-2 gap-6">
-            <div>
-              <h4 className="font-medium mb-2">For Staff:</h4>
-              <ol className="text-sm text-muted-foreground space-y-1">
-                <li>1. Print all QR codes</li>
-                <li>2. Cut out each QR code</li>
-                <li>3. Place QR codes at their respective tables</li>
-                <li>4. Ensure QR codes are easily visible to customers</li>
-              </ol>
-            </div>
-            <div>
-              <h4 className="font-medium mb-2">For Customers:</h4>
-              <ol className="text-sm text-muted-foreground space-y-1">
-                <li>1. Scan the QR code at your table</li>
-                <li>2. Browse the menu and add items to cart</li>
-                <li>3. Place your order - it will be prepared and served to your table</li>
-                <li>4. You can add more items to your existing order anytime</li>
-              </ol>
-            </div>
-          </div>
-        </div>
+        {/* Print Styles */}
+        <style jsx global>{`
+          @media print {
+            body {
+              background: white !important;
+            }
+            .print\\:hidden {
+              display: none !important;
+            }
+            .print\\:break-inside-avoid {
+              break-inside: avoid;
+            }
+          }
+        `}</style>
       </div>
-
-      {/* Print Styles */}
-      <style jsx global>{`
-        @media print {
-          body {
-            background: white !important;
-          }
-          .print\\:hidden {
-            display: none !important;
-          }
-          .print\\:break-inside-avoid {
-            break-inside: avoid;
-          }
-        }
-      `}</style>
-    </div>
+    </ProtectedRoute>
   )
 } 

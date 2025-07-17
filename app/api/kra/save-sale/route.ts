@@ -40,6 +40,11 @@ async function getNextInvoiceNo() {
   return next
 }
 
+async function getNextInvoiceNoForRetry(orgInvcNo: number) {
+  // For retry, increment from the original invoice's trdInvcNo
+  return orgInvcNo;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
@@ -57,7 +62,12 @@ export async function POST(req: NextRequest) {
     }
 
     // Invoice number
-    const invcNo = await getNextInvoiceNo()
+    let invcNo: number;
+    if (orgInvcNo && orgInvcNo > 0) {
+      invcNo = await getNextInvoiceNoForRetry(orgInvcNo);
+    } else {
+      invcNo = await getNextInvoiceNo();
+    }
     const now = new Date()
     const cfmDt = formatDateTime(now)
     const salesDt = formatDate(now)
@@ -110,6 +120,7 @@ export async function POST(req: NextRequest) {
     })
     // Compose recipe names for modrID, modrNm, regrNm
     const recipeNames = items.map((item: any) => item.name).join(', ');
+    const recipeNamesShort = recipeNames.slice(0, 20);
 
     const payload = {
       tin: TIN,
@@ -143,9 +154,9 @@ export async function POST(req: NextRequest) {
       // Additional KRA fields as requested
       taxblAmtA: 0,
       taxRtE: 16,
-      modrId: recipeNames,
+      modrId: recipeNamesShort,
       regrNm: recipeNames,
-      regrId: recipeNames,
+      regrId: recipeNamesShort,
       taxblAmtD: 0,
       taxRtA: 0,
       taxAmtC: 0,

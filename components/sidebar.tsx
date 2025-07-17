@@ -4,7 +4,7 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useState, useEffect } from "react"
 import { cn } from "@/lib/utils"
-import { BarChart3, ChefHat, Home, Package, ShoppingCart, Users, ClipboardList, Store, Menu, X, FileText } from "lucide-react"
+import { BarChart3, ChefHat, Home, Package, ShoppingCart, Users, ClipboardList, Store, Menu, X, FileText, BadgeAlert } from "lucide-react"
 import { ModeToggleSimple } from "@/components/mode-toggle"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -23,6 +23,7 @@ const navigation = [
   { name: "Suppliers", href: "/suppliers", icon: Users },
   { name: "Reports", href: "/reports", icon: BarChart3 },
   { name: "System Logs", href: "/kitchen/logs", icon: FileText },
+  { name: "KRA Failed", href: "/kra-failed-sales", icon: BadgeAlert}
   // { name: "Test Responsive", href: "/test-responsive", icon: FileText },
 ]
 

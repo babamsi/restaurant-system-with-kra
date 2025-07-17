@@ -120,7 +120,10 @@ export interface BaseIngredient {
   cost_per_unit: number
   available_quantity: number
   threshold: number
-  image?: string
+  image?: string,
+  itemCd?: string,
+  itemClsCd?: string,
+  kra_status?: string,
   nutrition?: NutritionInfo
   supplier_id: string // Reference to supplier
   created_at: string

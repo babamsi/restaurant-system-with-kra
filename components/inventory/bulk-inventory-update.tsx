@@ -82,7 +82,7 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
         return sum
       }
       const addQuantity = item.newQuantity ?? 0
-      const currentQuantity = item.ingredient.current_stock
+      const currentQuantity = item.ingredient.available_quantity
       const currentCost = item.ingredient.cost_per_unit
       const newCost = item.newCost ?? currentCost
       const valueChange = (addQuantity * currentCost) + (addQuantity * (newCost - currentCost))
@@ -242,7 +242,7 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
             ...item,
             selected: true,
             // Only update the newQuantity and newCost fields without affecting the main inventory
-            newQuantity: item.ingredient.current_stock + receiptItem.quantity,
+            newQuantity: item.ingredient.available_quantity + receiptItem.quantity,
             newCost: receiptItem.cost_per_unit
           }
         }
@@ -256,39 +256,152 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
     })
   }
 
+  // Helper functions for KRA integration
+  async function registerIngredientWithKRA(ingredient: BaseIngredient) {
+    const res = await fetch('/api/kra/register-ingredient', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: ingredient.id,
+        name: ingredient.name,
+        price: ingredient.cost_per_unit,
+        description: ingredient.description,
+        itemCd: ingredient.itemCd,
+        unit: ingredient.unit, // Always send unit
+      }),
+    })
+    return res.json()
+  }
+
+  function generateUniqueSarNo() {
+    // Generate a unique 38-character string (timestamp + random)
+    const ts = Date.now().toString()
+    const rand = Math.random().toString(36).substring(2, 38 - ts.length)
+    return (ts + rand).padEnd(38, '0')
+  }
+
+  async function stockInKRAItems(items: BulkUpdateItem[], receiptCode: string, vatAmount: string) {
+    // Map unit to KRA code
+    const KRA_UNIT_MAP: Record<string, string> = {
+      'bag': 'BG', 'box': 'BOX', 'can': 'CA', 'dozen': 'DZ', 'gram': 'GRM', 'g': 'GRM', 'kg': 'KG', 'kilogram': 'KG', 'kilo gramme': 'KG', 'litre': 'L', 'liter': 'L', 'l': 'L', 'milligram': 'MGM', 'mg': 'MGM', 'packet': 'PA', 'set': 'SET', 'piece': 'U', 'pieces': 'U', 'item': 'U', 'number': 'U', 'pcs': 'U', 'u': 'U',
+    }
+    function mapToKRAUnit(unit: string): string {
+      if (!unit) return 'U'
+      const normalized = unit.trim().toLowerCase()
+      return KRA_UNIT_MAP[normalized] || 'U'
+    }
+    const now = new Date()
+    const ocrnDt = now.toISOString().slice(0, 10).replace(/-/g, '') // YYYYMMDD
+    // const sarNo = generateUniqueSarNo()  
+    const sarNo = 1
+    // const orgSarNo = generateUniqueSarNo()
+    const orgSarNo = 1
+    const sarTyCd = '02' // purchase
+    const safeName = receiptCode.length > 20 ? receiptCode.slice(0, 20) : receiptCode
+    // Build itemList
+    let totTaxblAmt = 0
+    let totTaxAmt = 0
+    let totAmt = 0
+    const itemList = items.map((item, idx) => {
+      const qty = item.newQuantity ?? 0
+      const prc = item.newCost ?? item.ingredient.cost_per_unit
+      const splyAmt = qty * prc
+      const taxAmt = vatAmount && parseFloat(vatAmount) > 0 ? (splyAmt * parseFloat(vatAmount) / items.length) / splyAmt : 0
+      const totItemAmt = splyAmt + taxAmt
+      totTaxblAmt += splyAmt
+      totTaxAmt += taxAmt
+      totAmt += totItemAmt
+      return {
+        itemSeq: idx + 1,
+        itemCd: item.ingredient.itemCd,
+        itemClsCd: item.ingredient.itemClsCd,
+        itemNm: item.ingredient.name,
+        pkgUnitCd: 'NT',
+        pkg: 1,
+        qtyUnitCd: mapToKRAUnit(item.ingredient.unit),
+        qty,
+        prc,
+        splyAmt,
+        totDcAmt: 0,
+        taxblAmt: splyAmt,
+        taxTyCd: 'B',
+        taxAmt,
+        totAmt: totItemAmt,
+      }
+    })
+    const kraPayload = {
+      tin: 'P052380018M',
+      bhfId: '01',
+      sarNo,
+      orgSarNo,
+      regTyCd: 'M',
+      sarTyCd,
+      ocrnDt,
+      totItemCnt: itemList.length,
+      totTaxblAmt,
+      totTaxAmt,
+      totAmt,
+      regrId: safeName,
+      regrNm: safeName,
+      modrId: safeName,
+      modrNm: safeName,
+      itemList,
+    }
+    const res = await fetch('/api/kra/stock-in', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(kraPayload),
+    })
+    return res.json()
+  }
+
   const handleProcessUpdates = async () => {
     if (!selectedSupplier) {
-      toast({
-        title: "Error",
-        description: "Please select a supplier first.",
-        variant: "destructive",
-      })
+      toast({ title: "Error", description: "Please select a supplier first.", variant: "destructive" })
       return
     }
-
     if (!invoiceNumber) {
-      toast({
-        title: "Error",
-        description: "Please enter an invoice number.",
-        variant: "destructive",
-      })
+      toast({ title: "Error", description: "Please enter an invoice number.", variant: "destructive" })
       return
     }
 
     const itemsToUpdate = updateItems.filter(item => item.newQuantity !== undefined || item.newCost !== undefined)
     if (itemsToUpdate.length === 0) {
-      toast({
-        title: "Error",
-        description: "Please select at least one item to update.",
-        variant: "destructive",
-      })
+      toast({ title: "Error", description: "Please select at least one item to update.", variant: "destructive" })
       return
     }
 
     setIsProcessing(true)
 
     try {
-      // Update inventory with actual changes using Supabase
+      // For every item, register with KRA if needed
+      for (const item of itemsToUpdate) {
+        if (!item.ingredient.itemCd || !item.ingredient.itemClsCd) {
+          const kraRes = await registerIngredientWithKRA(item.ingredient)
+          if (!kraRes.success) {
+            toast({ title: "KRA Registration Error", description: kraRes.error || "Failed to register ingredient with KRA", variant: "destructive" })
+            setIsProcessing(false)
+            return
+          }
+          await inventoryService.updateIngredient(item.ingredient.id, {
+            itemCd: kraRes.itemCd,
+            itemClsCd: kraRes.itemClsCd,
+            kra_status: 'ok',
+          })
+          item.ingredient.itemCd = kraRes.itemCd
+          item.ingredient.itemClsCd = kraRes.itemClsCd
+        }
+      }
+      // Always inform KRA of stock update for all items in one call
+      const kraStockInRes = await stockInKRAItems(itemsToUpdate, invoiceNumber, vatAmount)
+      if (kraStockInRes.kraData && kraStockInRes.kraData.resultCd === '000') {
+        toast({ title: 'KRA Stock-In Success', description: kraStockInRes.kraData.resultMsg || 'Stock-in succeeded.' })
+      } else {
+        toast({ title: 'KRA Stock-In Error', description: (kraStockInRes.kraData && kraStockInRes.kraData.resultMsg) || kraStockInRes.error || 'Failed to notify KRA', variant: 'destructive' })
+        setIsProcessing(false)
+        return
+      }
+      // Proceed with your normal inventory update (existing logic)
       for (const item of itemsToUpdate) {
         if (item.newQuantity !== undefined) {
           const addQuantity = item.newQuantity
@@ -345,11 +458,7 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
       setShowReceiptUpload(false)
       setIsOpen(false)
     } catch (error) {
-      toast({
-        title: "Error",
-        description: "Failed to process updates. Please try again.",
-        variant: "destructive",
-      })
+      toast({ title: "Error", description: "Failed to process updates. Please try again.", variant: "destructive" })
     } finally {
       setIsProcessing(false)
     }
@@ -500,7 +609,7 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        {item.ingredient.current_stock} {item.ingredient.unit}
+                        {item.ingredient.available_quantity} {item.ingredient.unit}
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center space-x-2">
@@ -516,13 +625,13 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
                           <div className="flex flex-col">
                             <button
                               className="p-1 border rounded-t"
-                              onClick={() => handleQuantityChange(index, String((item.newQuantity ?? item.ingredient.current_stock) + 1))}
+                              onClick={() => handleQuantityChange(index, String((item.newQuantity ?? item.ingredient.available_quantity) + 1))}
                             >
                               ▲
                             </button>
                             <button
                               className="p-1 border rounded-b"
-                              onClick={() => handleQuantityChange(index, String((item.newQuantity ?? item.ingredient.current_stock) - 1))}
+                              onClick={() => handleQuantityChange(index, String((item.newQuantity ?? item.ingredient.available_quantity) - 1))}
                             >
                               ▼
                             </button>

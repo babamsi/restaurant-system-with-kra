@@ -138,7 +138,7 @@ export function DashboardMetrics({ date, setDate }: DashboardMetricsProps) {
           onChange={e => setDate(e.target.value)}
         />
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
       {/* Revenue */}
       <Card className="overflow-hidden border-l-4 border-l-green-500">
         <CardContent className="p-6">
@@ -279,6 +279,6 @@ export function DashboardMetrics({ date, setDate }: DashboardMetricsProps) {
         </CardContent>
       </Card>
     </div>
-  </div>
+    </div>
   )
 }

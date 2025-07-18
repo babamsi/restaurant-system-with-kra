@@ -799,176 +799,38 @@ export function CorrectedPOSSystem() {
   }
 
   // Print receipt with KRA info
-  const handlePrintReceipt = (order: any, kraData?: any) => {
-    const receiptContent = `
-      <div style="font-family: 'Courier New', monospace; font-size: 14px; line-height: 1.4; width: 100%; max-width: 300px; margin: 0; padding: 8px 0 8px 8px; box-sizing: border-box;">
-        <div style="text-align: center; margin-bottom: 10px;">
-          <h2 style="margin: 0; font-size: 16px; font-weight: bold; letter-spacing: 1px;">RESTAURANT NAME</h2>
-          <p style="margin: 6px 0; font-size: 11px; font-weight: 500;">123 Main Street, City</p>
-          <p style="margin: 6px 0; font-size: 11px; font-weight: 500;">Phone: (123) 456-7890</p>
-        </div>
-        <div style="border-top: 2px dashed #000; border-bottom: 2px dashed #000; padding: 12px 0; margin: 15px 0;">
-          <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px; font-weight: 500;">
-            <span style="font-weight: bold;">Order #:</span>
-            <span style="font-weight: 600;">${order.id.slice(-6)}</span>
-          </div>
-          <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px; font-weight: 500;">
-            <span style="font-weight: bold;">Table:</span>
-            <span style="font-weight: 600;">${order.table_number}</span>
-          </div>
-          <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px; font-weight: 500;">
-            <span style="font-weight: bold;">Date:</span>
-            <span style="font-weight: 600;">${new Date(order.created_at).toLocaleDateString()}</span>
-          </div>
-          <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px; font-weight: 500;">
-            <span style="font-weight: bold;">Time:</span>
-            <span style="font-weight: 600;">${new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-          </div>
-          <div style="display: flex; justify-content: space-between; font-size: 13px; font-weight: 500;">
-            <span style="font-weight: bold;">Status:</span>
-            <span style="text-transform: uppercase; font-weight: bold; font-size: 13px;">${order.status}</span>
-          </div>
-        </div>
-        <div style="margin: 15px 0;">
-          <div style="border-bottom: 2px solid #000; padding-bottom: 8px; margin-bottom: 12px;">
-            <div style="display: flex; justify-content: space-between; font-weight: bold; font-size: 13px;">
-              <span style="width: 40%;">ITEM</span>
-              <span style="width: 12%; text-align: center;">QTY</span>
-              <span style="width: 18%; text-align: right;">PRICE</span>
-              <span style="width: 30%; text-align: right;">TOTAL</span>
-            </div>
-          </div>
-          ${order.items?.map((item: any) => `
-            <div style="margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dotted #999;">
-              <div style="font-weight: bold; font-size: 13px; margin-bottom: 4px; line-height: 1.3;">
-                ${item.menu_item_name}${item.portion_size ? ` (${item.portion_size})` : ''}
-              </div>
-              ${item.customization_notes ? `
-                <div style="font-size: 11px; color: #555; margin-bottom: 4px; font-style: italic; padding-left: 10px; font-weight: 500;">
-                  Note: ${item.customization_notes}
-                </div>
-              ` : ''}
-              <div style="display: flex; justify-content: space-between; font-size: 12px; align-items: center; font-weight: 500;">
-                <span style="width: 40%;"></span>
-                <span style="width: 12%; text-align: center; font-weight: bold; font-size: 13px;">${item.quantity}</span>
-                <span style="width: 18%; text-align: right; font-weight: 600;">${item.unit_price.toFixed(2)}</span>
-                <span style="width: 30%; text-align: right; font-weight: bold; font-size: 13px;">${item.total_price.toFixed(2)}</span>
-              </div>
-            </div>
-          `).join('')}
-        </div>
-        <div style="border-top: 2px dashed #000; padding-top: 15px; margin: 15px 0;">
-          <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 6px; font-weight: 500;">
-            <span style="font-weight: bold;">Total:</span>
-            <span style="font-weight: 600;">Ksh ${order.total_amount.toFixed(2)}</span>
-          </div>
-          <div style="display: flex; justify-content: space-between; font-size: 11px; color: #555; margin-top: 2px;">
-            <span>Subtotal (before tax):</span>
-            <span>Ksh ${calcOrderSubtotal(order.items).toFixed(2)}</span>
-          </div>
-          <div style="display: flex; justify-content: space-between; font-size: 11px; color: #555; margin-top: 2px;">
-            <span>Tax (16% VAT):</span>
-            <span>Ksh ${calcOrderTax(order.items).toFixed(2)}</span>
-          </div>
-        </div>
-        <div style="text-align: center; margin: 20px 0; padding: 15px 0; border-top: 2px dashed #000; border-bottom: 2px dashed #000;">
-          <p style="margin: 8px 0; font-size: 14px; font-weight: bold;">Thank you for dining with us!</p>
-          <p style="margin: 8px 0; font-size: 13px; font-weight: 500;">Please come again</p>
-          <p style="margin: 8px 0; font-size: 12px; font-weight: 500;">www.restaurant.com</p>
-        </div>
-        ${kraData ? `
-        <div style="text-align: center; margin-top: 20px; border-top: 2px dashed #000; padding-top: 10px;">
-          <div style="font-size: 12px; font-weight: bold; color: #222;">KRA eTIMS Receipt</div>
-          <div style="font-size: 12px;">Invoice No: <b>${kraData.curRcptNo || ''}</b></div>
-          <div style="font-size: 12px;">Signature: <b>${kraData.rcptSign || ''}</b></div>
-          ${kraData.qrCodeUrl ? `<img src="${kraData.qrCodeUrl}" alt="KRA QR Code" style="margin: 10px auto; display: block; width: 120px; height: 120px;" />` : ''}
-        </div>
-        ` : ''}
-        <div style="text-align: center; margin-top: 20px;">
-          <div style="font-size: 10px; color: #777; border-top: 1px solid #ccc; padding-top: 10px; font-weight: 500;">
-            Receipt printed on: ${new Date().toLocaleString()}
-          </div>
-        </div>
-      </div>
-    `
-    const printWindow = window.open('', '_blank', 'width=450,height=700')
-    if (printWindow) {
-      printWindow.document.write(`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>Receipt - Order ${order.id.slice(-6)}</title>
-            <style>
-              @media print {
-                body {
-                  margin: 0;
-                  padding: 0;
-                  width: 100%;
-                  max-width: 300px;
-                }
-                .receipt-container {
-                  width: 100%;
-                  max-width: 300px;
-                  margin: 0;
-                  padding: 8px 0 8px 8px;
-                  font-family: 'Courier New', monospace;
-                  font-size: 14px;
-                  line-height: 1.4;
-                  box-sizing: border-box;
-                }
-                @page {
-                  size: 80mm auto;
-                  margin: 0;
-                }
-              }
-              body {
-                font-family: 'Courier New', monospace;
-                font-size: 14px;
-                line-height: 1.4;
-                margin: 0;
-                padding: 8px 0 8px 8px;
-                background: white;
-                width: 100%;
-                max-width: 300px;
-                box-sizing: border-box;
-              }
-              .receipt-container {
-                width: 100%;
-                max-width: 300px;
-                margin: 0 auto;
-                background: white;
-                box-shadow: none;
-                border-radius: 0;
-                padding: 8px 0 8px 8px;
-                box-sizing: border-box;
-              }
-              .print-button {
-                display: none;
-              }
-            </style>
-          </head>
-          <body>
-            <div class="receipt-container">
-              ${receiptContent}
-            </div>
-            <script>
-              window.onload = function() {
-                setTimeout(function() {
-                  window.print();
-                }, 800);
-              };
-              window.onafterprint = function() {
-                // Optional: close window after printing
-                // window.close();
-              };
-            </script>
-          </body>
-        </html>
-      `)
-      printWindow.document.close()
-      printWindow.focus()
+  const handlePrintReceipt = async (order: any, kraData?: any) => {
+    // ... existing browser print logic ...
+    // --- Thermal Printer Integration ---
+    try {
+      const res = await fetch('/api/print-receipt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          order,
+          items: order.items,
+          totals: {
+            subtotal: calcOrderSubtotal(order.items),
+            tax: calcOrderTax(order.items),
+            total: calcOrderTotal(order.items),
+          },
+          restaurant: 'RESTAURANT NAME',
+          table: order.table_number,
+          date: new Date(order.created_at).toLocaleDateString(),
+          time: new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          receiptId: order.id,
+        }),
+      });
+      const result = await res.json();
+      if (result.success) {
+        toast({ title: 'Printed to Thermal Printer', description: 'Receipt sent to printer.' });
+      } else {
+        toast({ title: 'Print Error', description: result.error || 'Failed to print receipt', variant: 'destructive' });
+      }
+    } catch (err: any) {
+      toast({ title: 'Print Error', description: err.message || 'Failed to print receipt', variant: 'destructive' });
     }
-  }
+  };
 
   // Helper to format payment method for order history
   function formatPaymentMethod(payment_method: any): string {

@@ -5,8 +5,14 @@ import { DollarSign, Users, Package, AlertTriangle, ChefHat, ClipboardList, Cloc
 import { useUserSession } from '@/context/UserSessionContext';
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { inventoryService } from '@/lib/inventory-service';
 
-export function DashboardMetrics() {
+interface DashboardMetricsProps {
+  date: string;
+  setDate: (date: string) => void;
+}
+
+export function DashboardMetrics({ date, setDate }: DashboardMetricsProps) {
   const { user } = useUserSession();
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<any>({});
@@ -15,14 +21,15 @@ export function DashboardMetrics() {
     if (!user) return;
     setLoading(true);
     const fetchData = async () => {
-      const today = new Date();
-      today.setHours(0,0,0,0);
-      const todayISO = today.toISOString();
+      const day = new Date(date);
+      day.setHours(0,0,0,0);
+      const dayISO = day.toISOString();
       // Revenue & Meals
       let salesQuery = supabase
         .from('sales_invoices')
         .select('gross_amount, created_at, user_id')
-        .gte('created_at', todayISO)
+        .gte('created_at', dayISO)
+        .lt('created_at', new Date(day.getTime() + 24*60*60*1000).toISOString())
         .eq('kra_status', 'ok');
       if (user.role === 'staff') {
         salesQuery = salesQuery.eq('user_id', user.id);
@@ -30,18 +37,19 @@ export function DashboardMetrics() {
       const { data: sales } = await salesQuery;
       const revenue = sales?.reduce((sum, s) => sum + (s.gross_amount || 0), 0) || 0;
       const mealsServed = sales?.length || 0;
-      // Low Stock
-      const { data: lowStock } = await supabase
-        .from('ingredients')
-        .select('id, name, quantity, low_stock_threshold')
-        .lt('quantity', 'low_stock_threshold');
+      // Low Stock & Out of Stock (use inventoryService for consistency)
+      const lowStockRes = await inventoryService.getLowStockItems();
+      const outOfStockRes = await inventoryService.getOutOfStockItems();
+      const lowStock = lowStockRes.success ? lowStockRes.data : [];
+      const outOfStock = outOfStockRes.success ? outOfStockRes.data : [];
       // Staff Performance (for owner/manager)
       let staffPerf: { name: string, total: number, count: number }[] = [];
       if (user.role === 'owner' || user.role === 'manager') {
         const { data: staffSales } = await supabase
           .from('sales_invoices')
           .select('user_id, gross_amount')
-          .gte('created_at', todayISO)
+          .gte('created_at', dayISO)
+          .lt('created_at', new Date(day.getTime() + 24*60*60*1000).toISOString())
           .eq('kra_status', 'ok');
         const { data: users } = await supabase.from('users').select('id, name');
         const perfMap: Record<string, { name: string, total: number, count: number }> = {};
@@ -62,7 +70,8 @@ export function DashboardMetrics() {
           .from('sales_invoices')
           .select('id, order_id, gross_amount, kra_error, created_at')
           .eq('kra_status', 'error')
-          .gte('created_at', todayISO);
+          .gte('created_at', dayISO)
+          .lt('created_at', new Date(day.getTime() + 24*60*60*1000).toISOString());
         failedKRA = failed || [];
       }
       // Kitchen: Orders to prepare, completed, urgent
@@ -73,7 +82,8 @@ export function DashboardMetrics() {
         const { data: orders } = await supabase
           .from('table_orders')
           .select('id, status, created_at, updated_at')
-          .gte('created_at', todayISO);
+          .gte('created_at', dayISO)
+          .lt('created_at', new Date(day.getTime() + 24*60*60*1000).toISOString());
         kitchenOrders = (orders || []).filter((o: any) => o.status === 'preparing');
         kitchenCompleted = (orders || []).filter((o: any) => o.status === 'completed').length;
         // Urgent: preparing for > 30min
@@ -87,7 +97,8 @@ export function DashboardMetrics() {
         const { data: orders } = await supabase
           .from('table_orders')
           .select('id, status, created_at, updated_at, staff_id')
-          .gte('created_at', todayISO)
+          .gte('created_at', dayISO)
+          .lt('created_at', new Date(day.getTime() + 24*60*60*1000).toISOString())
           .eq('staff_id', user.id);
         staffOrders = (orders || []).filter((o: any) => o.status !== 'completed');
         staffCompleted = (orders || []).filter((o: any) => o.status === 'completed').length;
@@ -96,7 +107,8 @@ export function DashboardMetrics() {
       const { data: allOrders } = await supabase
         .from('table_orders')
         .select('id, status, created_at')
-        .gte('created_at', todayISO);
+        .gte('created_at', dayISO)
+        .lt('created_at', new Date(day.getTime() + 24*60*60*1000).toISOString());
       const totalOrders = allOrders?.length || 0;
       // Recent system activity (last 5 actions)
       const { data: recentLogs } = await supabase
@@ -104,18 +116,29 @@ export function DashboardMetrics() {
         .select('id, user_name, action, entity_type, entity_id, created_at')
         .order('created_at', { ascending: false })
         .limit(5);
-      setMetrics({ revenue, mealsServed, lowStock: lowStock || [], staffPerf, failedKRA, kitchenOrders, kitchenCompleted, kitchenUrgent, staffOrders, staffCompleted, totalOrders, recentLogs });
+      setMetrics({ revenue, mealsServed, lowStock, outOfStock, staffPerf, failedKRA, kitchenOrders, kitchenCompleted, kitchenUrgent, staffOrders, staffCompleted, totalOrders, recentLogs });
       setLoading(false);
     };
     fetchData();
-  }, [user]);
+  }, [user, date]);
 
   if (loading || !user) {
     return <div className="h-32 flex items-center justify-center">Loading metrics...</div>;
   }
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+    <div>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6 pb-2">
+        <div className="font-semibold text-lg">Dashboard Metrics</div>
+        <input
+          type="date"
+          className="border rounded px-3 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+          value={date}
+          max={new Date().toISOString().slice(0,10)}
+          onChange={e => setDate(e.target.value)}
+        />
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
       {/* Revenue */}
       <Card className="overflow-hidden border-l-4 border-l-green-500">
         <CardContent className="p-6">
@@ -144,21 +167,14 @@ export function DashboardMetrics() {
           </div>
         </CardContent>
       </Card>
-      {/* Low Stock */}
+      {/* Low Stock (now Out of Stock only, no names) */}
       <Card className="overflow-hidden border-l-4 border-l-amber-500">
         <CardContent className="p-6">
           <div className="flex justify-between items-start">
             <div>
-              <div className="text-sm font-medium text-muted-foreground mb-1">Low Stock Items</div>
-              <div className="text-3xl font-bold tracking-tight">{metrics.lowStock.length}</div>
-              {metrics.lowStock.length > 0 && (
-                <ul className="text-xs text-red-500 mt-2 space-y-1 max-h-16 overflow-y-auto">
-                  {metrics.lowStock.slice(0, 4).map((item: any) => (
-                    <li key={item.id}>{item.name} ({item.quantity})</li>
-                  ))}
-                  {metrics.lowStock.length > 4 && <li>+{metrics.lowStock.length - 4} more...</li>}
-                </ul>
-              )}
+              <div className="text-sm font-medium text-muted-foreground mb-1">Out of Stock Items</div>
+              <div className="text-3xl font-bold tracking-tight">{metrics.outOfStock.length}</div>
+              <div className="text-xs text-muted-foreground mt-2">Number of ingredients currently out of stock.</div>
             </div>
             <div className="rounded-full p-2 bg-amber-100 dark:bg-amber-900/20">
               <Package className="h-5 w-5 text-amber-500" />
@@ -263,5 +279,6 @@ export function DashboardMetrics() {
         </CardContent>
       </Card>
     </div>
+  </div>
   )
 }

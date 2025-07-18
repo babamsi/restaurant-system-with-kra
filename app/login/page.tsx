@@ -10,6 +10,7 @@ export default function LoginPage() {
   const [selectedUser, setSelectedUser] = useState<any | null>(null);
   const [passcode, setPasscode] = useState('');
   const [error, setError] = useState('');
+  const [shake, setShake] = useState(false);
   const { user, login, loading } = useUserSession();
   const router = useRouter();
 
@@ -26,7 +27,12 @@ export default function LoginPage() {
   const handleLogin = async () => {
     setError('');
     const ok = await login(selectedUser.id, passcode);
-    if (!ok) setError('Invalid passcode');
+    if (!ok) {
+      setError('Invalid passcode');
+      setShake(true);
+      setTimeout(() => setShake(false), 600);
+      setPasscode('');
+    }
   };
 
   if (loading) return <div className="flex items-center justify-center h-screen">Loading...</div>;
@@ -44,7 +50,7 @@ export default function LoginPage() {
     <div className="max-w-xs mx-auto py-16 px-4">
       <button className="mb-4 text-sm underline" onClick={() => setSelectedUser(null)}>&larr; Back</button>
       <h2 className="text-xl font-semibold mb-2 text-center">Enter Passcode for {selectedUser.name}</h2>
-      <PinPad value={passcode} onChange={setPasscode} onSubmit={handleLogin} length={6} />
+      <PinPad value={passcode} onChange={setPasscode} onSubmit={handleLogin} length={6} shake={shake} />
       {error && <div className="text-red-600 text-center mt-2">{error}</div>}
     </div>
   );

@@ -26,6 +26,31 @@ export function ZustandOrdersDashboard() {
   const [sessionError, setSessionError] = useState<string | null>(null)
   const [sessionClosing, setSessionClosing] = useState(false)
 
+  // Function to ensure only one session is open at a time
+  const ensureSingleSession = async (): Promise<{ success: boolean; sessionId?: string; error?: string }> => {
+    try {
+      // Check for any open sessions
+      const { data: openSessions, error } = await supabase
+        .from('sessions')
+        .select('id, opened_at, opened_by')
+        .is('closed_at', null)
+        .order('opened_at', { ascending: false })
+      
+      if (error) {
+        throw new Error(`Failed to check sessions: ${error.message}`)
+      }
+      
+      if (openSessions && openSessions.length > 0) {
+        // Return the most recent open session
+        return { success: true, sessionId: openSessions[0].id }
+      }
+      
+      return { success: true }
+    } catch (error: any) {
+      return { success: false, error: error.message }
+    }
+  }
+
   // On mount, always check DB for open session, sync localStorage with enhanced synchronization
   useEffect(() => {
     const checkSession = async () => {
@@ -33,19 +58,16 @@ export function ZustandOrdersDashboard() {
       setSessionError(null)
       
       try {
-        // Always check DB for open session first
-        const { data, error } = await supabase
-          .from('sessions')
-          .select('*')
-          .is('closed_at', null)
-          .order('opened_at', { ascending: false })
-          .limit(1)
-          .single()
+        // Use single session enforcement
+        const singleSessionCheck = await ensureSingleSession()
+        if (!singleSessionCheck.success) {
+          throw new Error(singleSessionCheck.error || 'Failed to check sessions')
+        }
         
-        if (data && !error) {
-          setSessionId(data.id)
-          localStorage.setItem('current_session_id', data.id)
-          console.log('Orders: Session loaded from DB:', data.id)
+        if (singleSessionCheck.sessionId) {
+          setSessionId(singleSessionCheck.sessionId)
+          localStorage.setItem('current_session_id', singleSessionCheck.sessionId)
+          console.log('Orders: Session loaded from DB:', singleSessionCheck.sessionId)
         } else {
           // No open session in DB, check localStorage for consistency
           const localSessionId = localStorage.getItem('current_session_id')
@@ -101,30 +123,28 @@ export function ZustandOrdersDashboard() {
     }
   }, [])
 
-  // Enhanced session opening with better error handling
+  // Enhanced session opening with single session enforcement
   const handleOpenSession = async () => {
     setSessionLoading(true)
     setSessionError(null)
     
     try {
-      // Double-check for existing open session before creating
-      const { data: openSession, error: openError } = await supabase
-        .from('sessions')
-        .select('*')
-        .is('closed_at', null)
-        .order('opened_at', { ascending: false })
-        .limit(1)
-        .single()
+      // First, ensure we have a single session
+      const singleSessionCheck = await ensureSingleSession()
+      if (!singleSessionCheck.success) {
+        throw new Error(singleSessionCheck.error || 'Failed to check sessions')
+      }
       
-      if (openSession && !openError) {
-        setSessionId(openSession.id)
-        localStorage.setItem('current_session_id', openSession.id)
+      // If there's already an open session, use it
+      if (singleSessionCheck.sessionId) {
+        setSessionId(singleSessionCheck.sessionId)
+        localStorage.setItem('current_session_id', singleSessionCheck.sessionId)
         setShowSessionDialog(false)
-        console.log('Orders: Using existing session:', openSession.id)
+        console.log('Orders: Using existing session:', singleSessionCheck.sessionId)
         return
       }
       
-      // No open session, create one with proper error handling
+      // No open session exists, create one
       const { error: sessionInsertError } = await supabase
         .from('sessions')
         .insert({ opened_by: 'ORDERS' })
@@ -166,20 +186,20 @@ export function ZustandOrdersDashboard() {
     setSessionError(null)
     
     try {
-      // Check for any pending/processing orders in this session
-      const { data: openOrders, error: openOrdersError } = await supabase
+      // Check for any unpaid orders in this session (excluding completed orders that are ready for payment)
+      const { data: unpaidOrders, error: unpaidOrdersError } = await supabase
         .from('table_orders')
         .select('id, status, table_number')
         .eq('session_id', sessionId)
         .in('status', ['pending', 'preparing', 'ready'])
       
-      if (openOrdersError) {
-        throw new Error(`Failed to check open orders: ${openOrdersError.message}`)
+      if (unpaidOrdersError) {
+        throw new Error(`Failed to check unpaid orders: ${unpaidOrdersError.message}`)
       }
       
-      if (openOrders && openOrders.length > 0) {
-        const tableNumbers = openOrders.map(o => o.table_number).join(', ')
-        const errorMsg = `Cannot close day: There are still orders in progress or unpaid on tables ${tableNumbers}. Please complete or pay all orders before closing the day.`
+      if (unpaidOrders && unpaidOrders.length > 0) {
+        const tableNumbers = unpaidOrders.map(o => o.table_number).join(', ')
+        const errorMsg = `Cannot close day: There are still orders in progress on tables ${tableNumbers}. Please complete all orders before closing the day.`
         setSessionError(errorMsg)
         toast({ 
           title: 'Cannot Close Day', 
@@ -278,7 +298,10 @@ export function ZustandOrdersDashboard() {
             price: item.unit_price,
             customization: item.customization_notes,
           })),
-          status: order.status === "pending" ? "incoming" : order.status === "preparing" ? "processing" : order.status,
+          status: order.status === "pending" ? "incoming" : 
+                 order.status === "preparing" ? "processing" : 
+                 order.status === "ready" ? "ready" : 
+                 order.status === "completed" ? "completed" : order.status,
           total: order.total_amount,
           createdAt: new Date(order.created_at),
           updatedAt: new Date(order.updated_at || order.created_at),
@@ -336,7 +359,7 @@ export function ZustandOrdersDashboard() {
     }
   }, [sessionId])
 
-  // Enhanced status change with better error handling
+  // Enhanced status change with better error handling and proper flow
   const handleStatusChange = async (orderId: string, newStatus: OrderStatus) => {
     if (!sessionId) {
       toast({
@@ -348,8 +371,25 @@ export function ZustandOrdersDashboard() {
     }
     
     try {
-      // Update in DB
-      let dbStatus = newStatus === "incoming" ? "pending" : newStatus === "processing" ? "preparing" : newStatus
+      // Map UI status to DB status
+      let dbStatus: string
+      switch (newStatus) {
+        case "incoming":
+          dbStatus = "pending"
+          break
+        case "processing":
+          dbStatus = "preparing"
+          break
+        case "ready":
+          dbStatus = "ready"
+          break
+        case "completed":
+          dbStatus = "completed"
+          break
+        default:
+          dbStatus = newStatus
+      }
+      
       const { error } = await supabase
         .from("table_orders")
         .update({ 
@@ -369,7 +409,7 @@ export function ZustandOrdersDashboard() {
       // Reload orders to ensure consistency
       await loadOrdersFromDB()
       
-      console.log(`Orders: Updated order ${orderId} status to ${newStatus}`)
+      console.log(`Orders: Updated order ${orderId} status to ${newStatus} (DB: ${dbStatus})`)
     } catch (error: any) {
       console.error('Orders: Error updating order status:', error)
       toast({
@@ -526,7 +566,7 @@ export function ZustandOrdersDashboard() {
       {loading ? (
         <div className="flex justify-center items-center h-64"><span className="animate-spin h-8 w-8 border-b-2 border-primary rounded-full"></span></div>
       ) : (
-        <KanbanBoard orders={filteredOrders} onStatusChange={handleStatusChange} />
+      <KanbanBoard orders={filteredOrders} onStatusChange={handleStatusChange} />
       )}
 
       {/* Session Dialog */}

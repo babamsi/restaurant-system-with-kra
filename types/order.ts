@@ -1,4 +1,4 @@
-export type OrderStatus = "incoming" | "processing" | "completed" | "cancelled"
+export type OrderStatus = "incoming" | "processing" | "ready" | "completed" | "cancelled"
 
 export interface OrderItem {
   id: string

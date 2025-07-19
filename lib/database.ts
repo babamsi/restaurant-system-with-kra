@@ -1241,7 +1241,7 @@ export const tableOrdersService = {
   }) {
     try {
       // Check for existing active order on this table
-      const { data: existingOrder } = await this.getActiveOrderByTable(table_id);
+      const { data: existingOrder } = await this.getActiveOrderByTable(table_id, session_id);
       if (existingOrder) {
         throw new Error(`Table ${table_number} already has an active order. Please add items to the existing order instead.`);
       }
@@ -1295,18 +1295,24 @@ export const tableOrdersService = {
     }
   },
 
-  // Get active order for a specific table
-  async getActiveOrderByTable(table_id: number) {
+  // Get active order for a specific table in current session
+  async getActiveOrderByTable(table_id: number, session_id?: string) {
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('table_orders')
         .select(`
           *,
           items:table_order_items(*)
         `)
         .eq('table_id', table_id)
-        .in('status', ['pending', 'preparing', 'ready'])
-        .single();
+        .in('status', ['pending', 'preparing', 'ready', 'completed'])
+      
+      // Only check orders from current session if session_id is provided
+      if (session_id) {
+        query = query.eq('session_id', session_id)
+      }
+      
+      const { data, error } = await query.single();
       
       return { data, error: error?.message || null };
     } catch (error) {
@@ -1314,10 +1320,10 @@ export const tableOrdersService = {
     }
   },
 
-  // Get all orders for a table (including completed)
-  async getOrdersByTable(table_id: number) {
+  // Get all orders for a table in current session (including completed)
+  async getOrdersByTable(table_id: number, session_id?: string) {
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('table_orders')
         .select(`
           *,
@@ -1325,6 +1331,13 @@ export const tableOrdersService = {
         `)
         .eq('table_id', table_id)
         .order('created_at', { ascending: false });
+      
+      // Only get orders from current session if session_id is provided
+      if (session_id) {
+        query = query.eq('session_id', session_id)
+      }
+      
+      const { data, error } = await query;
       
       return { data, error: error?.message || null };
     } catch (error) {
@@ -1425,7 +1438,7 @@ export const tableOrdersService = {
     }
   },
 
-  // Get all pending orders
+  // Get all pending orders (for backward compatibility)
   async getPendingOrders() {
     try {
       const { data, error } = await supabase
@@ -1435,6 +1448,25 @@ export const tableOrdersService = {
           items:table_order_items(*)
         `)
         .in('status', ['pending', 'preparing', 'ready'])
+        .order('created_at', { ascending: false });
+      
+      return { data, error: error?.message || null };
+    } catch (error) {
+      return { data: null, error: handleSupabaseError(error) };
+    }
+  },
+
+  // Get pending orders for a specific session
+  async getPendingOrdersBySession(session_id: string) {
+    try {
+      const { data, error } = await supabase
+        .from('table_orders')
+        .select(`
+          *,
+          items:table_order_items(*)
+        `)
+        .eq('session_id', session_id)
+        .in('status', ['pending', 'preparing', 'ready', 'completed'])
         .order('created_at', { ascending: false });
       
       return { data, error: error?.message || null };

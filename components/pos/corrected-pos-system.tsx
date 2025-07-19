@@ -245,8 +245,28 @@ export function CorrectedPOSSystem() {
   }, [])
 
   const loadTableOrders = async () => {
+    if (!sessionId) {
+      console.log('POS: No session ID, skipping table orders load')
+      return
+    }
+    
     try {
-      const { data: pendingOrders } = await tableOrdersService.getPendingOrders()
+      // Load pending orders for current session only
+      const { data: pendingOrders, error } = await supabase
+        .from('table_orders')
+        .select(`
+          *,
+          items:table_order_items(*)
+        `)
+        .eq('session_id', sessionId)
+        .in('status', ['pending', 'preparing', 'ready'])
+        .order('created_at', { ascending: false })
+      
+      if (error) {
+        console.error('POS: Error loading table orders:', error)
+        return
+      }
+      
       if (pendingOrders) {
         const ordersMap: Record<number, any> = {}
         pendingOrders.forEach((order: any) => {
@@ -262,9 +282,22 @@ export function CorrectedPOSSystem() {
           orderId: ordersMap[table.id]?.id,
           currentOrder: ordersMap[table.id]
         })))
+        
+        console.log(`POS: Loaded ${pendingOrders.length} pending orders for session ${sessionId}`)
+      } else {
+        // Clear orders if none found
+        setTableOrders({})
+        setPendingOrders([])
+        setTables(prevTables => prevTables.map(table => ({
+          ...table,
+          status: "available",
+          orderId: undefined,
+          currentOrder: undefined
+        })))
+        console.log('POS: No pending orders found for session', sessionId)
       }
     } catch (error) {
-      console.error("Error loading table orders:", error)
+      console.error("POS: Error loading table orders:", error)
     }
   }
 
@@ -355,9 +388,14 @@ export function CorrectedPOSSystem() {
   const handlePlaceOrder = async () => {
     if (!sessionId) {
       setShowSessionDialog(true)
-      toast({ title: 'No Open Session', description: 'Please open the day before placing orders.', variant: 'destructive' })
+      toast({ 
+        title: 'No Open Session', 
+        description: 'Please open the day before placing orders.', 
+        variant: 'destructive' 
+      })
       return
     }
+    
     if (!selectedTable || cart.length === 0) {
       toast({
         title: "Error",
@@ -366,8 +404,22 @@ export function CorrectedPOSSystem() {
       })
       return
     }
+    
     setPlacingOrder(true)
+    
     try {
+      // Validate session is still active before placing order
+      const { data: sessionCheck, error: sessionError } = await supabase
+        .from('sessions')
+        .select('id')
+        .eq('id', sessionId)
+        .is('closed_at', null)
+        .single()
+      
+      if (sessionError || !sessionCheck) {
+        throw new Error('Session is no longer active. Please refresh and try again.')
+      }
+      
       const cartItems = cart.map(item => ({
         menu_item_id: item.id,
         menu_item_name: item.name,
@@ -377,21 +429,27 @@ export function CorrectedPOSSystem() {
         portion_size: item.portionSize,
         customization_notes: item.customization
       }))
+      
       const subtotal = calcCartTotal()
       const taxRate = 0 // Tax is included in price
       const taxAmount = 0 // No extra tax
       const totalAmount = subtotal // No extra tax added
-    if (editingOrderId) {
+      
+      if (editingOrderId) {
+        // Adding items to existing order
         const { data, error } = await tableOrdersService.addItemsToOrder(editingOrderId, cartItems)
         if (error) {
           throw new Error(error)
         }
+        
+        console.log('POS: Added items to existing order:', editingOrderId)
         toast({
           title: "Order Updated",
           description: `Added items to ${selectedTable.number}`,
           duration: 2000,
         })
-    } else {
+      } else {
+        // Creating new order
         const { data, error } = await tableOrdersService.createOrderWithItems({
           table_number: selectedTable.number,
           table_id: selectedTable.id,
@@ -404,28 +462,41 @@ export function CorrectedPOSSystem() {
           items: cartItems,
           session_id: sessionId
         })
+        
         if (error) {
           throw new Error(error)
         }
-        setTables(prevTables => prevTables.map(table =>
-          table.id === selectedTable.id
-            ? { ...table, status: "occupied", orderId: data?.id, currentOrder: data }
-            : table
-        ))
-        setEditingOrderId(data?.id || null)
-        toast({
-          title: "Order Placed",
-          description: `Order placed for ${selectedTable.number}`,
-          duration: 2000,
-        })
+        
+        if (data) {
+          setTables(prevTables => prevTables.map(table =>
+            table.id === selectedTable.id
+              ? { ...table, status: "occupied", orderId: data.id, currentOrder: data }
+              : table
+          ))
+          setEditingOrderId(data.id)
+          
+          console.log('POS: Created new order:', data.id, 'for session:', sessionId)
+          toast({
+            title: "Order Placed",
+            description: `Order placed for ${selectedTable.number}`,
+            duration: 2000,
+          })
+        } else {
+          throw new Error('Order created but no data returned')
+        }
       }
+      
+      // Reload table orders to ensure consistency
       await loadTableOrders()
+      
+      // Clear cart and reset state
       clearCart()
       setExistingOrderItems([])
       setSelectedTable(null)
       setEditingOrderId(null)
+      
     } catch (error: any) {
-      console.error("Error placing order:", error)
+      console.error("POS: Error placing order:", error)
       toast({
         title: "Error",
         description: error.message || "Failed to place order",
@@ -948,88 +1019,249 @@ export function CorrectedPOSSystem() {
     }
   }
 
-  // On mount, check for open session
+  // On mount, check for open session with enhanced synchronization
   useEffect(() => {
     const checkSession = async () => {
       setSessionLoading(true)
       setSessionError(null)
-      // Always check DB for open session
-      const { data, error } = await supabase.from('sessions').select('*').is('closed_at', null).order('opened_at', { ascending: false }).limit(1).single()
-      if (data && !error) {
-        setSessionId(data.id)
-        localStorage.setItem('current_session_id', data.id)
-        setSessionLoading(false)
-      } else {
+      
+      try {
+        // Always check DB for open session first
+        const { data, error } = await supabase
+          .from('sessions')
+          .select('*')
+          .is('closed_at', null)
+          .order('opened_at', { ascending: false })
+          .limit(1)
+          .single()
+        
+        if (data && !error) {
+          setSessionId(data.id)
+          localStorage.setItem('current_session_id', data.id)
+          console.log('POS: Session loaded from DB:', data.id)
+        } else {
+          // No open session in DB, check localStorage for consistency
+          const localSessionId = localStorage.getItem('current_session_id')
+          if (localSessionId) {
+            // Clear stale localStorage
+            localStorage.removeItem('current_session_id')
+            console.log('POS: Cleared stale localStorage session')
+          }
+          setSessionId(null)
+          setShowSessionDialog(true)
+        }
+      } catch (error) {
+        console.error('POS: Error checking session:', error)
+        setSessionError('Failed to check session status')
         setSessionId(null)
         localStorage.removeItem('current_session_id')
         setShowSessionDialog(true)
+      } finally {
         setSessionLoading(false)
       }
     }
+    
     checkSession()
+    
+    // Set up real-time session monitoring
+    const sessionChannel = supabase.channel('session-monitor')
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'sessions',
+        filter: 'closed_at=is.null'
+      }, (payload) => {
+        console.log('POS: Session change detected:', payload)
+        if (payload.eventType === 'INSERT') {
+          // New session opened
+          const newSession = payload.new
+          setSessionId(newSession.id)
+          localStorage.setItem('current_session_id', newSession.id)
+          setShowSessionDialog(false)
+          console.log('POS: New session detected and loaded:', newSession.id)
+        } else if (payload.eventType === 'UPDATE' && payload.new.closed_at) {
+          // Session was closed
+          setSessionId(null)
+          localStorage.removeItem('current_session_id')
+          setShowSessionDialog(true)
+          console.log('POS: Session closed by another user')
+        }
+      })
+      .subscribe()
+    
+    return () => {
+      sessionChannel.unsubscribe()
+    }
   }, [])
 
-  // Open new session
+  // Reload table orders when session changes
+  useEffect(() => {
+    if (sessionId) {
+      console.log('POS: Session changed, reloading table orders for session:', sessionId)
+      loadTableOrders()
+    } else {
+      // Clear orders when no session
+      setTableOrders({})
+      setPendingOrders([])
+      setTables(prevTables => prevTables.map(table => ({
+        ...table,
+        status: "available",
+        orderId: undefined,
+        currentOrder: undefined
+      })))
+    }
+  }, [sessionId])
+
+  // Real-time order monitoring for current session
+  useEffect(() => {
+    if (!sessionId) return
+    
+    console.log('POS: Setting up real-time order monitoring for session:', sessionId)
+    
+    const orderChannel = supabase.channel(`pos-orders-realtime-${sessionId}`)
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'table_orders', 
+        filter: `session_id=eq.${sessionId}` 
+      }, (payload) => {
+        console.log('POS: Order change detected:', payload)
+        // Debounce rapid updates
+        setTimeout(() => {
+          loadTableOrders()
+        }, 100)
+      })
+      .subscribe((status) => {
+        console.log('POS: Order realtime subscription status:', status)
+      })
+    
+    return () => {
+      console.log('POS: Cleaning up order real-time subscription for session:', sessionId)
+      orderChannel.unsubscribe()
+    }
+  }, [sessionId])
+
+  // Enhanced session opening with better error handling
   const handleOpenSession = async () => {
     setSessionLoading(true)
     setSessionError(null)
-    // Check again for open session before creating
-    const { data: openSession, error: openError } = await supabase.from('sessions').select('*').is('closed_at', null).order('opened_at', { ascending: false }).limit(1).single()
-    if (openSession && !openError) {
-      setSessionId(openSession.id)
-      localStorage.setItem('current_session_id', openSession.id)
-      setShowSessionDialog(false)
-      setSessionLoading(false)
-      return
-    }
-    // No open session, create one
-    // Fix: do not use .select().single() on insert, just await insert and check for error
-    const { error: sessionInsertError } = await supabase.from('sessions').insert({ opened_by: 'POS' })
-    if (!sessionInsertError) {
-      // Refetch the open session to get its ID
-      const { data: newSession, error: fetchSessionError } = await supabase.from('sessions').select('*').is('closed_at', null).order('opened_at', { ascending: false }).limit(1).single()
+    
+    try {
+      // Double-check for existing open session before creating
+      const { data: openSession, error: openError } = await supabase
+        .from('sessions')
+        .select('*')
+        .is('closed_at', null)
+        .order('opened_at', { ascending: false })
+        .limit(1)
+        .single()
+      
+      if (openSession && !openError) {
+        setSessionId(openSession.id)
+        localStorage.setItem('current_session_id', openSession.id)
+        setShowSessionDialog(false)
+        console.log('POS: Using existing session:', openSession.id)
+        return
+      }
+      
+      // No open session, create one with proper error handling
+      const { error: sessionInsertError } = await supabase
+        .from('sessions')
+        .insert({ opened_by: 'POS' })
+      
+      if (sessionInsertError) {
+        throw new Error(`Failed to create session: ${sessionInsertError.message}`)
+      }
+      
+      // Fetch the newly created session
+      const { data: newSession, error: fetchSessionError } = await supabase
+        .from('sessions')
+        .select('*')
+        .is('closed_at', null)
+        .order('opened_at', { ascending: false })
+        .limit(1)
+        .single()
+      
       if (newSession && !fetchSessionError) {
         setSessionId(newSession.id)
         localStorage.setItem('current_session_id', newSession.id)
         setShowSessionDialog(false)
+        console.log('POS: New session created:', newSession.id)
       } else {
-        setSessionError('Session created but could not fetch session ID')
+        throw new Error('Session created but could not fetch session ID')
       }
-    } else {
-      setSessionError('Failed to open session')
+    } catch (error: any) {
+      console.error('POS: Error opening session:', error)
+      setSessionError(error.message || 'Failed to open session')
+    } finally {
+      setSessionLoading(false)
     }
-    setSessionLoading(false)
   }
 
-  // Close session
+  // Enhanced session closing with comprehensive checks
   const handleCloseSession = async () => {
     if (!sessionId) return
+    
     setSessionClosing(true)
-    // Check for any pending/processing orders in this session
-    const { data: openOrders, error: openOrdersError } = await supabase
-      .from('table_orders')
-      .select('id, status')
-      .eq('session_id', sessionId)
-      .in('status', ['pending', 'preparing', 'ready'])
-    if (openOrdersError) {
-      setSessionError('Failed to check open orders')
-      setSessionClosing(false)
-      return
-    }
-    if (openOrders && openOrders.length > 0) {
-      setSessionError('Cannot close day: There are still orders in progress or unpaid. Please complete or pay all orders before closing the day.')
-      setSessionClosing(false)
-      return
-    }
-    const { error } = await supabase.from('sessions').update({ closed_at: new Date().toISOString(), closed_by: 'POS' }).eq('id', sessionId)
-    if (!error) {
+    setSessionError(null)
+    
+    try {
+      // Check for any pending/processing orders in this session
+      const { data: openOrders, error: openOrdersError } = await supabase
+        .from('table_orders')
+        .select('id, status, table_number')
+        .eq('session_id', sessionId)
+        .in('status', ['pending', 'preparing', 'ready'])
+      
+      if (openOrdersError) {
+        throw new Error(`Failed to check open orders: ${openOrdersError.message}`)
+      }
+      
+      if (openOrders && openOrders.length > 0) {
+        const tableNumbers = openOrders.map(o => o.table_number).join(', ')
+        const errorMsg = `Cannot close day: There are still orders in progress or unpaid on tables ${tableNumbers}. Please complete or pay all orders before closing the day.`
+        setSessionError(errorMsg)
+        toast({
+          title: 'Cannot Close Day',
+          description: errorMsg,
+          variant: 'destructive',
+        })
+        return
+      }
+      
+      // Close the session
+      const { error } = await supabase
+        .from('sessions')
+        .update({ 
+          closed_at: new Date().toISOString(), 
+          closed_by: 'POS' 
+        })
+        .eq('id', sessionId)
+      
+      if (error) {
+        throw new Error(`Failed to close session: ${error.message}`)
+      }
+      
       setSessionId(null)
       localStorage.removeItem('current_session_id')
       setShowSessionDialog(true)
-    } else {
-      setSessionError('Failed to close session')
+      console.log('POS: Session closed successfully')
+      
+      toast({
+        title: 'Day Closed',
+        description: 'The day has been closed successfully',
+      })
+    } catch (error: any) {
+      console.error('POS: Error closing session:', error)
+      setSessionError(error.message || 'Failed to close session')
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to close session',
+        variant: 'destructive',
+      })
+    } finally {
+      setSessionClosing(false)
     }
-    setSessionClosing(false)
   }
 
   // Generate QR codes for all tables

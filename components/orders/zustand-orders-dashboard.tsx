@@ -26,84 +26,202 @@ export function ZustandOrdersDashboard() {
   const [sessionError, setSessionError] = useState<string | null>(null)
   const [sessionClosing, setSessionClosing] = useState(false)
 
-  // On mount, always check DB for open session, sync localStorage
+  // On mount, always check DB for open session, sync localStorage with enhanced synchronization
   useEffect(() => {
     const checkSession = async () => {
       setSessionLoading(true)
       setSessionError(null)
-      // Always check DB for open session
-      const { data, error } = await supabase.from('sessions').select('*').is('closed_at', null).order('opened_at', { ascending: false }).limit(1).single()
-      if (data && !error) {
-        setSessionId(data.id)
-        localStorage.setItem('current_session_id', data.id)
-        setSessionLoading(false)
-      } else {
+      
+      try {
+        // Always check DB for open session first
+        const { data, error } = await supabase
+          .from('sessions')
+          .select('*')
+          .is('closed_at', null)
+          .order('opened_at', { ascending: false })
+          .limit(1)
+          .single()
+        
+        if (data && !error) {
+          setSessionId(data.id)
+          localStorage.setItem('current_session_id', data.id)
+          console.log('Orders: Session loaded from DB:', data.id)
+        } else {
+          // No open session in DB, check localStorage for consistency
+          const localSessionId = localStorage.getItem('current_session_id')
+          if (localSessionId) {
+            // Clear stale localStorage
+            localStorage.removeItem('current_session_id')
+            console.log('Orders: Cleared stale localStorage session')
+          }
+          setSessionId(null)
+          setShowSessionDialog(true)
+        }
+      } catch (error) {
+        console.error('Orders: Error checking session:', error)
+        setSessionError('Failed to check session status')
         setSessionId(null)
         localStorage.removeItem('current_session_id')
         setShowSessionDialog(true)
+      } finally {
         setSessionLoading(false)
       }
     }
+    
     checkSession()
+    
+    // Set up real-time session monitoring
+    const sessionChannel = supabase.channel('orders-session-monitor')
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'sessions',
+        filter: 'closed_at=is.null'
+      }, (payload) => {
+        console.log('Orders: Session change detected:', payload)
+        if (payload.eventType === 'INSERT') {
+          // New session opened
+          const newSession = payload.new
+          setSessionId(newSession.id)
+          localStorage.setItem('current_session_id', newSession.id)
+          setShowSessionDialog(false)
+          console.log('Orders: New session detected and loaded:', newSession.id)
+        } else if (payload.eventType === 'UPDATE' && payload.new.closed_at) {
+          // Session was closed
+          setSessionId(null)
+          localStorage.removeItem('current_session_id')
+          setShowSessionDialog(true)
+          console.log('Orders: Session closed by another user')
+        }
+      })
+      .subscribe()
+    
+    return () => {
+      sessionChannel.unsubscribe()
+    }
   }, [])
 
-  // Open new session
+  // Enhanced session opening with better error handling
   const handleOpenSession = async () => {
     setSessionLoading(true)
     setSessionError(null)
-    // Check again for open session before creating
-    const { data: openSession, error: openError } = await supabase.from('sessions').select('*').is('closed_at', null).order('opened_at', { ascending: false }).limit(1).single()
-    if (openSession && !openError) {
-      setSessionId(openSession.id)
-      localStorage.setItem('current_session_id', openSession.id)
-      setShowSessionDialog(false)
+    
+    try {
+      // Double-check for existing open session before creating
+      const { data: openSession, error: openError } = await supabase
+        .from('sessions')
+        .select('*')
+        .is('closed_at', null)
+        .order('opened_at', { ascending: false })
+        .limit(1)
+        .single()
+      
+      if (openSession && !openError) {
+        setSessionId(openSession.id)
+        localStorage.setItem('current_session_id', openSession.id)
+        setShowSessionDialog(false)
+        console.log('Orders: Using existing session:', openSession.id)
+        return
+      }
+      
+      // No open session, create one with proper error handling
+      const { error: sessionInsertError } = await supabase
+        .from('sessions')
+        .insert({ opened_by: 'ORDERS' })
+      
+      if (sessionInsertError) {
+        throw new Error(`Failed to create session: ${sessionInsertError.message}`)
+      }
+      
+      // Fetch the newly created session
+      const { data: newSession, error: fetchSessionError } = await supabase
+        .from('sessions')
+        .select('*')
+        .is('closed_at', null)
+        .order('opened_at', { ascending: false })
+        .limit(1)
+        .single()
+      
+      if (newSession && !fetchSessionError) {
+        setSessionId(newSession.id)
+        localStorage.setItem('current_session_id', newSession.id)
+        setShowSessionDialog(false)
+        console.log('Orders: New session created:', newSession.id)
+      } else {
+        throw new Error('Session created but could not fetch session ID')
+      }
+    } catch (error: any) {
+      console.error('Orders: Error opening session:', error)
+      setSessionError(error.message || 'Failed to open session')
+    } finally {
       setSessionLoading(false)
-      return
     }
-    // No open session, create one
-    const { data, error } = await supabase.from('sessions').insert({ opened_by: 'ORDERS' }).select().single()
-    if (data && !error) {
-      setSessionId(data.id)
-      localStorage.setItem('current_session_id', data.id)
-      setShowSessionDialog(false)
-    } else {
-      setSessionError('Failed to open session')
-    }
-    setSessionLoading(false)
   }
 
-  // Close session
+  // Enhanced session closing with comprehensive checks
   const handleCloseSession = async () => {
     if (!sessionId) return
+    
     setSessionClosing(true)
-    // Check for any pending/processing orders in this session
-    const { data: openOrders, error: openOrdersError } = await supabase
-      .from('table_orders')
-      .select('id, status')
-      .eq('session_id', sessionId)
-      .in('status', ['pending', 'preparing', 'ready'])
-    if (openOrdersError) {
-      setSessionError('Failed to check open orders')
-      toast({ title: 'Error', description: 'Failed to check open orders', variant: 'destructive' })
-      setSessionClosing(false)
-      return
-    }
-    if (openOrders && openOrders.length > 0) {
-      setSessionError('Cannot close day: There are still orders in progress or unpaid. Please complete or pay all orders before closing the day.')
-      toast({ title: 'Cannot Close Day', description: 'There are still orders in progress or unpaid. Please complete or pay all orders before closing the day.', variant: 'destructive' })
-      setSessionClosing(false)
-      return
-    }
-    const { error } = await supabase.from('sessions').update({ closed_at: new Date().toISOString(), closed_by: 'ORDERS' }).eq('id', sessionId)
-    if (!error) {
+    setSessionError(null)
+    
+    try {
+      // Check for any pending/processing orders in this session
+      const { data: openOrders, error: openOrdersError } = await supabase
+        .from('table_orders')
+        .select('id, status, table_number')
+        .eq('session_id', sessionId)
+        .in('status', ['pending', 'preparing', 'ready'])
+      
+      if (openOrdersError) {
+        throw new Error(`Failed to check open orders: ${openOrdersError.message}`)
+      }
+      
+      if (openOrders && openOrders.length > 0) {
+        const tableNumbers = openOrders.map(o => o.table_number).join(', ')
+        const errorMsg = `Cannot close day: There are still orders in progress or unpaid on tables ${tableNumbers}. Please complete or pay all orders before closing the day.`
+        setSessionError(errorMsg)
+        toast({ 
+          title: 'Cannot Close Day', 
+          description: errorMsg, 
+          variant: 'destructive' 
+        })
+        return
+      }
+      
+      // Close the session
+      const { error } = await supabase
+        .from('sessions')
+        .update({ 
+          closed_at: new Date().toISOString(), 
+          closed_by: 'ORDERS' 
+        })
+        .eq('id', sessionId)
+      
+      if (error) {
+        throw new Error(`Failed to close session: ${error.message}`)
+      }
+      
       setSessionId(null)
       localStorage.removeItem('current_session_id')
       setShowSessionDialog(true)
-    } else {
-      setSessionError('Failed to close session')
-      toast({ title: 'Error', description: 'Failed to close session', variant: 'destructive' })
+      console.log('Orders: Session closed successfully')
+      
+      toast({
+        title: 'Day Closed',
+        description: 'The day has been closed successfully',
+      })
+    } catch (error: any) {
+      console.error('Orders: Error closing session:', error)
+      setSessionError(error.message || 'Failed to close session')
+      toast({ 
+        title: 'Error', 
+        description: error.message || 'Failed to close session', 
+        variant: 'destructive' 
+      })
+    } finally {
+      setSessionClosing(false)
     }
-    setSessionClosing(false)
   }
 
   // Replace orders in Zustand store, deduplicated
@@ -119,63 +237,147 @@ export function ZustandOrdersDashboard() {
     })
   }
 
-  // Load orders from DB for current session
+  // Load orders from DB for current session with enhanced error handling
   const loadOrdersFromDB = async () => {
-    if (!sessionId) return
-    setLoading(true)
-    const { data, error } = await supabase
-      .from("table_orders")
-      .select(`*, items:table_order_items(*)`)
-      .eq('session_id', sessionId)
-      .in("status", ["pending", "preparing", "ready", "completed"])
-      .order("created_at", { ascending: false })
-    if (data) {
-      // Map DB orders to Zustand store format
-      const mapped = data.map((order: any) => ({
-        id: order.id,
-        tableNumber: order.table_number,
-        customerName: order.customer_name || "Customer",
-        items: (order.items || []).map((item: any) => ({
-          id: item.id,
-          menu_item_id: item.menu_item_id,
-          name: item.menu_item_name,
-          quantity: item.quantity,
-          portionSize: item.portion_size,
-          price: item.unit_price,
-          customization: item.customization_notes,
-        })),
-        status: order.status === "pending" ? "incoming" : order.status === "preparing" ? "processing" : order.status,
-        total: order.total_amount,
-        createdAt: new Date(order.created_at),
-        updatedAt: new Date(order.updated_at || order.created_at),
-        specialInstructions: order.special_instructions,
-      }))
-      setOrders(mapped)
+    if (!sessionId) {
+      console.log('Orders: No session ID, skipping order load')
+      return
     }
-    setLoading(false)
+    
+    setLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from("table_orders")
+        .select(`*, items:table_order_items(*)`)
+        .eq('session_id', sessionId)
+        .in("status", ["pending", "preparing", "ready", "completed"])
+        .order("created_at", { ascending: false })
+      
+      if (error) {
+        console.error('Orders: Error loading orders:', error)
+        toast({
+          title: 'Error',
+          description: 'Failed to load orders',
+          variant: 'destructive',
+        })
+        return
+      }
+      
+      if (data) {
+        // Map DB orders to Zustand store format
+        const mapped = data.map((order: any) => ({
+          id: order.id,
+          tableNumber: order.table_number,
+          customerName: order.customer_name || "Customer",
+          items: (order.items || []).map((item: any) => ({
+            id: item.id,
+            menu_item_id: item.menu_item_id,
+            name: item.menu_item_name,
+            quantity: item.quantity,
+            portionSize: item.portion_size,
+            price: item.unit_price,
+            customization: item.customization_notes,
+          })),
+          status: order.status === "pending" ? "incoming" : order.status === "preparing" ? "processing" : order.status,
+          total: order.total_amount,
+          createdAt: new Date(order.created_at),
+          updatedAt: new Date(order.updated_at || order.created_at),
+          specialInstructions: order.special_instructions,
+        }))
+        setOrders(mapped)
+        console.log(`Orders: Loaded ${mapped.length} orders for session ${sessionId}`)
+      } else {
+        setOrders([])
+        console.log('Orders: No orders found for session', sessionId)
+      }
+    } catch (error) {
+      console.error('Orders: Unexpected error loading orders:', error)
+      toast({
+        title: 'Error',
+        description: 'Unexpected error loading orders',
+        variant: 'destructive',
+      })
+    } finally {
+      setLoading(false)
+    }
   }
 
-  // Subscribe to realtime changes for current session
+  // Enhanced real-time subscription with better session handling
   useEffect(() => {
-    if (!sessionId) return
+    if (!sessionId) {
+      console.log('Orders: No session ID, clearing orders and skipping subscription')
+      setOrders([])
+      return
+    }
+    
+    console.log('Orders: Setting up real-time subscription for session:', sessionId)
     loadOrdersFromDB()
-    const channel = supabase.channel('orders-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'table_orders', filter: `session_id=eq.${sessionId}` }, (payload) => {
-        console.log('Supabase realtime event:', payload)
-        loadOrdersFromDB()
+    
+    const channel = supabase.channel(`orders-realtime-${sessionId}`)
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'table_orders', 
+        filter: `session_id=eq.${sessionId}` 
+      }, (payload) => {
+        console.log('Orders: Realtime event received:', payload)
+        // Debounce rapid updates
+        setTimeout(() => {
+          loadOrdersFromDB()
+        }, 100)
       })
-      .subscribe()
+      .subscribe((status) => {
+        console.log('Orders: Realtime subscription status:', status)
+      })
+    
     return () => {
+      console.log('Orders: Cleaning up real-time subscription for session:', sessionId)
       channel.unsubscribe()
     }
   }, [sessionId])
 
+  // Enhanced status change with better error handling
   const handleStatusChange = async (orderId: string, newStatus: OrderStatus) => {
-    // Update in DB
-    let dbStatus = newStatus === "incoming" ? "pending" : newStatus === "processing" ? "preparing" : newStatus
-    await supabase.from("table_orders").update({ status: dbStatus }).eq("id", orderId)
-    updateOrderStatus(orderId, newStatus)
-    loadOrdersFromDB()
+    if (!sessionId) {
+      toast({
+        title: 'Error',
+        description: 'No active session',
+        variant: 'destructive',
+      })
+      return
+    }
+    
+    try {
+      // Update in DB
+      let dbStatus = newStatus === "incoming" ? "pending" : newStatus === "processing" ? "preparing" : newStatus
+      const { error } = await supabase
+        .from("table_orders")
+        .update({ 
+          status: dbStatus,
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", orderId)
+        .eq("session_id", sessionId) // Ensure we only update orders in current session
+      
+      if (error) {
+        throw new Error(`Failed to update order status: ${error.message}`)
+      }
+      
+      // Update local state
+      updateOrderStatus(orderId, newStatus)
+      
+      // Reload orders to ensure consistency
+      await loadOrdersFromDB()
+      
+      console.log(`Orders: Updated order ${orderId} status to ${newStatus}`)
+    } catch (error: any) {
+      console.error('Orders: Error updating order status:', error)
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to update order status',
+        variant: 'destructive',
+      })
+    }
   }
 
   const filteredOrders = orders.filter((order) => {

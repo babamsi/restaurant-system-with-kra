@@ -639,7 +639,7 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
                         </div>
                       </TableCell>
                       <TableCell>
-                        ${item.ingredient.cost_per_unit.toFixed(2)}
+                        {item.ingredient.cost_per_unit.toFixed(2)}
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center space-x-2">
@@ -705,15 +705,15 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-4 bg-muted/50 rounded-lg">
               <div className="space-y-1">
                 <p className="text-sm text-muted-foreground">Change in Value</p>
-                <p className="text-2xl font-bold">${totals.subtotal.toFixed(2)}</p>
+                <p className="text-2xl font-bold">Ksh {totals.subtotal.toFixed(2)}</p>
               </div>
               <div className="space-y-1">
                 <p className="text-sm text-muted-foreground">VAT Amount</p>
-                <p className="text-2xl font-bold">${totals.vatAmount.toFixed(2)}</p>
+                <p className="text-2xl font-bold">Ksh {totals.vatAmount.toFixed(2)}</p>
               </div>
               <div className="space-y-1">
                 <p className="text-sm text-muted-foreground">Total Change</p>
-                <p className="text-2xl font-bold">${totals.total.toFixed(2)}</p>
+                <p className="text-2xl font-bold">Ksh {totals.total.toFixed(2)}</p>
               </div>
             </div>
 

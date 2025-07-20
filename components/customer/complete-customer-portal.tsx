@@ -282,9 +282,8 @@ export function CompleteCustomerPortal() {
     return cart.reduce((sum, item) => sum + item.quantity, 0)
   }
 
-  const getTotal = () => {
-    return getCartTotal() * 1.16 // Including 16% tax
-  }
+  // Remove or update getTotal function if not needed
+  // function getTotal() { ... }
 
   const completeOrder = async () => {
     if (cart.length === 0) {
@@ -674,18 +673,18 @@ export function CompleteCustomerPortal() {
                     <Separator />
                     <div className="space-y-1 text-sm">
                       <div className="flex justify-between">
-                    <span>Subtotal:</span>
-                        <span>Ksh {getCartTotal().toFixed(2)}</span>
-                  </div>
+                        <span>Subtotal (before VAT):</span>
+                        <span>Ksh {(getCartTotal() / 1.16).toFixed(2)}</span>
+                      </div>
                       <div className="flex justify-between text-xs text-muted-foreground">
-                    <span>Tax (16%):</span>
-                        <span>Ksh {(getCartTotal() * 0.16).toFixed(2)}</span>
-                  </div>
+                        <span>Tax (16% VAT, included):</span>
+                        <span>Ksh {(getCartTotal() * 0.16 / 1.16).toFixed(2)}</span>
+                      </div>
                       <div className="flex justify-between font-bold text-base">
-                    <span>Total:</span>
-                        <span className="font-bold">Ksh {getTotal().toFixed(2)}</span>
-                  </div>
-                </div>
+                        <span>Total:</span>
+                        <span className="font-bold">Ksh {getCartTotal().toFixed(2)}</span>
+                      </div>
+                    </div>
                     {/* Single step checkout: name/phone and place order */}
                     {!existingOrder && (
                       <>

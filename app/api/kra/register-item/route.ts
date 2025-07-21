@@ -58,6 +58,9 @@ export async function POST(req: NextRequest) {
     }
     const itemClsCd = generateItemClsCd()
 
+    // Truncate name for KRA fields (max 20 chars)
+    const kraName = String(name).slice(0, 20)
+
     // Build KRA payload
     const kraPayload = {
       tin: TIN,
@@ -73,10 +76,10 @@ export async function POST(req: NextRequest) {
       dftPrc: price,
       isrcAplcbYn: "N",
       useYn: "Y",
-      regrId: name,
-      regrNm: name,
-      modrId: name,
-      modrNm: name,
+      regrId: kraName,
+      regrNm: kraName,
+      modrId: kraName,
+      modrNm: kraName,
     }
 
     // Call KRA API

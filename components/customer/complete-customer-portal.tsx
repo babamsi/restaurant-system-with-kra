@@ -679,11 +679,11 @@ export function CompleteCustomerPortal() {
                       <div className="flex justify-between text-xs text-muted-foreground">
                         <span>Tax (16% VAT, included):</span>
                         <span>Ksh {(getCartTotal() * 0.16 / 1.16).toFixed(2)}</span>
-                      </div>
+                    </div>
                       <div className="flex justify-between font-bold text-base">
                         <span>Total:</span>
                         <span className="font-bold">Ksh {getCartTotal().toFixed(2)}</span>
-                      </div>
+                    </div>
                     </div>
                     {/* Single step checkout: name/phone and place order */}
                     {!existingOrder && (
@@ -696,7 +696,7 @@ export function CompleteCustomerPortal() {
                             onChange={(e) => setCustomerName(e.target.value)}
                             className="h-8 text-xs"
                           />
-                        </div>
+                  </div>
                         <div>
                           <label className="text-xs font-medium">Phone (Optional)</label>
                           <Input
@@ -729,7 +729,7 @@ export function CompleteCustomerPortal() {
                           {isTableOrder ? "Place Table Order" : "Place Order"}
                         </>
                       )}
-                    </Button>
+                  </Button>
               </>
             )}
           </div>

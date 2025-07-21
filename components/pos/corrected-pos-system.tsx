@@ -438,14 +438,13 @@ export function CorrectedPOSSystem() {
     let displayText = menuItem.name
     if (portionSize) displayText = `${portionSize} ${menuItem.name}`
 
-    const cartItemId = `${menuItem.id}${portionSize ? `-${portionSize}` : ""}${
-      customizationNotes ? `-${customizationNotes}` : ""
-    }`
+    // Only declare cartItemId once
+    const cartItemId = `${menuItem.id}${portionSize ? `-${portionSize}` : ""}${customizationNotes ? `-${customizationNotes}` : ""}`
 
     addToCart(menuItem, 1, {
       id: cartItemId,
       portionSize,
-      customization: customizationNotes,
+      customization: customizationNotes
     })
 
     toast({
@@ -495,7 +494,7 @@ export function CorrectedPOSSystem() {
       }
       
       const cartItems = cart.map(item => ({
-        menu_item_id: item.id,
+        menu_item_id: item.menu_item_id || (typeof item.id === 'string' ? item.id.split('-')[0] : item.id),
         menu_item_name: item.name,
         quantity: item.quantity,
         unit_price: item.unit_price,
@@ -510,7 +509,7 @@ export function CorrectedPOSSystem() {
       const totalAmount = subtotal // No extra tax added
 
       const isTakeAway = selectedTable.id === 0
-      if (editingOrderId) {
+    if (editingOrderId) {
         // Adding items to existing order
         const { data, error } = await tableOrdersService.addItemsToOrder(editingOrderId, cartItems)
         if (error) {
@@ -524,12 +523,12 @@ export function CorrectedPOSSystem() {
           duration: 2000,
         })
         if (isTakeAway) await loadTakeAwayOrders();
-      } else {
+    } else {
         // Creating new order
         const { data, error } = await tableOrdersService.createOrderWithItems({
           table_number: selectedTable.number,
           table_id: selectedTable.id,
-          customer_name: "", // You can add a field for this in the takeaway flow if needed
+          customer_name: selectedCustomer?.name || "",
           order_type: isTakeAway ? "takeaway" : "dine-in",
           subtotal,
           tax_rate: taxRate,
@@ -561,7 +560,7 @@ export function CorrectedPOSSystem() {
             description: `Order placed for ${selectedTable.number}`,
             duration: 2000,
           })
-        } else {
+    } else {
           throw new Error('Order created but no data returned')
         }
       }
@@ -915,7 +914,7 @@ export function CorrectedPOSSystem() {
       // Payment method mapping
       const kraPaymentMethod = paymentMethod
       // Customer info (optional, can be extended)
-      const customer = { tin: '', name: '' }
+      const customer = selectedCustomer ? {tin: selectedCustomer.kra_pin, name: selectedCustomer.name} : { tin: '', name: '' }
       // Call KRA API
       const kraRes = await fetch('/api/kra/save-sale', {
         method: 'POST',
@@ -933,8 +932,27 @@ export function CorrectedPOSSystem() {
       const kraData = await kraRes.json()
       if (!kraData.success) {
         // Save to sales_invoices with status 'error' and error message, but DO NOT block order completion
+        let fallbackTrdInvcNo = kraData.invcNo
+        if (!fallbackTrdInvcNo) {
+          // Fetch the latest trdInvcNo from sales_invoices
+          const { data: lastInvoice, error: lastInvError } = await supabase
+            .from('sales_invoices')
+            .select('trdInvcNo')
+            .not('trdInvcNo', 'is', null)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .single()
+          if (lastInvoice && lastInvoice.trdInvcNo) {
+            // Increment, preserving leading zeros
+            const lastNum = parseInt(lastInvoice.trdInvcNo, 10)
+            fallbackTrdInvcNo = (lastNum + 1)
+          } else {
+            fallbackTrdInvcNo = 1
+          }
+        }
+        console.log("fallback", fallbackTrdInvcNo)
         await supabase.from('sales_invoices').insert({
-          trdInvcNo: kraData.invcNo,
+          trdInvcNo: fallbackTrdInvcNo,
           order_id: order.id,
           payment_method: paymentMethod,
           total_items: order.items.length,
@@ -1054,6 +1072,11 @@ export function CorrectedPOSSystem() {
           date: new Date(order.created_at).toLocaleDateString(),
           time: new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           receiptId: order.id,
+          kraData: kraData || order.kraData || order.kra_status ? {
+            success: order.kra_status === 'ok',
+            error: order.kra_error,
+            kraData: order.kraData
+          } : undefined
         }),
       });
       const result = await res.json();
@@ -1589,6 +1612,66 @@ export function CorrectedPOSSystem() {
       } : ci))
     } catch (error: any) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' })
+    }
+  }
+
+  // Customer state
+  const [selectedCustomer, setSelectedCustomer] = useState<any>(null)
+  const [showCustomerDialog, setShowCustomerDialog] = useState(false)
+  const [customerSearch, setCustomerSearch] = useState("")
+  const [customerResults, setCustomerResults] = useState<any[]>([])
+  const [newCustomerName, setNewCustomerName] = useState("")
+  const [newCustomerPin, setNewCustomerPin] = useState("")
+  const [customerLoading, setCustomerLoading] = useState(false)
+
+  // Fetch customers for search
+  const searchCustomers = async (query: string) => {
+    setCustomerLoading(true)
+    const { data, error } = await supabase
+      .from('customers')
+      .select('*')
+      .or(`name.ilike.%${query}%,kra_pin.ilike.%${query}%`)
+      .order('created_at', { ascending: false })
+      .limit(10)
+    setCustomerResults(data || [])
+    setCustomerLoading(false)
+  }
+
+  // Add new customer
+  const handleAddCustomer = async () => {
+    if (!newCustomerName.trim() || !newCustomerPin.trim()) {
+      toast({ title: 'Missing Info', description: 'Name and KRA PIN are required', variant: 'destructive' })
+      return
+    }
+    setCustomerLoading(true)
+    const { data, error } = await supabase
+      .from('customers')
+      .insert({ name: newCustomerName.trim(), kra_pin: newCustomerPin.trim() })
+      .select()
+      .single()
+    setCustomerLoading(false)
+    if (error) {
+    console.log(error)
+      toast({ title: 'Error', description: error.message, variant: 'destructive' })
+      return
+    }
+    setSelectedCustomer(data)
+    setShowCustomerDialog(false)
+    setNewCustomerName("")
+    setNewCustomerPin("")
+    toast({ title: 'Customer Added', description: `Added ${data.name}` })
+  }
+
+  // Handler to cancel a take-away order
+  const handleCancelTakeAwayOrder = async (order: any) => {
+    if (!window.confirm(`Are you sure you want to cancel take-away order #${order.id.slice(-6)}?`)) return;
+    try {
+      const { error } = await tableOrdersService.updateOrderStatus(order.id, 'cancelled');
+      if (error) throw new Error(error);
+      await loadTakeAwayOrders();
+      toast({ title: 'Order Cancelled', description: `Take-away order #${order.id.slice(-6)} has been cancelled.` });
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message || 'Failed to cancel take-away order', variant: 'destructive' });
     }
   }
 
@@ -2148,6 +2231,16 @@ export function CorrectedPOSSystem() {
                   <span>Total:</span>
                     <span>Ksh {(calcCartTotal() + existingOrderItems.reduce((sum, item) => sum + item.total_price, 0)).toFixed(2)}</span>
                 </div>
+                <div className="mb-2">
+  <Button variant="outline" onClick={() => setShowCustomerDialog(true)} className="w-full">
+    {selectedCustomer ? `Customer: ${selectedCustomer.name} (${selectedCustomer.kra_pin})` : 'Add Customer'}
+  </Button>
+</div>
+{selectedCustomer && (
+  <div className="text-xs text-muted-foreground mb-2">
+    <span className="font-semibold">Customer:</span> {selectedCustomer.name} (<span className="font-mono">{selectedCustomer.kra_pin}</span>)
+  </div>
+)}
                   <Button className="w-full" size="lg" onClick={handlePlaceOrder} disabled={placingOrder}>
                     {placingOrder ? (
                       <span className="flex items-center justify-center"><span className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary mr-2"></span>Placing...</span>
@@ -2684,6 +2777,13 @@ export function CorrectedPOSSystem() {
                         >
                           <CheckCircle className="h-4 w-4 mr-2" /> Payment
                         </Button>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => handleCancelTakeAwayOrder(order)}
+                        >
+                          <Trash2 className="h-4 w-4 mr-2" /> Cancel
+                        </Button>
                       </div>
                     </CardContent>
                   </Card>
@@ -2693,6 +2793,39 @@ export function CorrectedPOSSystem() {
           </div>
         </DialogContent>
       </Dialog>
-    </div>
+
+      {/* Customer dialog */}
+      <Dialog open={showCustomerDialog} onOpenChange={setShowCustomerDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Select or Add Customer</DialogTitle>
+          </DialogHeader>
+          <div className="mb-4">
+            <Input
+              placeholder="Search by name or KRA PIN"
+              value={customerSearch}
+              onChange={e => {
+                setCustomerSearch(e.target.value)
+                if (e.target.value.length > 1) searchCustomers(e.target.value)
+              }}
+              className="mb-2"
+            />
+            {customerLoading && <div className="text-xs text-muted-foreground">Searching...</div>}
+            {customerResults.map(cust => (
+              <div key={cust.id} className="flex justify-between items-center py-1">
+                <span>{cust.name} ({cust.kra_pin})</span>
+                <Button size="sm" onClick={() => { setSelectedCustomer(cust); setShowCustomerDialog(false) }}>Select</Button>
+              </div>
+            ))}
+          </div>
+          <div className="border-t pt-4 mt-4">
+            <h4 className="font-semibold mb-2">Register New Customer</h4>
+            <Input placeholder="Name" value={newCustomerName} onChange={e => setNewCustomerName(e.target.value)} className="mb-2" />
+            <Input placeholder="KRA PIN" value={newCustomerPin} onChange={e => setNewCustomerPin(e.target.value)} className="mb-2" />
+            <Button onClick={handleAddCustomer} disabled={customerLoading}>Add Customer</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      </div>
   )
 }

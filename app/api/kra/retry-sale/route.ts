@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
     }
     // 3. Prepare items for KRA
     let items = (order.items || []).map((item: any) => ({
-      id: item.menu_item_id,
+      id: item.menu_item_id, // use the real UUID for recipe lookup
       name: item.menu_item_name,
       price: item.unit_price, // tax-inclusive
       qty: item.quantity,
@@ -36,14 +36,18 @@ export async function POST(req: NextRequest) {
     // 4. Ensure all items have itemCd and itemClsCd
     for (let i = 0; i < items.length; i++) {
       if (!items[i].itemCd || !items[i].itemClsCd) {
-        const { data: recipe } = await supabase
+        console.log('Fetching recipe for item:', items[i].id)
+        const { data: recipe, error: recipeError } = await supabase
           .from('recipes')
           .select('itemCd, itemClsCd')
           .eq('id', items[i].id)
           .single();
+        console.log('Recipe fetch result:', recipe, 'Error:', recipeError)
         if (recipe) {
           items[i].itemCd = recipe.itemCd;
           items[i].itemClsCd = recipe.itemClsCd;
+        } else {
+          console.warn('No recipe found for item id:', items[i].id)
         }
       }
     }

@@ -5,7 +5,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     // body should include: { items, order, totals, restaurant, table, date, time, receiptId }
-    const { order, items, totals, restaurant, table, date, time, receiptId } = body;
+    const { order, items, totals, restaurant, table, date, time, receiptId, kraData } = body;
 
     const printer = new ThermalPrinter({
       type: PrinterTypes.EPSON,
@@ -31,6 +31,20 @@ export async function POST(req: NextRequest) {
     printer.println(`Date: ${date || new Date().toLocaleDateString()}`);
     printer.println(`Time: ${time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
     printer.drawLine();
+
+    // KRA STATUS SECTION
+    printer.alignCenter();
+    if (kraData) {
+      if (kraData.success && kraData.kraData && kraData.kraData.data) {
+        printer.println('KRA eTIMS: SUCCESS');
+        printer.println(`KRA Receipt: ${kraData.kraData.data.curRcptNo || ''}`);
+        printer.println(`SDC Date: ${kraData.kraData.data.sdcDateTime || ''}`);
+      } else {
+        printer.println('*** KRA TRANSMISSION FAILED ***');
+        printer.println(`${kraData.error || kraData.kraData?.resultMsg || 'Unknown error'}`);
+      }
+      printer.drawLine();
+    }
 
     // Items
     items.forEach((item: any) => {

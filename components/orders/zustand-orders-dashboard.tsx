@@ -404,7 +404,7 @@ export function ZustandOrdersDashboard() {
       }
       
       // Update local state
-      updateOrderStatus(orderId, newStatus)
+    updateOrderStatus(orderId, newStatus)
       
       // Reload orders to ensure consistency
       await loadOrdersFromDB()

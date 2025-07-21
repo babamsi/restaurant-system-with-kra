@@ -446,6 +446,20 @@ CREATE TABLE supplier_receipts (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- =====================
+-- CUSTOMERS TABLE
+-- =====================
+CREATE TABLE IF NOT EXISTS customers (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  name VARCHAR(100) NOT NULL,
+  kra_pin VARCHAR(20) NOT NULL,
+  phone VARCHAR(20),
+  email VARCHAR(100),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_customers_kra_pin ON customers(kra_pin);
+CREATE INDEX IF NOT EXISTS idx_customers_name ON customers(name);
+
 -- =====================================================
 -- INDEXES FOR PERFORMANCE
 -- =====================================================

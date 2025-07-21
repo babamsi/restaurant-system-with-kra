@@ -1218,8 +1218,8 @@ export const tableOrdersService = {
     items,
     session_id
   }: {
-    table_number: string;
-    table_id: number;
+    table_number?: string;
+    table_id?: number;
     customer_name?: string;
     order_type?: 'dine-in' | 'takeaway';
     subtotal?: number;
@@ -1240,18 +1240,20 @@ export const tableOrdersService = {
     session_id?: string;
   }) {
     try {
-      // Check for existing active order on this table
-      const { data: existingOrder } = await this.getActiveOrderByTable(table_id, session_id);
-      if (existingOrder) {
-        throw new Error(`Table ${table_number} already has an active order. Please add items to the existing order instead.`);
+      // For dine-in orders, check for existing active order on the table
+      if (order_type === 'dine-in' && table_id) {
+        const { data: existingOrder } = await this.getActiveOrderByTable(table_id, session_id);
+        if (existingOrder) {
+          throw new Error(`Table ${table_number} already has an active order. Please add items to the existing order instead.`);
+        }
       }
 
       // 1. Create the table order
       const { data: order, error: orderError } = await supabase
         .from('table_orders')
         .insert({
-          table_number,
-          table_id,
+          table_number: table_number || 'Takeaway',
+          table_id: table_id || 0, // Use a convention like 0 for takeaway
           customer_name,
           order_type,
           subtotal,

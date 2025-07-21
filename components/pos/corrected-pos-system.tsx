@@ -142,6 +142,10 @@ export function CorrectedPOSSystem() {
   const [showQRDialog, setShowQRDialog] = useState(false)
   const [qrCodes, setQrCodes] = useState<Record<number, string>>({})
 
+  // Take Away State
+  const [showTakeAwayDialog, setShowTakeAwayDialog] = useState(false)
+  const [takeAwayOrders, setTakeAwayOrders] = useState<any[]>([])
+
   // Add state for editing an existing item
   const [editingExistingItem, setEditingExistingItem] = useState<null | { item: CartItem; index: number }>(null)
   const [editItemQuantity, setEditItemQuantity] = useState(1)
@@ -241,6 +245,7 @@ export function CorrectedPOSSystem() {
   // Load table orders on component mount
   useEffect(() => {
     loadTableOrders()
+    loadTakeAwayOrders()
     loadOrderHistory()
   }, [])
 
@@ -292,6 +297,82 @@ export function CorrectedPOSSystem() {
     } catch (error) {
       console.error("POS: Error loading table orders:", error)
     }
+  }
+
+  const loadTakeAwayOrders = async () => {
+    if (!sessionId) return
+    try {
+      const { data, error } = await supabase
+        .from('table_orders')
+        .select('*, items:table_order_items(*)')
+        .eq('session_id', sessionId)
+        .eq('order_type', 'takeaway')
+        .in('status', ['pending', 'preparing', 'ready', 'completed'])
+      
+      if (error) throw new Error(error.message)
+      setTakeAwayOrders(data || [])
+    } catch (error) {
+      console.error('Error loading take away orders:', error)
+    }
+  }
+
+  // Auto-refresh takeaway orders when modal is open
+  useEffect(() => {
+    if (!showTakeAwayDialog) return;
+    loadTakeAwayOrders();
+    const interval = setInterval(() => {
+      loadTakeAwayOrders();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [showTakeAwayDialog, sessionId]);
+
+  const handleNewTakeAwayOrder = () => {
+    setSelectedTable({ id: 0, number: 'Take Away', status: 'available', pax: 0 })
+    clearCart()
+    setEditingOrderId(null)
+    setExistingOrderItems([])
+    setShowTakeAwayDialog(false)
+    toast({
+      title: "New Take Away Order",
+      description: "Ready to take a new take away order.",
+    })
+    loadTakeAwayOrders();
+  }
+
+  const handleAddMoreToTakeAway = (order: any) => {
+    setSelectedTable({ id: 0, number: 'Take Away', status: 'occupied', pax: 0, orderId: order.id, currentOrder: order })
+    setEditingOrderId(order.id)
+    const cartItems: CartItem[] = order.items.map((item: any) => ({
+      id: item.menu_item_id,
+      name: item.menu_item_name,
+      unit_price: item.unit_price,
+      quantity: item.quantity,
+      portionSize: item.portion_size,
+      customization: item.customization_notes,
+      type: "recipe" as const,
+      nutrition: { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0 },
+      unit: "portion",
+      available_quantity: 999,
+      description: "",
+      category: "",
+      inventory_deduction: undefined,
+      menu_item_id: item.menu_item_id,
+      total_price: item.total_price,
+      total_nutrition: { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0 }
+    }))
+    setExistingOrderItems(cartItems)
+    setShowTakeAwayDialog(false)
+    toast({
+      title: "Loaded Take Away Order",
+      description: `Loaded order #${order.id.slice(-6)} to add more items.`,
+    })
+    loadTakeAwayOrders();
+  }
+
+  const handleTakeAwayPayment = (order: any) => {
+    setShowPayment({ table: { id: 0, number: 'Take Away', status: 'occupied', pax: 0, orderId: order.id, currentOrder: order }, orderId: order.id })
+    setShowTakeAwayDialog(false)
+    loadTakeAwayOrders();
   }
 
   const loadOrderHistory = async () => {
@@ -428,7 +509,8 @@ export function CorrectedPOSSystem() {
       const taxAmount = 0 // No extra tax
       const totalAmount = subtotal // No extra tax added
 
-    if (editingOrderId) {
+      const isTakeAway = selectedTable.id === 0
+      if (editingOrderId) {
         // Adding items to existing order
         const { data, error } = await tableOrdersService.addItemsToOrder(editingOrderId, cartItems)
         if (error) {
@@ -441,13 +523,14 @@ export function CorrectedPOSSystem() {
           description: `Added items to ${selectedTable.number}`,
           duration: 2000,
         })
-    } else {
+        if (isTakeAway) await loadTakeAwayOrders();
+      } else {
         // Creating new order
         const { data, error } = await tableOrdersService.createOrderWithItems({
           table_number: selectedTable.number,
           table_id: selectedTable.id,
-          customer_name: "",
-          order_type: "dine-in",
+          customer_name: "", // You can add a field for this in the takeaway flow if needed
+          order_type: isTakeAway ? "takeaway" : "dine-in",
           subtotal,
           tax_rate: taxRate,
           tax_amount: taxAmount,
@@ -461,11 +544,15 @@ export function CorrectedPOSSystem() {
         }
         
         if (data) {
-          setTables(prevTables => prevTables.map(table =>
-            table.id === selectedTable.id
-              ? { ...table, status: "occupied", orderId: data.id, currentOrder: data }
-              : table
-          ))
+          if (isTakeAway) {
+            await loadTakeAwayOrders()
+          } else {
+            setTables(prevTables => prevTables.map(table =>
+              table.id === selectedTable.id
+                ? { ...table, status: "occupied", orderId: data.id, currentOrder: data }
+                : table
+            ))
+          }
           setEditingOrderId(data.id)
           
           console.log('POS: Created new order:', data.id, 'for session:', sessionId)
@@ -1518,9 +1605,14 @@ export function CorrectedPOSSystem() {
             {currentTime.toLocaleDateString()}
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={generateQRCodes} disabled={!sessionId}>
-              <QrCode className="h-4 w-4 mr-2" />
-              QR Codes
+            <Button variant="outline" size="sm" onClick={() => setShowTakeAwayDialog(true)} disabled={!sessionId} className="relative">
+              <ShoppingCart className="h-4 w-4 mr-2" />
+              Take Away
+              {takeAwayOrders.length > 0 && (
+                <span className="absolute -top-2 -right-2 h-5 w-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs">
+                  {takeAwayOrders.length}
+                </span>
+              )}
             </Button>
             <Button variant="outline" size="sm" onClick={() => setShowPendingOrders(true)}>
               <FileText className="h-4 w-4 mr-2" />
@@ -2548,6 +2640,59 @@ export function CorrectedPOSSystem() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      </div>
+
+      {/* Take Away Dialog */}
+      <Dialog open={showTakeAwayDialog} onOpenChange={setShowTakeAwayDialog}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Take Away Orders</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="flex justify-end">
+              <Button onClick={() => handleNewTakeAwayOrder()}>
+                <Plus className="h-4 w-4 mr-2" />
+                New Take Away Order
+              </Button>
+            </div>
+            <div className="space-y-2 max-h-96 overflow-auto">
+              {takeAwayOrders.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground">
+                  <p>No active take away orders.</p>
+                </div>
+              ) : (
+                takeAwayOrders.map((order) => (
+                  <Card key={order.id}>
+                    <CardContent className="p-4 flex justify-between items-center">
+                      <div>
+                        <h3 className="font-semibold">Order #{order.id.slice(-6)}</h3>
+                        <p className="text-sm text-muted-foreground">
+                          {order.items.length} items • Total: Ksh {order.total_amount.toFixed(2)}
+                        </p>
+                        <Badge variant="outline" className="mt-2 capitalize">{order.status}</Badge>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleAddMoreToTakeAway(order)}
+                        >
+                          <Plus className="h-4 w-4 mr-2" /> Add More
+                        </Button>
+                        <Button
+                          size="sm"
+                          onClick={() => handleTakeAwayPayment(order)}
+                        >
+                          <CheckCircle className="h-4 w-4 mr-2" /> Payment
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
   )
 }

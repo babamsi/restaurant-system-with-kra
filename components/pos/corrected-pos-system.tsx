@@ -665,9 +665,9 @@ export function CorrectedPOSSystem() {
     })
   }
 
-  const handleProceedToPayment = async () => {
-    if (!showTableOptions) return
-    
+  const handleProceedToPayment = async (table: TableState) => {
+    if (!table) return
+
     // Validate session first
     const sessionValidation = await validateSession()
     if (!sessionValidation.valid) {
@@ -680,7 +680,6 @@ export function CorrectedPOSSystem() {
       return
     }
     
-    const table = showTableOptions
     const currentOrder = tableOrders[table.id] || table.currentOrder
     
     // Ensure the order belongs to current session
@@ -703,8 +702,7 @@ export function CorrectedPOSSystem() {
     }
     
     setShowPayment({ table, orderId: currentOrder.id })
-      setShowTableOptions(null)
-    }
+  }
 
   const handleMarkAsPaid = async () => {
     if (!showPayment) return
@@ -953,7 +951,7 @@ export function CorrectedPOSSystem() {
     // ... existing browser print logic ...
     // --- Thermal Printer Integration ---
     try {
-      const res = await fetch('/api/print-receipt', {
+      const res = await fetch('http://localhost:4000/print-receipt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1608,7 +1606,7 @@ export function CorrectedPOSSystem() {
                           variant="secondary"
                           onClick={(e) => {
                             e.stopPropagation()
-                            handleProceedToPayment()
+                            handleProceedToPayment(table)
                           }}
                         >
                           <CheckCircle className="h-5 w-5 mr-2" />

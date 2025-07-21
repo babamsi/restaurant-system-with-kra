@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
 
     // Items
     items.forEach((item: any) => {
-      printer.println(`${item.name}${item.portion_size ? ` (${item.portion_size})` : ''}`);
+      printer.println(`${item.menu_item_name || item.name}${item.portion_size ? ` (${item.portion_size})` : ''}`);
       if (item.customization_notes) {
         printer.println(`  *${item.customization_notes}`);
       }

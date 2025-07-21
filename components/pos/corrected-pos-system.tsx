@@ -733,11 +733,11 @@ export function CorrectedPOSSystem() {
       paymentDetails = { received, change: received - order.total_amount }
     }
     if (paymentMethod === 'mpesa') {
-      if (!mpesaNumber || mpesaNumber.length < 8) {
-        setSplitError('Please enter a valid mobile number.')
-        setPaymentLoading(false)
-        return
-      }
+      // if (!mpesaNumber || mpesaNumber.length < 0) {
+      //   setSplitError('Please enter a valid mobile number.')
+      //   setPaymentLoading(false)
+      //   return
+      // }
       paymentDetails = { mpesaNumber }
     }
     if (paymentMethod === 'split') {

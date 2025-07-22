@@ -257,14 +257,14 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
   }
 
   // Helper functions for KRA integration
-  async function registerIngredientWithKRA(ingredient: BaseIngredient) {
+  async function registerIngredientWithKRA(ingredient: BaseIngredient, newCost?: number) {
     const res = await fetch('/api/kra/register-ingredient', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         id: ingredient.id,
         name: ingredient.name,
-        price: ingredient.cost_per_unit,
+        price: newCost !== undefined ? newCost : ingredient.cost_per_unit,
         description: ingredient.description,
         itemCd: ingredient.itemCd,
         unit: ingredient.unit, // Always send unit
@@ -377,7 +377,7 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
       // For every item, register with KRA if needed
       for (const item of itemsToUpdate) {
         if (!item.ingredient.itemCd || !item.ingredient.itemClsCd) {
-          const kraRes = await registerIngredientWithKRA(item.ingredient)
+          const kraRes = await registerIngredientWithKRA(item.ingredient, item.newCost)
           if (!kraRes.success) {
             toast({ title: "KRA Registration Error", description: kraRes.error || "Failed to register ingredient with KRA", variant: "destructive" })
             setIsProcessing(false)

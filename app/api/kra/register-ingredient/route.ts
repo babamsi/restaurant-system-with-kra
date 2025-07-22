@@ -89,6 +89,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
     const { id, name, price, description, itemCd: existingItemCd, unit } = body
+    console.log(body)
     if (!id || !name || !price || !unit) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
     }
@@ -121,7 +122,7 @@ export async function POST(req: NextRequest) {
       modrId: safeName,
       modrNm: safeName,
     }
-
+    console.log(kraPayload)
     // Call KRA API
     const kraRes = await fetch('https://etims-api-sbx.kra.go.ke/etims-api/saveItem', {
       method: 'POST',

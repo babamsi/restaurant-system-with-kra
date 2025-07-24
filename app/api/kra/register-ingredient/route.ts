@@ -8,32 +8,6 @@ const ITEM_TY_CD = "2"
 const PKG_UNIT_CD = "NT"
 const TAX_TY_CD = "B"
 
-// KRA unit code mapping
-const KRA_UNIT_MAP: Record<string, string> = {
-  'bag': 'BG',
-  'box': 'BOX',
-  'can': 'CA',
-  'dozen': 'DZ',
-  'gram': 'GRM',
-  'g': 'GRM',
-  'kg': 'KG',
-  'kilogram': 'KG',
-  'kilo gramme': 'KG',
-  'litre': 'L',
-  'liter': 'L',
-  'l': 'L',
-  'milligram': 'MGM',
-  'mg': 'MGM',
-  'packet': 'PA',
-  'set': 'SET',
-  'piece': 'U',
-  'pieces': 'U',
-  'item': 'U',
-  'number': 'U',
-  'pcs': 'U',
-  'u': 'U',
-}
-
 function padNumber(num: number, size: number) {
   let s = num + ""
   while (s.length < size) s = "0" + s
@@ -74,21 +48,43 @@ async function getNextItemCd() {
   return `KE2NTBA${padNumber(maxNum + 1, 7)}`
 }
 
-function generateItemClsCd() {
-  // 10-digit unique number (timestamp-based)
-  return (Date.now() % 1e10).toString().padStart(10, '0')
-}
-
+// Map unit to KRA unit code
 function mapToKRAUnit(unit: string): string {
+  const KRA_UNIT_MAP: Record<string, string> = {
+    'bag': 'BG', 'box': 'BOX', 'can': 'CA', 'dozen': 'DZ', 'gram': 'GRM', 'g': 'GRM', 
+    'kg': 'KG', 'kilogram': 'KG', 'kilo gramme': 'KG', 'litre': 'L', 'liter': 'L', 'l': 'L', 
+    'milligram': 'MGM', 'mg': 'MGM', 'packet': 'PA', 'set': 'SET', 'piece': 'U', 
+    'pieces': 'U', 'item': 'U', 'number': 'U', 'pcs': 'U', 'u': 'U',
+  }
+  
   if (!unit) return 'U'
   const normalized = unit.trim().toLowerCase()
   return KRA_UNIT_MAP[normalized] || 'U'
 }
 
+// Generate item classification code based on category
+function generateItemClsCd(category: string): string {
+  const CATEGORY_MAP: Record<string, string> = {
+    'meats': '73131600',
+    'drinks': '50200000', 
+    'vegetables': '50400000',
+    'package': '24120000',
+    'dairy': '50130000',
+    'grains': '50130000', // Same as dairy as per your mapping
+    'oil': '50150000',
+    'fruits': '50300000',
+    'canned': '50460000',
+    'nuts': '50100000'
+  }
+  
+  const normalizedCategory = category.toLowerCase().trim()
+  return CATEGORY_MAP[normalizedCategory] || '5059690800' // Default for unknown categories
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
-    const { id, name, price, description, itemCd: existingItemCd, unit } = body
+    const { id, name, price, description, itemCd: existingItemCd, unit, category } = body
     console.log(body)
     if (!id || !name || !price || !unit) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
@@ -99,7 +95,9 @@ export async function POST(req: NextRequest) {
     if (!itemCd) {
       itemCd = await getNextItemCd()
     }
-    const itemClsCd = generateItemClsCd()
+    
+    // Generate item classification code based on category
+    const itemClsCd = generateItemClsCd(category || 'general')
 
     // Truncate modrId/regrId to 20 chars
     const safeName = name.length > 20 ? name.slice(0, 20) : name

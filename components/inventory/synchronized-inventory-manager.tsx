@@ -871,9 +871,13 @@ export function SynchronizedInventoryManager() {
                           <SelectItem value="grains">Grains</SelectItem>
                           <SelectItem value="dairy">Dairy</SelectItem>
                           <SelectItem value="spices">Spices</SelectItem>
+                          <SelectItem value="cans">Cans</SelectItem>
                           <SelectItem value="oils">Oils</SelectItem>
                           <SelectItem value="packaging">Packaging</SelectItem>
                           <SelectItem value="dishes">Dishes</SelectItem>
+                          <SelectItem value="fruits">Fruits</SelectItem>
+                          <SelectItem value="nuts">Nuts</SelectItem>
+                          <SelectItem value="sauces">Sauces</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>

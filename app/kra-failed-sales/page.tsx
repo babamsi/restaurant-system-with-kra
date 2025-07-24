@@ -40,20 +40,71 @@ export default function KRAFailedSalesPage() {
 
   const handleRetry = async (invoiceId: string) => {
     setRetryingId(invoiceId);
-    const res = await fetch('/api/kra/retry-sale', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sales_invoice_id: invoiceId }),
-    });
-    const result = await res.json();
-    if (result.success) {
-      toast({ title: 'KRA Resubmission Successful', description: 'Sale was pushed to KRA.' });
-      loadFailedReceipts();
-    } else {
-      toast({ title: 'KRA Resubmission Failed', description: result.error, variant: 'destructive' });
-      loadFailedReceipts();
+    
+    try {
+      const res = await fetch('/api/kra/retry-sale', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sales_invoice_id: invoiceId }),
+      });
+      
+      const result = await res.json();
+      
+      if (result.success) {
+        // Generate and download PDF receipt on client side
+        try {
+          const { generateAndDownloadReceipt } = await import('@/lib/receipt-utils')
+          await generateAndDownloadReceipt(result.receiptData)
+          
+          toast({ 
+            title: 'KRA Retry Successful', 
+            description: `Sale was successfully pushed to KRA. Invoice: ${result.invcNo}. Receipt generated and downloaded.`,
+            variant: 'default'
+          });
+        } catch (receiptError) {
+          console.error('Error generating receipt:', receiptError)
+          toast({ 
+            title: 'KRA Retry Successful', 
+            description: `Sale was successfully pushed to KRA. Invoice: ${result.invcNo}. Receipt generation failed.`,
+            variant: 'default'
+          });
+        }
+        
+        // Reload the failed receipts list
+        await loadFailedReceipts();
+      } else {
+        // Check if it's a duplicate invoice error
+        const isDuplicateError = result.error?.toLowerCase().includes('invoice number already exists') ||
+                                result.error?.toLowerCase().includes('duplicate invoice') ||
+                                result.error?.toLowerCase().includes('invoice already exists');
+        
+        if (isDuplicateError) {
+          toast({ 
+            title: 'Duplicate Invoice Error', 
+            description: 'Invoice number already exists. The system will automatically use a new invoice number on next retry.',
+            variant: 'warning'
+          });
+        } else {
+          toast({ 
+            title: 'KRA Retry Failed', 
+            description: result.error || 'Failed to retry KRA sale',
+            variant: 'destructive' 
+          });
+        }
+        
+        // Reload the failed receipts list to show updated error
+        await loadFailedReceipts();
+      }
+    } catch (error) {
+      console.error('Retry error:', error);
+      toast({ 
+        title: 'Retry Error', 
+        description: 'An error occurred while retrying the sale',
+        variant: 'destructive' 
+      });
+    } finally {
+      setRetryingId(null);
     }
-    setRetryingId(null);
   };
 
   const handleShowDetails = async (receipt: any) => {
@@ -104,39 +155,56 @@ export default function KRAFailedSalesPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {failedReceipts.map((receipt) => (
-                    <TableRow key={receipt.id} className="cursor-pointer hover:bg-muted/40" onClick={() => handleShowDetails(receipt)}>
-                      <TableCell>{receipt.order_id?.slice(-6)}</TableCell>
-                      <TableCell>{new Date(receipt.created_at).toLocaleString()}</TableCell>
-                      <TableCell>Ksh {Number(receipt.gross_amount).toFixed(2)}</TableCell>
-                      <TableCell>
-                        <span className="text-xs text-red-600">{receipt.kra_error}</span>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="destructive">Error</Badge>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={retryingId === receipt.id}
-                          onClick={e => { e.stopPropagation(); handleRetry(receipt.id); }}
-                        >
-                          {retryingId === receipt.id ? (
-                            <>
-                              <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                              Retrying...
-                            </>
-                          ) : (
-                            <>
-                              <RefreshCw className="h-4 w-4 mr-2" />
-                              Retry
-                            </>
-                          )}
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {failedReceipts.map((receipt) => {
+                    const isDuplicateError = receipt.kra_error?.toLowerCase().includes('invoice number already exists') ||
+                                            receipt.kra_error?.toLowerCase().includes('duplicate invoice') ||
+                                            receipt.kra_error?.toLowerCase().includes('invoice already exists');
+                    
+                    return (
+                      <TableRow key={receipt.id} className="cursor-pointer hover:bg-muted/40" onClick={() => handleShowDetails(receipt)}>
+                        <TableCell>{receipt.order_id?.slice(-6)}</TableCell>
+                        <TableCell>{new Date(receipt.created_at).toLocaleString()}</TableCell>
+                        <TableCell>Ksh {Number(receipt.gross_amount).toFixed(2)}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            {isDuplicateError && (
+                              <Badge variant="outline" className="text-xs bg-yellow-50 text-yellow-700 border-yellow-200">
+                                Duplicate Invoice
+                              </Badge>
+                            )}
+                            <span className={`text-xs ${isDuplicateError ? 'text-yellow-600' : 'text-red-600'}`}>
+                              {receipt.kra_error}
+                            </span>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={isDuplicateError ? "secondary" : "destructive"}>
+                            {isDuplicateError ? "Duplicate" : "Error"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={retryingId === receipt.id}
+                            onClick={e => { e.stopPropagation(); handleRetry(receipt.id); }}
+                          >
+                            {retryingId === receipt.id ? (
+                              <>
+                                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                                Retrying...
+                              </>
+                            ) : (
+                              <>
+                                <RefreshCw className="h-4 w-4 mr-2" />
+                                {isDuplicateError ? 'Retry with New Invoice' : 'Retry'}
+                              </>
+                            )}
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </ScrollArea>

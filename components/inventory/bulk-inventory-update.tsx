@@ -268,89 +268,66 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
         description: ingredient.description,
         itemCd: ingredient.itemCd,
         unit: ingredient.unit, // Always send unit
+        category: ingredient.category, // Send category for proper itemClsCd
       }),
     })
     return res.json()
   }
 
-  function generateUniqueSarNo() {
-    // Generate a unique 38-character string (timestamp + random)
-    const ts = Date.now().toString()
-    const rand = Math.random().toString(36).substring(2, 38 - ts.length)
-    return (ts + rand).padEnd(38, '0')
-  }
+  // Send purchase transaction to KRA
+  async function sendPurchaseToKRA(items: BulkUpdateItem[], supplier: any, invoiceNumber: string, vatAmount: string, supplierOrderId?: string) {
+    const purchaseItems = items.map(item => ({
+      ...item,
+      itemCd: item.ingredient.itemCd,
+      itemClsCd: item.ingredient.itemClsCd,
+      name: item.ingredient.name,
+      category: item.ingredient.category,
+      unit: item.ingredient.unit,
+      cost_per_unit: item.newCost ?? item.ingredient.cost_per_unit,
+      quantity: item.newQuantity ?? 0
+    }))
 
-  async function stockInKRAItems(items: BulkUpdateItem[], receiptCode: string, vatAmount: string) {
-    // Map unit to KRA code
-    const KRA_UNIT_MAP: Record<string, string> = {
-      'bag': 'BG', 'box': 'BOX', 'can': 'CA', 'dozen': 'DZ', 'gram': 'GRM', 'g': 'GRM', 'kg': 'KG', 'kilogram': 'KG', 'kilo gramme': 'KG', 'litre': 'L', 'liter': 'L', 'l': 'L', 'milligram': 'MGM', 'mg': 'MGM', 'packet': 'PA', 'set': 'SET', 'piece': 'U', 'pieces': 'U', 'item': 'U', 'number': 'U', 'pcs': 'U', 'u': 'U',
-    }
-    function mapToKRAUnit(unit: string): string {
-      if (!unit) return 'U'
-      const normalized = unit.trim().toLowerCase()
-      return KRA_UNIT_MAP[normalized] || 'U'
-    }
-    const now = new Date()
-    const ocrnDt = now.toISOString().slice(0, 10).replace(/-/g, '') // YYYYMMDD
-    // const sarNo = generateUniqueSarNo()  
-    const sarNo = 1
-    // const orgSarNo = generateUniqueSarNo()
-    const orgSarNo = 1
-    const sarTyCd = '02' // purchase
-    const safeName = receiptCode.length > 20 ? receiptCode.slice(0, 20) : receiptCode
-    // Build itemList
-    let totTaxblAmt = 0
-    let totTaxAmt = 0
-    let totAmt = 0
-    const itemList = items.map((item, idx) => {
-      const qty = item.newQuantity ?? 0
-      const prc = item.newCost ?? item.ingredient.cost_per_unit
-      const splyAmt = qty * prc
-      const taxAmt = vatAmount && parseFloat(vatAmount) > 0 ? (splyAmt * parseFloat(vatAmount) / items.length) / splyAmt : 0
-      const totItemAmt = splyAmt + taxAmt
-      totTaxblAmt += splyAmt
-      totTaxAmt += taxAmt
-      totAmt += totItemAmt
-      return {
-        itemSeq: idx + 1,
-        itemCd: item.ingredient.itemCd,
-        itemClsCd: item.ingredient.itemClsCd,
-        itemNm: item.ingredient.name,
-        pkgUnitCd: 'NT',
-        pkg: 1,
-        qtyUnitCd: mapToKRAUnit(item.ingredient.unit),
-        qty,
-        prc,
-        splyAmt,
-        totDcAmt: 0,
-        taxblAmt: splyAmt,
-        taxTyCd: 'B',
-        taxAmt,
-        totAmt: totItemAmt,
-      }
-    })
-    const kraPayload = {
-      tin: 'P052380018M',
-      bhfId: '01',
-      sarNo,
-      orgSarNo,
-      regTyCd: 'M',
-      sarTyCd,
-      ocrnDt,
-      totItemCnt: itemList.length,
-      totTaxblAmt,
-      totTaxAmt,
-      totAmt,
-      regrId: safeName,
-      regrNm: safeName,
-      modrId: safeName,
-      modrNm: safeName,
-      itemList,
-    }
-    const res = await fetch('/api/kra/stock-in', {
+    console.log('Sending purchase to KRA with invoice number:', invoiceNumber)
+
+    const res = await fetch('/api/kra/purchase', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(kraPayload),
+      body: JSON.stringify({
+        items: purchaseItems,
+        supplier,
+        invoiceNumber, // Pass the exact invoice number from the form
+        vatAmount,
+        purchaseDate: new Date().toISOString().slice(0, 10).replace(/-/g, ''),
+        supplierOrderId
+      }),
+    })
+    return res.json()
+  }
+
+  // Send stock-in transaction to KRA
+  async function sendStockInToKRA(items: BulkUpdateItem[], receiptCode: string, vatAmount: string, supplierOrderId?: string) {
+    const stockItems = items.map(item => ({
+      ...item,
+      itemCd: item.ingredient.itemCd,
+      itemClsCd: item.ingredient.itemClsCd,
+      name: item.ingredient.name,
+      category: item.ingredient.category,
+      unit: item.ingredient.unit,
+      cost_per_unit: item.newCost ?? item.ingredient.cost_per_unit,
+      quantity: item.newQuantity ?? 0
+    }))
+
+    const res = await fetch('/api/kra/stock-in-enhanced', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: stockItems,
+        sarTyCd: '02', // Purchase stock-in
+        receiptCode,
+        vatAmount,
+        stockDate: new Date().toISOString().slice(0, 10).replace(/-/g, ''),
+        supplierOrderId
+      }),
     })
     return res.json()
   }
@@ -374,7 +351,15 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
     setIsProcessing(true)
 
     try {
-      // For every item, register with KRA if needed
+      // Get supplier details
+      const selectedSupplierData = suppliers.find(s => s.id === selectedSupplier)
+      if (!selectedSupplierData) {
+        toast({ title: "Error", description: "Selected supplier not found.", variant: "destructive" })
+        setIsProcessing(false)
+        return
+      }
+
+      // Step 1: Register items with KRA if needed
       for (const item of itemsToUpdate) {
         if (!item.ingredient.itemCd || !item.ingredient.itemClsCd) {
           const kraRes = await registerIngredientWithKRA(item.ingredient, item.newCost)
@@ -392,16 +377,73 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
           item.ingredient.itemClsCd = kraRes.itemClsCd
         }
       }
-      // Always inform KRA of stock update for all items in one call
-      const kraStockInRes = await stockInKRAItems(itemsToUpdate, invoiceNumber, vatAmount)
-      if (kraStockInRes.kraData && kraStockInRes.kraData.resultCd === '000') {
-        toast({ title: 'KRA Stock-In Success', description: kraStockInRes.kraData.resultMsg || 'Stock-in succeeded.' })
-      } else {
-        toast({ title: 'KRA Stock-In Error', description: (kraStockInRes.kraData && kraStockInRes.kraData.resultMsg) || kraStockInRes.error || 'Failed to notify KRA', variant: 'destructive' })
+
+      // Step 2: Create supplier order first to get the ID for KRA tracking
+      const orderItems = itemsToUpdate.map(item => ({
+        ingredient_id: item.ingredient.id,
+        quantity: item.newQuantity ?? 0,
+        cost_per_unit: item.newCost ?? item.ingredient.cost_per_unit,
+        total_cost: ((item.newQuantity ?? 0) * (item.newCost ?? item.ingredient.cost_per_unit))
+      }))
+      
+      const orderResult = await supplierOrdersService.createOrderWithItems({
+        supplier_id: selectedSupplier,
+        invoice_number: invoiceNumber,
+        total_amount: totals.total,
+        vat_amount: totals.vatAmount,
+        items: orderItems
+      })
+      
+      if (!orderResult.success) {
+        toast({
+          title: "Order Creation Error",
+          description: orderResult.error || "Failed to create supplier order.",
+          variant: "destructive",
+        })
         setIsProcessing(false)
         return
       }
-      // Proceed with your normal inventory update (existing logic)
+
+      const supplierOrderId = orderResult.data?.id
+
+      // Step 3: Send purchase transaction to KRA
+      const kraPurchaseRes = await sendPurchaseToKRA(itemsToUpdate, selectedSupplierData, invoiceNumber, vatAmount, supplierOrderId)
+      if (!kraPurchaseRes.success) {
+        toast({ 
+          title: 'KRA Purchase Error', 
+          description: kraPurchaseRes.error || 'Failed to send purchase transaction to KRA', 
+          variant: 'destructive' 
+        })
+        // Continue with local inventory update even if KRA fails
+      } else {
+        console.log('KRA Purchase successful:', {
+          invcNo: kraPurchaseRes.invcNo,
+          orgInvcNo: kraPurchaseRes.orgInvcNo,
+          transactionId: kraPurchaseRes.transactionId
+        })
+        toast({ 
+          title: 'KRA Purchase Success', 
+          description: `Purchase transaction sent to KRA successfully. Invoice: ${kraPurchaseRes.invcNo}`, 
+        })
+      }
+
+      // Step 4: Send stock-in transaction to KRA
+      const kraStockInRes = await sendStockInToKRA(itemsToUpdate, invoiceNumber, vatAmount, supplierOrderId)
+      if (!kraStockInRes.success) {
+        toast({ 
+          title: 'KRA Stock-In Error', 
+          description: kraStockInRes.error || 'Failed to send stock-in transaction to KRA', 
+          variant: 'destructive' 
+        })
+        // Continue with local inventory update even if KRA fails
+      } else {
+        toast({ 
+          title: 'KRA Stock-In Success', 
+          description: kraStockInRes.kraData?.resultMsg || 'Stock-in transaction sent to KRA successfully.' 
+        })
+      }
+
+      // Step 5: Update local inventory (always proceed regardless of KRA status)
       for (const item of itemsToUpdate) {
         if (item.newQuantity !== undefined) {
           const addQuantity = item.newQuantity
@@ -419,31 +461,9 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
         }
       }
 
-      // Create supplier order and order items in the database
-      const orderItems = itemsToUpdate.map(item => ({
-        ingredient_id: item.ingredient.id,
-        quantity: item.newQuantity ?? 0,
-        cost_per_unit: item.newCost ?? item.ingredient.cost_per_unit,
-        total_cost: ((item.newQuantity ?? 0) * (item.newCost ?? item.ingredient.cost_per_unit))
-      }))
-      const orderResult = await supplierOrdersService.createOrderWithItems({
-        supplier_id: selectedSupplier,
-        invoice_number: invoiceNumber,
-        total_amount: totals.total,
-        vat_amount: totals.vatAmount,
-        items: orderItems
-      })
-      if (!orderResult.success) {
-        toast({
-          title: "Order Logging Error",
-          description: orderResult.error || "Failed to log supplier order.",
-          variant: "destructive",
-        })
-      }
-
       toast({
         title: "Success",
-        description: `Inventory updated successfully.`,
+        description: `Inventory updated successfully. ${!kraPurchaseRes.success || !kraStockInRes.success ? 'Some KRA transactions failed, but local inventory was updated.' : ''}`,
       })
 
       // Reload ingredients after update and before closing dialog
@@ -458,6 +478,7 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
       setShowReceiptUpload(false)
       setIsOpen(false)
     } catch (error) {
+      console.error('Bulk update error:', error)
       toast({ title: "Error", description: "Failed to process updates. Please try again.", variant: "destructive" })
     } finally {
       setIsProcessing(false)

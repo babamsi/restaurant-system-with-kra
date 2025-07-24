@@ -48,26 +48,32 @@ async function getNextInvoiceNoForRetry(orgInvcNo: number) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
-    // Expect: { items, payment, customer, saleId, orgInvcNo }
+    // Expect: { items, payment, customer, saleId, orgInvcNo, retryInvoiceNo }
     const {
       items, // [{id, name, price, qty, itemCd, itemClsCd, ...}]
       payment, // { method: 'cash'|'mpesa'|'card'|'split', ... }
       customer, // { tin, name }
       saleId, // internal transaction id
       orgInvcNo = 0,
+      retryInvoiceNo = null, // New parameter for retry scenarios
     } = body
 
     if (!items || !items.length || !payment || !saleId) {
       return NextResponse.json({ error: 'Missing required sale data' }, { status: 400 })
     }
 
-    // Invoice number
+    // Invoice number handling
     let invcNo: number;
-    if (orgInvcNo && orgInvcNo > 0) {
+    if (retryInvoiceNo) {
+      // Use the provided retry invoice number
+      invcNo = retryInvoiceNo;
+      console.log(`Using retry invoice number: ${invcNo}`);
+    } else if (orgInvcNo && orgInvcNo > 0) {
       invcNo = await getNextInvoiceNoForRetry(orgInvcNo);
     } else {
       invcNo = await getNextInvoiceNo();
     }
+    
     const now = new Date()
     const cfmDt = formatDateTime(now)
     const salesDt = formatDate(now)
@@ -99,6 +105,7 @@ export async function POST(req: NextRequest) {
       taxblAmtB += taxblAmt
       taxAmtB += taxAmt
       totAmt += totItemAmt
+
       return {
         itemSeq: idx + 1,
         itemCd: item.itemCd,
@@ -128,9 +135,9 @@ export async function POST(req: NextRequest) {
       cmcKey: CMC_KEY,
       trdInvcNo: saleId,
       invcNo,
-      orgInvcNo,
-      // custTin,
-      // custNm,
+      orgInvcNo: invcNo || 0,
+      custTin,
+      custNm,
       salesTyCd: 'N',
       rcptTyCd: 'S',
       pmtTyCd,
@@ -179,6 +186,7 @@ export async function POST(req: NextRequest) {
       headers: { 'Content-Type': 'application/json', tin: TIN, bhfId: BHF_ID, cmcKey: CMC_KEY },
       body: JSON.stringify(payload),
     })
+    
     const kraData = await kraRes.json()
     console.log("receipt KRA: ", kraData)
     if (kraData.resultCd !== '000') {

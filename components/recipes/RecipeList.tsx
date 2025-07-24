@@ -6,9 +6,10 @@ export interface RecipeListProps {
   onDelete?: (id: string) => void;
   onViewDetails?: (recipe: RecipeCardProps) => void;
   onRegisterKRA?: (recipe: RecipeCardProps) => void;
+  onSendItemComposition?: (recipe: RecipeCardProps) => void;
 }
 
-export const RecipeList: React.FC<RecipeListProps> = ({ recipes, onDelete, onViewDetails, onRegisterKRA }) => {
+export const RecipeList: React.FC<RecipeListProps> = ({ recipes, onDelete, onViewDetails, onRegisterKRA, onSendItemComposition }) => {
   if (!recipes.length) {
     return (
       <div className="col-span-full text-center text-muted-foreground py-12">
@@ -25,9 +26,12 @@ export const RecipeList: React.FC<RecipeListProps> = ({ recipes, onDelete, onVie
           onDelete={onDelete}
           onViewDetails={onViewDetails ? () => onViewDetails(recipe) : undefined}
           onRegisterKRA={onRegisterKRA ? () => onRegisterKRA(recipe) : undefined}
+          onSendItemComposition={onSendItemComposition ? () => onSendItemComposition(recipe) : undefined}
           itemCd={recipe.itemCd}
           kra_status={recipe.kra_status}
           kra_error={recipe.kra_error}
+          kra_composition_status={recipe.kra_composition_status}
+          kra_composition_no={recipe.kra_composition_no}
         />
       ))}
     </div>

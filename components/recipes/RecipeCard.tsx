@@ -26,9 +26,29 @@ export interface RecipeCardProps {
   kra_status?: string | null;
   kra_error?: string | null;
   onRegisterKRA?: () => void;
+  onSendItemComposition?: () => void;
+  kra_composition_status?: string | null;
+  kra_composition_no?: string | null;
 }
 
-export const RecipeCard: React.FC<RecipeCardProps> = ({ id, name, description, restaurant, price, components, available, onDelete, onViewDetails, itemCd, kra_status, kra_error, onRegisterKRA }) => {
+export const RecipeCard: React.FC<RecipeCardProps> = ({ 
+  id, 
+  name, 
+  description, 
+  restaurant, 
+  price, 
+  components, 
+  available, 
+  onDelete, 
+  onViewDetails, 
+  itemCd, 
+  kra_status, 
+  kra_error, 
+  onRegisterKRA,
+  onSendItemComposition,
+  kra_composition_status,
+  kra_composition_no
+}) => {
   const handleCardClick = (e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest('button')) {
       return;
@@ -43,6 +63,15 @@ export const RecipeCard: React.FC<RecipeCardProps> = ({ id, name, description, r
     kraBadge = <Badge variant="secondary" className="bg-green-100 text-green-800">KRA OK</Badge>;
   } else if (kra_status === 'error') {
     kraBadge = <Badge variant="secondary" className="bg-red-100 text-red-800">KRA Error</Badge>;
+  }
+
+  let compositionBadge = null;
+  if (kra_composition_status === 'ok') {
+    compositionBadge = <Badge variant="secondary" className="bg-blue-100 text-blue-800">Composition #{kra_composition_no}</Badge>;
+  } else if (kra_composition_status === 'partial_success') {
+    compositionBadge = <Badge variant="secondary" className="bg-orange-100 text-orange-800">Partial Composition #{kra_composition_no}</Badge>;
+  } else if (components && components.length > 0 && itemCd) {
+    compositionBadge = <Badge variant="secondary" className="bg-yellow-100 text-yellow-800">Composition Pending</Badge>;
   }
 
   return (
@@ -84,6 +113,7 @@ export const RecipeCard: React.FC<RecipeCardProps> = ({ id, name, description, r
               {restaurant}
             </Badge>
           )}
+          {compositionBadge}
         </div>
         {description && <p className="text-sm text-muted-foreground mb-2">{description}</p>}
         {/* KRA error message and register button */}
@@ -96,6 +126,27 @@ export const RecipeCard: React.FC<RecipeCardProps> = ({ id, name, description, r
               <Button size="sm" variant="outline" onClick={e => { e.stopPropagation(); onRegisterKRA(); }}>
                 {itemCd ? 'Retry KRA Registration' : 'Register Item to KRA'}
               </Button>
+            )}
+          </div>
+        )}
+        {/* Item Composition button */}
+        {onSendItemComposition && components && components.length > 0 && (
+          <div className="flex items-center gap-2 mt-2">
+            {!itemCd ? (
+              <span className="text-xs text-orange-600">⚠️ Register recipe with KRA first</span>
+            ) : kra_composition_status !== 'ok' && kra_composition_status !== 'partial_success' ? (
+              <Button 
+                size="sm" 
+                variant="outline" 
+                onClick={e => { e.stopPropagation(); onSendItemComposition(); }}
+                className="bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100"
+              >
+                Send Item Composition
+              </Button>
+            ) : kra_composition_status === 'ok' ? (
+              <span className="text-xs text-green-600">✓ Composition sent to KRA</span>
+            ) : (
+              <span className="text-xs text-orange-600">⚠️ Partial composition success</span>
             )}
           </div>
         )}

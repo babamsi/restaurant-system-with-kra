@@ -159,6 +159,92 @@ export default function RecipesPage() {
     }
   }
 
+  // Send item composition to KRA
+  const handleSendItemComposition = async (recipe: any) => {
+    if (!recipe.components || recipe.components.length === 0) {
+      toast({ 
+        title: 'No Components', 
+        description: 'This recipe has no components to send to KRA', 
+        variant: 'destructive' 
+      })
+      return
+    }
+
+    if (!recipe.itemCd) {
+      toast({ 
+        title: 'Recipe Not Registered', 
+        description: 'Recipe must be registered with KRA first. Please register the recipe item before sending composition.', 
+        variant: 'destructive' 
+      })
+      return
+    }
+
+    try {
+      // Show loading toast
+      toast({ 
+        title: 'Processing...', 
+        description: 'Sending item composition to KRA...', 
+      })
+
+      const res = await fetch('/api/kra/send-item-composition', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recipe_id: recipe.id,
+          recipe_name: recipe.name,
+          recipe_price: recipe.price,
+          recipe_category: recipe.category,
+          recipe_itemCd: recipe.itemCd, // Pass the recipe's itemCd
+          components: recipe.components
+        }),
+      })
+      
+      const data = await res.json()
+      
+      if (data.success) {
+        const registeredCount = data.registrationResults?.filter((r: any) => r.success).length || 0
+        const totalComponents = recipe.components.length
+        const successfulCompositions = data.compositionResults?.filter((r: any) => r.success).length || 0
+        const failedCompositions = data.compositionResults?.filter((r: any) => !r.success).length || 0
+        
+        if (failedCompositions === 0) {
+          toast({ 
+            title: 'Item Composition Sent', 
+            description: `Successfully sent to KRA. Composition #${data.compositionNo}. ${registeredCount} ingredients registered.`,
+            variant: 'default'
+          })
+        } else {
+          toast({ 
+            title: 'Item Composition Partial Success', 
+            description: `Completed with ${successfulCompositions} successful and ${failedCompositions} failed components. Check details for errors.`,
+            variant: 'default'
+          })
+          
+          // Show warnings if any components failed
+          if (data.warnings && data.warnings.length > 0) {
+            console.warn('Composition warnings:', data.warnings)
+          }
+        }
+        
+        // Refresh recipes to show updated status
+        await fetchRecipes()
+      } else {
+        toast({ 
+          title: 'Item Composition Failed', 
+          description: data.error || 'Failed to send item composition to KRA', 
+          variant: 'destructive' 
+        })
+      }
+    } catch (e: any) {
+      console.error('Item composition error:', e)
+      toast({ 
+        title: 'Item Composition Error', 
+        description: e.message || 'An error occurred while sending item composition', 
+        variant: 'destructive' 
+      })
+    }
+  }
+
   // Add a new recipe and its components
   const handleAddRecipe = async (data: any) => {
     try {
@@ -449,6 +535,7 @@ export default function RecipesPage() {
                     onDelete={handleDeleteRecipe}
                     onViewDetails={handleViewDetails}
                     onRegisterKRA={handleRegisterKRA}
+                    onSendItemComposition={handleSendItemComposition}
                   />
                 </div>
               );
@@ -465,6 +552,7 @@ export default function RecipesPage() {
                     onDelete={handleDeleteRecipe}
                     onViewDetails={handleViewDetails}
                     onRegisterKRA={handleRegisterKRA}
+                    onSendItemComposition={handleSendItemComposition}
                   />
                 </div>
               );

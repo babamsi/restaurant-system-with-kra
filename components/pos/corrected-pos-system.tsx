@@ -33,6 +33,7 @@ import { supabase } from "@/lib/supabase"
 import { tableOrdersService } from "@/lib/database"
 import Image from "next/image"
 import { QRCode } from "@/components/ui/qr-code"
+import { generateAndDownloadReceipt, type ReceiptRequest } from '@/lib/receipt-utils'
 
 interface TableState {
   id: number
@@ -930,6 +931,7 @@ export function CorrectedPOSSystem() {
         }),
       })
       const kraData = await kraRes.json()
+
       if (!kraData.success) {
         // Save to sales_invoices with status 'error' and error message, but DO NOT block order completion
         let fallbackTrdInvcNo = kraData.invcNo
@@ -969,6 +971,8 @@ export function CorrectedPOSSystem() {
       } else if (kraData.kraData) {
         // console.log("checking.. KRAData: ", kraData.kra)
         const { curRcptNo, totRcptNo, intrlData, rcptSign, sdcDateTime } = kraData.kraData.data
+        
+        // Save successful KRA transaction
         await supabase.from('sales_invoices').insert({
           trdInvcNo: kraData.invcNo,
           order_id: order.id,
@@ -987,6 +991,83 @@ export function CorrectedPOSSystem() {
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         })
+
+        // Generate and download KRA receipt
+        try {
+          const receiptItems = order.items.map((item: any) => {
+            // Determine tax type based on item category or default to 16% VAT
+            let taxType: 'A-EX' | 'B' | 'C' | 'D' | 'E' = 'B' // Default to 16% VAT
+            
+            // You can customize this logic based on your item categories
+            if (item.category?.toLowerCase().includes('exempt') || item.category?.toLowerCase().includes('basic')) {
+              taxType = 'A-EX' // Exempt
+            } else if (item.category?.toLowerCase().includes('zero') || item.category?.toLowerCase().includes('export')) {
+              taxType = 'C' // Zero rated
+            } else if (item.category?.toLowerCase().includes('non-vat') || item.category?.toLowerCase().includes('service')) {
+              taxType = 'D' // Non-VAT
+            } else if (item.category?.toLowerCase().includes('8%')) {
+              taxType = 'E' // 8% VAT
+            }
+            
+            const itemTotal = item.unit_price * item.quantity
+            const taxAmount = taxType === 'B' ? itemTotal * 0.16 : 
+                             taxType === 'E' ? itemTotal * 0.08 : 0
+            
+            return {
+              name: item.menu_item_name,
+              unit_price: item.unit_price,
+              quantity: item.quantity,
+              total: itemTotal,
+              tax_rate: taxType === 'B' ? 16 : taxType === 'E' ? 8 : 0,
+              tax_amount: taxAmount,
+              tax_type: taxType
+            }
+          })
+
+          const receiptData: ReceiptRequest = {
+            kraData: {
+              curRcptNo,
+              totRcptNo,
+              intrlData,
+              rcptSign,
+              sdcDateTime,
+              invcNo: kraData.invcNo,
+              trdInvcNo: order.id
+            },
+            items: receiptItems,
+            customer: {
+              name: selectedCustomer?.name || 'Walk-in Customer',
+              pin: selectedCustomer?.kra_pin
+            },
+            payment_method: paymentMethod,
+            total_amount: orderTotal,
+            tax_amount: orderTax,
+            net_amount: orderNet,
+            order_id: order.id,
+            // Add discount information if applicable
+            discount_amount: 0, // You can calculate this based on your discount logic
+            discount_percentage: 0,
+            discount_narration: ''
+          }
+
+          // Generate and download KRA receipt as PDF
+          await generateAndDownloadReceipt(receiptData)
+          
+          toast({ 
+            title: 'KRA Receipt Generated', 
+            description: 'KRA receipt has been generated and downloaded as PDF successfully.',
+            variant: 'default'
+          })
+
+        } catch (receiptError) {
+          console.error('Error generating KRA receipt:', receiptError)
+          toast({ 
+            title: 'Receipt Generation Error', 
+            description: 'KRA sale successful but receipt generation failed.',
+            variant: 'warning'
+          })
+        }
+
         setKraReceipt(kraData.kraData)
       }
       setTables(prevTables => prevTables.map(table =>

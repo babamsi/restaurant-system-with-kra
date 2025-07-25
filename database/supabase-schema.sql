@@ -372,6 +372,11 @@ CREATE TABLE table_orders (
     tax_amount DECIMAL(15,2) DEFAULT 0,
     total_amount DECIMAL(15,2) DEFAULT 0,
     
+    -- Discount
+    discount_amount DECIMAL(15,2) DEFAULT 0,
+    discount_type VARCHAR(50),
+    discount_reason TEXT,
+    
     -- Status
     status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'preparing', 'ready', 'completed', 'cancelled', 'paid')),
     

@@ -48,7 +48,7 @@ async function getNextInvoiceNoForRetry(orgInvcNo: number) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
-    // Expect: { items, payment, customer, saleId, orgInvcNo, retryInvoiceNo }
+    // Expect: { items, payment, customer, saleId, orgInvcNo, retryInvoiceNo, discount }
     const {
       items, // [{id, name, price, qty, itemCd, itemClsCd, ...}]
       payment, // { method: 'cash'|'mpesa'|'card'|'split', ... }
@@ -56,6 +56,7 @@ export async function POST(req: NextRequest) {
       saleId, // internal transaction id
       orgInvcNo = 0,
       retryInvoiceNo = null, // New parameter for retry scenarios
+      discount = null, // { amount: number, type: string, reason: string }
     } = body
 
     if (!items || !items.length || !payment || !saleId) {
@@ -88,23 +89,46 @@ export async function POST(req: NextRequest) {
     const pmtTyCd = paymentTypeMap[payment.method] || '01'
 
     // Customer info
-    const custTin = customer?.tin || TIN
-    const custNm = customer?.name || 'Walk-in Customer'
+    const custTin = customer?.tin || null
+    const custNm = customer?.name || null
 
     // Calculate totals (all prices are tax-inclusive)
     let totItemCnt = items.length
     let taxblAmtB = 0, taxAmtB = 0, totAmt = 0
+    
+    // Calculate total order value for discount distribution
+    const totalOrderValue = items.reduce((sum: number, item: any) => sum + (item.price * item.qty), 0)
+    
     const itemList = items.map((item: any, idx: number) => {
       const prc = item.price // tax-inclusive unit price
       const qty = item.qty
-      // Reverse-calculate tax and supply amount
-      const splyAmt = Math.round((prc * qty) / 1.16)
-      const taxblAmt = splyAmt
-      const taxAmt = Math.round((prc * qty) - splyAmt)
-      const totItemAmt = prc * qty
+      const itemTotal = prc * qty
+      
+      // Calculate discount amount for this item (proportional to item's share of total order)
+      let dscAmt = 0
+      let dcRt = 0
+      if (discount && discount.amount > 0 && totalOrderValue > 0) {
+        const itemShare = itemTotal / totalOrderValue
+        dscAmt = Math.round(discount.amount * itemShare)
+        
+        // Calculate discount rate as percentage
+        if (itemTotal > 0) {
+          dcRt = Math.round((dscAmt / itemTotal) * 100)
+        }
+      }
+      
+      // Calculate the discounted amount (this is what the customer actually pays)
+      const discountedItemTotal = itemTotal - dscAmt
+      
+      // IMPORTANT: Calculate tax based on the DISCOUNTED amount, not original
+      // Since the original price is tax-inclusive, we need to extract tax from the discounted amount
+      const splyAmt = Math.round(discountedItemTotal / 1.16) // Supply amount (tax-exclusive)
+      const taxblAmt = splyAmt // Taxable amount is the same as supply amount
+      const taxAmt = discountedItemTotal - splyAmt // Tax amount (16% of discounted amount)
+      
       taxblAmtB += taxblAmt
       taxAmtB += taxAmt
-      totAmt += totItemAmt
+      totAmt += discountedItemTotal
 
       return {
         itemSeq: idx + 1,
@@ -120,14 +144,31 @@ export async function POST(req: NextRequest) {
         taxTyCd: 'B',
         taxblAmt,
         taxAmt,
-        dcAmt:0,
-        dcRt:0,
-        totAmt: totItemAmt,
+        dcAmt: dscAmt,
+        dcRt: dcRt,
+        totAmt: discountedItemTotal,
       }
     })
     // Compose recipe names for modrID, modrNm, regrNm
     const recipeNames = items.map((item: any) => item.name).join(', ');
     const recipeNamesShort = recipeNames.slice(0, 20);
+
+    // Log discount information for debugging
+    if (discount && discount.amount > 0) {
+      console.log('KRA Sale with Discount:', {
+        totalDiscount: discount.amount,
+        discountType: discount.type,
+        discountReason: discount.reason,
+        totalOrderValue,
+        itemDiscounts: itemList.map((item: any) => ({
+          itemName: item.itemNm,
+          originalTotal: item.qty * item.prc,
+          discountAmount: item.dcAmt,
+          discountRate: item.dcRt,
+          finalTotal: item.totAmt
+        }))
+      })
+    }
 
     const payload = {
       tin: TIN,
@@ -152,6 +193,9 @@ export async function POST(req: NextRequest) {
       totTaxAmt: taxAmtB,
       prchrAcptcYn: 'N',
       totAmt,
+      // Add discount information to payload
+      totDcAmt: discount?.amount || 0,
+      totDcRt: discount?.amount && totalOrderValue > 0 ? Math.round((discount.amount / totalOrderValue) * 100) : 0,
       receipt: {
         custTin,
         rcptPbctDt: cfmDt,

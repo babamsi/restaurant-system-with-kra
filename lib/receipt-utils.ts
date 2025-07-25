@@ -1,6 +1,6 @@
 // Utility functions for KRA receipts with PDF generation and QR codes
 
-import QRCode from 'qrcode'
+import * as QRCode from 'qrcode'
 
 export interface KRAReceiptData {
   curRcptNo: string
@@ -44,6 +44,7 @@ const BUSINESS_CONFIG = {
   name: "Restaurant POS",
   address: "Nairobi, Kenya",
   pin: "P052380018M",
+  bhfId: "01",
   commercialMessage: "Welcome to our restaurant",
   thankYouMessage: "THANK YOU\nWE LOOK FORWARD TO SERVE YOU AGAIN"
 }
@@ -130,8 +131,8 @@ export async function generateQRCode(data: string): Promise<string> {
   }
 }
 
-// Calculate tax breakdown
-export function calculateTaxBreakdown(items: ReceiptItem[]) {
+// Calculate tax breakdown with discount-responsive calculations
+export function calculateTaxBreakdown(items: ReceiptItem[], discountAmount: number = 0, discountPercentage: number = 0) {
   const breakdown = {
     exempt: { amount: 0, tax: 0 },
     vat16: { amount: 0, tax: 0 },
@@ -140,27 +141,37 @@ export function calculateTaxBreakdown(items: ReceiptItem[]) {
     vat8: { amount: 0, tax: 0 }
   }
 
+  // Calculate total before discount
+  const totalBeforeDiscount = items.reduce((sum, item) => sum + item.total, 0)
+  
+  // Apply discount proportionally to each tax category
   items.forEach(item => {
+    const itemRatio = item.total / totalBeforeDiscount
+    const itemDiscount = discountAmount * itemRatio
+    const discountedAmount = item.total - itemDiscount
+    
     switch (item.tax_type) {
       case 'A-EX':
-        breakdown.exempt.amount += item.total
+        breakdown.exempt.amount += discountedAmount
         breakdown.exempt.tax += 0
         break
       case 'B':
-        breakdown.vat16.amount += item.total
-        breakdown.vat16.tax += item.tax_amount
+        breakdown.vat16.amount += discountedAmount
+        // Calculate tax on discounted amount (16% VAT)
+        breakdown.vat16.tax += discountedAmount * 0.16
         break
       case 'C':
-        breakdown.zeroRated.amount += item.total
+        breakdown.zeroRated.amount += discountedAmount
         breakdown.zeroRated.tax += 0
         break
       case 'D':
-        breakdown.nonVatable.amount += item.total
+        breakdown.nonVatable.amount += discountedAmount
         breakdown.nonVatable.tax += 0
         break
       case 'E':
-        breakdown.vat8.amount += item.total
-        breakdown.vat8.tax += item.tax_amount
+        breakdown.vat8.amount += discountedAmount
+        // Calculate tax on discounted amount (8% VAT)
+        breakdown.vat8.tax += discountedAmount * 0.08
         break
     }
   })
@@ -168,20 +179,23 @@ export function calculateTaxBreakdown(items: ReceiptItem[]) {
   return breakdown
 }
 
-// Generate KRA receipt text
+// Generate KRA receipt text with proper discount handling
 export function generateKRAReceiptText(data: ReceiptRequest): string {
   const { kraData, items, customer, payment_method, total_amount, tax_amount, net_amount, discount_amount = 0, discount_percentage = 0, discount_narration = '' } = data
   
   // Parse KRA date time
   const { date, time } = formatDateTime(kraData.sdcDateTime)
   
-  // Calculate totals
+  // Calculate totals with proper discount handling
   const totalBeforeDiscount = items.reduce((sum, item) => sum + item.total, 0)
   const totalDiscount = discount_amount
   const subtotal = totalBeforeDiscount - totalDiscount
   
-  // Calculate tax breakdown
-  const taxBreakdown = calculateTaxBreakdown(items)
+  // Calculate tax breakdown with discount - this gives us the correct VAT after discount
+  const taxBreakdown = calculateTaxBreakdown(items, discount_amount, discount_percentage)
+  
+  // Use the calculated VAT from tax breakdown instead of the passed tax_amount
+  const correctVATAmount = taxBreakdown.vat16.tax + taxBreakdown.vat8.tax
   
   // Format items for receipt
   const itemsText = items.map(item => {
@@ -201,7 +215,7 @@ EX ${formatCurrency(taxBreakdown.exempt.amount)} ${formatCurrency(taxBreakdown.e
 Non-VAT ${formatCurrency(taxBreakdown.nonVatable.amount)} ${formatCurrency(taxBreakdown.nonVatable.tax)}
 8% ${formatCurrency(taxBreakdown.vat8.amount)} ${formatCurrency(taxBreakdown.vat8.tax)}`
   
-  // Generate receipt text
+  // Generate receipt text matching KRA format exactly
   const receiptText = `
 ${BUSINESS_CONFIG.name}
 ${BUSINESS_CONFIG.address}
@@ -217,7 +231,7 @@ ${discount_narration ? `\nDiscount narration and value: ${discount_percentage}% 
 TOTAL BEFORE DISCOUNT ${formatCurrency(totalBeforeDiscount)}
 ${totalDiscount > 0 ? `TOTAL DISCOUNT AWARDED (${formatCurrency(totalDiscount)})` : ''}
 SUB TOTAL ${formatCurrency(subtotal)}
-VAT ${formatCurrency(tax_amount)}
+VAT ${formatCurrency(correctVATAmount)}
 TOTAL ${formatCurrency(total_amount)}
 --------------------------------------------------
 ${payment_method.toUpperCase()} ${formatCurrency(total_amount)}
@@ -246,8 +260,8 @@ ${BUSINESS_CONFIG.thankYouMessage}
 
 // Generate QR code URL for KRA verification
 export function generateKRAQRCodeURL(kraData: KRAReceiptData): string {
-  const qrData = `${BUSINESS_CONFIG.pin}+${kraData.curRcptNo}+${kraData.rcptSign}`
-  return `https://etims.kra.go.ke/common/link/etims/receipt/indexEtimsReceptData?${encodeURIComponent(qrData)}`
+  const qrData = `${BUSINESS_CONFIG.pin}${BUSINESS_CONFIG.bhfId}${kraData.rcptSign}`
+  return `https://etims-sbx.kra.go.ke/common/link/etims/receipt/indexEtimsReceiptData?Data=${encodeURIComponent(qrData)}`
 }
 
 // Generate receipt filename
@@ -279,7 +293,7 @@ export async function downloadReceiptAsPDF(pdfBlob: Blob, filename: string) {
   return Promise.resolve()
 }
 
-// Generate PDF receipt using jsPDF
+// Generate PDF receipt using jsPDF with exact KRA format
 export async function generatePDFReceipt(data: ReceiptRequest): Promise<Blob> {
   // Check if we're in a browser environment
   if (typeof window === 'undefined') {
@@ -289,10 +303,11 @@ export async function generatePDFReceipt(data: ReceiptRequest): Promise<Blob> {
   // Dynamic import for jsPDF to avoid SSR issues
   const { jsPDF } = await import('jspdf')
   
+  // Use narrow receipt format (80mm width) instead of A4
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
-    format: 'a4'
+    format: [80, 297] // 80mm width, standard receipt length
   })
   
   const { kraData, items, customer, payment_method, total_amount, tax_amount, net_amount, discount_amount = 0, discount_percentage = 0, discount_narration = '' } = data
@@ -300,13 +315,16 @@ export async function generatePDFReceipt(data: ReceiptRequest): Promise<Blob> {
   // Parse KRA date time
   const { date, time } = formatDateTime(kraData.sdcDateTime)
   
-  // Calculate totals
+  // Calculate totals with proper discount handling
   const totalBeforeDiscount = items.reduce((sum, item) => sum + item.total, 0)
   const totalDiscount = discount_amount
   const subtotal = totalBeforeDiscount - totalDiscount
   
-  // Calculate tax breakdown
-  const taxBreakdown = calculateTaxBreakdown(items)
+  // Calculate tax breakdown with discount - this gives us the correct VAT after discount
+  const taxBreakdown = calculateTaxBreakdown(items, discount_amount, discount_percentage)
+  
+  // Use the calculated VAT from tax breakdown instead of the passed tax_amount
+  const correctVATAmount = taxBreakdown.vat16.tax + taxBreakdown.vat8.tax
   
   // Generate QR code
   const qrCodeURL = generateKRAQRCodeURL(kraData)
@@ -314,173 +332,171 @@ export async function generatePDFReceipt(data: ReceiptRequest): Promise<Blob> {
   
   // Set font and styling
   doc.setFont('helvetica')
+  doc.setFontSize(8) // Smaller font for narrow receipt
+  
+  let yPosition = 10
+  
+  // Header - Business Name
   doc.setFontSize(12)
-  
-  let yPosition = 20
-  
-  // Header
-  doc.setFontSize(16)
   doc.setFont('helvetica', 'bold')
-  doc.text(BUSINESS_CONFIG.name, 105, yPosition, { align: 'center' })
-  yPosition += 8
-  
-  doc.setFontSize(12)
-  doc.setFont('helvetica', 'normal')
-  doc.text(BUSINESS_CONFIG.address, 105, yPosition, { align: 'center' })
+  doc.text(BUSINESS_CONFIG.name, 40, yPosition, { align: 'center' })
   yPosition += 6
   
-  doc.text(`PIN: ${BUSINESS_CONFIG.pin}`, 105, yPosition, { align: 'center' })
-  yPosition += 8
+  // Address
+  doc.setFontSize(8)
+  doc.setFont('helvetica', 'normal')
+  doc.text(BUSINESS_CONFIG.address, 40, yPosition, { align: 'center' })
+  yPosition += 5
   
-  // Title
-  doc.setFontSize(14)
+  // PIN
+  doc.text(`PIN: ${BUSINESS_CONFIG.pin}`, 40, yPosition, { align: 'center' })
+  yPosition += 6
+  
+  // TAX INVOICE title
+  doc.setFontSize(10)
   doc.setFont('helvetica', 'bold')
-  doc.text('TAX INVOICE', 105, yPosition, { align: 'center' })
-  yPosition += 8
+  doc.text('TAX INVOICE', 40, yPosition, { align: 'center' })
+  yPosition += 6
   
   // Separator line
-  doc.line(20, yPosition, 190, yPosition)
-  yPosition += 6
+  doc.line(5, yPosition, 75, yPosition)
+  yPosition += 5
   
   // Commercial message
-  doc.setFontSize(10)
+  doc.setFontSize(7)
   doc.setFont('helvetica', 'normal')
-  doc.text(BUSINESS_CONFIG.commercialMessage, 20, yPosition)
-  yPosition += 6
+  doc.text(BUSINESS_CONFIG.commercialMessage, 5, yPosition)
+  yPosition += 5
   
-  // Customer PIN
+  // Buyer PIN
   if (customer.pin) {
-    doc.text(`Buyer PIN: ${customer.pin}`, 20, yPosition)
-    yPosition += 6
+    doc.text(`Buyer PIN: ${customer.pin}`, 5, yPosition)
+    yPosition += 5
   }
   
   // Separator line
-  doc.line(20, yPosition, 190, yPosition)
-  yPosition += 6
+  doc.line(5, yPosition, 75, yPosition)
+  yPosition += 5
   
   // Items
-  doc.setFontSize(10)
+  doc.setFontSize(7)
   items.forEach(item => {
     const itemText = `${item.name}`
     const priceText = `${formatCurrency(item.unit_price)}x ${item.quantity} ${formatCurrency(item.total)}${item.tax_type}`
     
-    doc.text(itemText, 20, yPosition)
-    yPosition += 4
-    doc.text(priceText, 20, yPosition)
-    yPosition += 6
+    doc.text(itemText, 5, yPosition)
+    yPosition += 3
+    doc.text(priceText, 5, yPosition)
+    yPosition += 5
   })
   
   // Discount
   if (discount_narration) {
-    doc.text(`Discount narration and value: ${discount_percentage}% (${formatCurrency(totalDiscount)})`, 20, yPosition)
-    yPosition += 6
-  }
-  
-  // Separator line
-  doc.line(20, yPosition, 190, yPosition)
-  yPosition += 6
-  
-  // Totals
-  doc.text(`TOTAL BEFORE DISCOUNT ${formatCurrency(totalBeforeDiscount)}`, 20, yPosition)
-  yPosition += 5
-  
-  if (totalDiscount > 0) {
-    doc.text(`TOTAL DISCOUNT AWARDED (${formatCurrency(totalDiscount)})`, 20, yPosition)
+    doc.text(`Discount: ${discount_percentage}% (${formatCurrency(totalDiscount)})`, 5, yPosition)
     yPosition += 5
   }
   
-  doc.text(`SUB TOTAL ${formatCurrency(subtotal)}`, 20, yPosition)
+  // Separator line
+  doc.line(5, yPosition, 75, yPosition)
   yPosition += 5
-  doc.text(`VAT ${formatCurrency(tax_amount)}`, 20, yPosition)
+  
+  // Totals section
+  doc.text(`TOTAL BEFORE DISCOUNT ${formatCurrency(totalBeforeDiscount)}`, 5, yPosition)
+  yPosition += 4
+  
+  if (totalDiscount > 0) {
+    doc.text(`DISCOUNT (${formatCurrency(totalDiscount)})`, 5, yPosition)
+    yPosition += 4
+  }
+  
+  doc.text(`SUB TOTAL ${formatCurrency(subtotal)}`, 5, yPosition)
+  yPosition += 4
+  doc.text(`VAT ${formatCurrency(correctVATAmount)}`, 5, yPosition)
+  yPosition += 4
+  doc.text(`TOTAL ${formatCurrency(total_amount)}`, 5, yPosition)
   yPosition += 5
-  doc.text(`TOTAL ${formatCurrency(total_amount)}`, 20, yPosition)
-  yPosition += 6
   
   // Separator line
-  doc.line(20, yPosition, 190, yPosition)
-  yPosition += 6
-  
-  // Payment method
-  doc.text(`${payment_method.toUpperCase()} ${formatCurrency(total_amount)}`, 20, yPosition)
+  doc.line(5, yPosition, 75, yPosition)
   yPosition += 5
-  doc.text(`ITEMS NUMBER ${items.length}`, 20, yPosition)
-  yPosition += 6
+  
+  // Payment method and items count
+  doc.text(`${payment_method.toUpperCase()} ${formatCurrency(total_amount)}`, 5, yPosition)
+  yPosition += 4
+  doc.text(`ITEMS: ${items.length}`, 5, yPosition)
+  yPosition += 5
   
   // Separator line
-  doc.line(20, yPosition, 190, yPosition)
-  yPosition += 6
+  doc.line(5, yPosition, 75, yPosition)
+  yPosition += 5
   
-  // Tax breakdown table
-  doc.setFontSize(9)
-  doc.text('Rate Taxable Amount VAT', 20, yPosition)
-  yPosition += 4
-  doc.text(`EX ${formatCurrency(taxBreakdown.exempt.amount)} ${formatCurrency(taxBreakdown.exempt.tax)}`, 20, yPosition)
-  yPosition += 4
-  doc.text(`16% ${formatCurrency(taxBreakdown.vat16.amount)} ${formatCurrency(taxBreakdown.vat16.tax)}`, 20, yPosition)
-  yPosition += 4
-  doc.text(`0% ${formatCurrency(taxBreakdown.zeroRated.amount)} ${formatCurrency(taxBreakdown.zeroRated.tax)}`, 20, yPosition)
-  yPosition += 4
-  doc.text(`Non-VAT ${formatCurrency(taxBreakdown.nonVatable.amount)} ${formatCurrency(taxBreakdown.nonVatable.tax)}`, 20, yPosition)
-  yPosition += 4
-  doc.text(`8% ${formatCurrency(taxBreakdown.vat8.amount)} ${formatCurrency(taxBreakdown.vat8.tax)}`, 20, yPosition)
-  yPosition += 6
+  // Tax breakdown table (simplified for narrow format)
+  doc.setFontSize(6)
+  doc.text('Rate Amount VAT', 5, yPosition)
+  yPosition += 3
+  doc.text(`16% ${formatCurrency(taxBreakdown.vat16.amount)} ${formatCurrency(taxBreakdown.vat16.tax)}`, 5, yPosition)
+  yPosition += 3
+  doc.text(`8% ${formatCurrency(taxBreakdown.vat8.amount)} ${formatCurrency(taxBreakdown.vat8.tax)}`, 5, yPosition)
+  yPosition += 3
+  doc.text(`EX ${formatCurrency(taxBreakdown.exempt.amount)} ${formatCurrency(taxBreakdown.exempt.tax)}`, 5, yPosition)
+  yPosition += 5
   
   // Separator line
-  doc.line(20, yPosition, 190, yPosition)
-  yPosition += 6
+  doc.line(5, yPosition, 75, yPosition)
+  yPosition += 5
   
-  // SCU Information
-  doc.setFontSize(10)
+  // SCU INFORMATION
+  doc.setFontSize(7)
   doc.setFont('helvetica', 'bold')
-  doc.text('SCU INFORMATION', 20, yPosition)
-  yPosition += 5
+  doc.text('SCU INFORMATION', 5, yPosition)
+  yPosition += 4
   
   doc.setFont('helvetica', 'normal')
-  doc.text(`Date: ${date} Time: ${time}`, 20, yPosition)
-  yPosition += 4
-  doc.text(`SCU ID: ${kraData.curRcptNo}`, 20, yPosition)
-  yPosition += 4
-  doc.text(`CU INVOICE NO.: ${kraData.curRcptNo}/${kraData.invcNo}`, 20, yPosition)
-  yPosition += 4
-  doc.text('Internal Data:', 20, yPosition)
-  yPosition += 4
-  doc.text(kraData.intrlData, 20, yPosition)
-  yPosition += 4
-  doc.text('Receipt Signature:', 20, yPosition)
-  yPosition += 4
-  doc.text(kraData.rcptSign, 20, yPosition)
-  yPosition += 6
-  
-  // Separator line
-  doc.line(20, yPosition, 190, yPosition)
-  yPosition += 6
-  
-  // TIS Information
-  doc.setFont('helvetica', 'bold')
-  doc.text('TIS INFORMATION', 20, yPosition)
+  doc.text(`Date: ${date} Time: ${time}`, 5, yPosition)
+  yPosition += 3
+  doc.text(`SCU ID: ${kraData.curRcptNo}`, 5, yPosition)
+  yPosition += 3
+  doc.text(`Invoice: ${kraData.curRcptNo}/${kraData.invcNo}`, 5, yPosition)
+  yPosition += 3
+  doc.text('Internal Data:', 5, yPosition)
+  yPosition += 3
+  doc.text(kraData.intrlData.substring(0, 30) + '...', 5, yPosition) // Truncate for narrow format
+  yPosition += 3
+  doc.text('Signature:', 5, yPosition)
+  yPosition += 3
+  doc.text(kraData.rcptSign.substring(0, 30) + '...', 5, yPosition) // Truncate for narrow format
   yPosition += 5
   
-  doc.setFont('helvetica', 'normal')
-  doc.text(`RECEIPT NUMBER: ${kraData.totRcptNo}`, 20, yPosition)
+  // Separator line
+  doc.line(5, yPosition, 75, yPosition)
+  yPosition += 5
+  
+  // TIS INFORMATION
+  doc.setFont('helvetica', 'bold')
+  doc.text('TIS INFORMATION', 5, yPosition)
   yPosition += 4
-  doc.text(`DATE: ${date} TIME: ${time}`, 20, yPosition)
-  yPosition += 6
+  
+  doc.setFont('helvetica', 'normal')
+  doc.text(`RECEIPT: ${kraData.totRcptNo}`, 5, yPosition)
+  yPosition += 3
+  doc.text(`DATE: ${date} TIME: ${time}`, 5, yPosition)
+  yPosition += 5
   
   // Separator line
-  doc.line(20, yPosition, 190, yPosition)
-  yPosition += 6
+  doc.line(5, yPosition, 75, yPosition)
+  yPosition += 5
   
   // Thank you message
-  doc.setFontSize(10)
-  doc.text(BUSINESS_CONFIG.thankYouMessage, 105, yPosition, { align: 'center' })
-  yPosition += 10
+  doc.setFontSize(8)
+  doc.text(BUSINESS_CONFIG.thankYouMessage, 40, yPosition, { align: 'center' })
+  yPosition += 8
   
-  // QR Code (if space allows)
+  // QR Code (smaller for narrow format)
   if (qrCodeDataUrl && yPosition < 250) {
     try {
-      doc.addImage(qrCodeDataUrl, 'PNG', 150, yPosition, 30, 30)
-      doc.setFontSize(8)
-      doc.text('Scan to verify', 165, yPosition + 35, { align: 'center' })
+      doc.addImage(qrCodeDataUrl, 'PNG', 55, yPosition, 20, 20)
+      doc.setFontSize(6)
+      doc.text('Scan to verify', 40, yPosition + 25, { align: 'center' })
     } catch (error) {
       console.error('Error adding QR code to PDF:', error)
     }

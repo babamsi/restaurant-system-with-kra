@@ -34,6 +34,7 @@ import { tableOrdersService } from "@/lib/database"
 import Image from "next/image"
 import { QRCode } from "@/components/ui/qr-code"
 import { generateAndDownloadReceipt, type ReceiptRequest } from '@/lib/receipt-utils'
+import { Label } from "@/components/ui/label"
 
 interface TableState {
   id: number
@@ -160,28 +161,196 @@ export function CorrectedPOSSystem() {
   // KRA eTIMS: Print/display KRA receipt info
   const [kraReceipt, setKraReceipt] = useState<any>(null)
 
+  // Discount System State
+  const [showDiscountDialog, setShowDiscountDialog] = useState(false)
+  const [discountType, setDiscountType] = useState<'percentage' | 'fixed' | 'bogo' | 'custom'>('percentage')
+  const [discountValue, setDiscountValue] = useState('')
+  const [discountReason, setDiscountReason] = useState('')
+  const [appliedDiscount, setAppliedDiscount] = useState<{
+    type: 'percentage' | 'fixed' | 'bogo' | 'custom'
+    value: number
+    reason: string
+    amount: number
+  } | null>(null)
+  const [bogoItems, setBogoItems] = useState<{ itemId: string; originalPrice: number; discountedPrice: number }[]>([])
+
   // Add these helpers inside the component, after your useState hooks:
   const TAX_RATE = 0.16;
   const TAX_FACTOR = TAX_RATE / (1 + TAX_RATE);
 
+  // Utility functions for database storage (convert to/from integers for int2 column)
+  const convertToInt = (amount: number): number => {
+    return Math.floor(amount); // Store as integer, truncating decimal part
+  };
+
+  const convertFromInt = (intValue: number): number => {
+    return intValue; // Return as is since we're storing integers
+  };
+
+  // Helper function to safely get discount amount from database
+  const getDiscountAmountFromDB = (order: any): number => {
+    if (!order.discount_amount) return 0;
+    return order.discount_amount; // Return as is since column will be decimal
+  };
+
+  // Tax Calculation Functions - Updated to be responsive to discounts
   function calcCartSubtotal() {
     return cart.reduce((sum, item) => sum + (item.unit_price * item.quantity) / (1 + TAX_RATE), 0);
   }
+  
   function calcCartTax() {
     return cart.reduce((sum, item) => sum + (item.unit_price * item.quantity) * TAX_RATE / (1 + TAX_RATE), 0);
   }
+  
   function calcCartTotal() {
     return cart.reduce((sum, item) => sum + (item.unit_price * item.quantity), 0);
+  }
+
+  // New functions for discount-responsive tax calculations
+  function getDiscountedSubtotal(): number {
+    const subtotal = calcCartSubtotal();
+    if (!appliedDiscount) return subtotal;
+    
+    const discountAmount = calculateDiscountAmount(subtotal, appliedDiscount.type, appliedDiscount.value);
+    return Math.max(0, subtotal - discountAmount);
+  }
+  
+  function getDiscountedTax(): number {
+    const discountedSubtotal = getDiscountedSubtotal();
+    return discountedSubtotal * TAX_RATE;
+  }
+  
+  function getFinalTotal(): number {
+    const discountedSubtotal = getDiscountedSubtotal();
+    const discountedTax = getDiscountedTax();
+    return discountedSubtotal + discountedTax;
   }
 
   function calcOrderSubtotal(items: any[]) {
     return items.reduce((sum: number, item: any) => sum + (item.unit_price * item.quantity) / (1 + TAX_RATE), 0);
   }
+  
   function calcOrderTax(items: any[]) {
     return items.reduce((sum: number, item: any) => sum + (item.unit_price * item.quantity) * TAX_RATE / (1 + TAX_RATE), 0);
   }
+  
   function calcOrderTotal(items: any[]) {
     return items.reduce((sum: number, item: any) => sum + (item.unit_price * item.quantity), 0);
+  }
+
+  // New functions for order items with discount-responsive tax
+  function getDiscountedOrderSubtotal(items: any[]): number {
+    const subtotal = calcOrderSubtotal(items);
+    if (!appliedDiscount) return subtotal;
+    
+    const discountAmount = calculateDiscountAmount(subtotal, appliedDiscount.type, appliedDiscount.value);
+    return Math.max(0, subtotal - discountAmount);
+  }
+  
+  function getDiscountedOrderTax(items: any[]): number {
+    const discountedSubtotal = getDiscountedOrderSubtotal(items);
+    return discountedSubtotal * TAX_RATE;
+  }
+  
+  function getDiscountedOrderTotal(items: any[]): number {
+    const discountedSubtotal = getDiscountedOrderSubtotal(items);
+    const discountedTax = getDiscountedOrderTax(items);
+    return discountedSubtotal + discountedTax;
+  }
+
+  // Discount Calculation Functions
+  function calculateDiscountAmount(subtotal: number, discountType: string, discountValue: number): number {
+    switch (discountType) {
+      case 'percentage':
+        return (subtotal * discountValue) / 100
+      case 'fixed':
+        return Math.min(discountValue, subtotal) // Don't discount more than subtotal
+      case 'bogo':
+        return calculateBogoDiscount()
+      case 'custom':
+        return Math.min(discountValue, subtotal)
+      default:
+        return 0
+    }
+  }
+
+  function calculateBogoDiscount(): number {
+    if (bogoItems.length === 0) {
+      // Calculate BOGO discount on the fly if not already calculated
+      const itemGroups = cart.reduce((groups: Record<string, CartItem[]>, item) => {
+        const key = item.name
+        if (!groups[key]) groups[key] = []
+        groups[key].push(item)
+        return groups
+      }, {})
+
+      let totalDiscount = 0
+      Object.values(itemGroups).forEach(group => {
+        const totalQuantity = group.reduce((sum, item) => sum + item.quantity, 0)
+        const pairs = Math.floor(totalQuantity / 2)
+        
+        if (pairs > 0) {
+          const item = group[0]
+          const originalPrice = item.unit_price
+          const discountedPrice = originalPrice / 2
+          totalDiscount += (originalPrice - discountedPrice) * pairs * 2
+        }
+      })
+      
+      return totalDiscount
+    }
+    
+    return bogoItems.reduce((total, bogoItem) => {
+      return total + (bogoItem.originalPrice - bogoItem.discountedPrice)
+    }, 0)
+  }
+
+  function applyBogoDiscount(): void {
+    const newBogoItems: { itemId: string; originalPrice: number; discountedPrice: number }[] = []
+    
+    // Group items by name to find pairs for BOGO
+    const itemGroups = cart.reduce((groups: Record<string, CartItem[]>, item) => {
+      const key = item.name
+      if (!groups[key]) groups[key] = []
+      groups[key].push(item)
+      return groups
+    }, {})
+
+    // Apply BOGO to each group
+    Object.values(itemGroups).forEach(group => {
+      const totalQuantity = group.reduce((sum, item) => sum + item.quantity, 0)
+      const pairs = Math.floor(totalQuantity / 2)
+      
+      if (pairs > 0) {
+        const item = group[0]
+        const originalPrice = item.unit_price
+        const discountedPrice = originalPrice / 2 // Half price for BOGO
+        
+        newBogoItems.push({
+          itemId: item.id,
+          originalPrice: originalPrice * pairs * 2, // Full price for all items
+          discountedPrice: discountedPrice * pairs * 2 // Half price for all items
+        })
+      }
+    })
+
+    setBogoItems(newBogoItems)
+  }
+
+  function getDiscountedCartTotal(): number {
+    return getFinalTotal()
+  }
+
+  function getDiscountAmount(): number {
+    if (!appliedDiscount) return 0
+    const subtotal = calcCartSubtotal()
+    return calculateDiscountAmount(subtotal, appliedDiscount.type, appliedDiscount.value)
+  }
+
+  function getDiscountedOrderTotal(items: any[]): number {
+    const discountedSubtotal = getDiscountedOrderSubtotal(items);
+    const discountedTax = getDiscountedOrderTax(items);
+    return discountedSubtotal + discountedTax;
   }
 
   useEffect(() => {
@@ -509,6 +678,10 @@ export function CorrectedPOSSystem() {
       const taxAmount = 0 // No extra tax
       const totalAmount = subtotal // No extra tax added
 
+      // Apply discount if present
+      const finalTotalAmount = appliedDiscount ? getFinalTotal() : totalAmount
+      const discountAmount = appliedDiscount ? getDiscountAmount() : 0
+
       const isTakeAway = selectedTable.id === 0
     if (editingOrderId) {
         // Adding items to existing order
@@ -534,7 +707,10 @@ export function CorrectedPOSSystem() {
           subtotal,
           tax_rate: taxRate,
           tax_amount: taxAmount,
-          total_amount: totalAmount,
+          total_amount: finalTotalAmount,
+          discount_amount: Number(discountAmount.toFixed(2)),
+          discount_type: appliedDiscount?.type || null,
+          // discount_reason: appliedDiscount?.reason || null,
           items: cartItems,
           session_id: sessionId
         })
@@ -928,6 +1104,12 @@ export function CorrectedPOSSystem() {
           orderTotal,
           orderTax,
           orderNet,
+          // Add discount information
+          discount: {
+            amount: getDiscountAmountFromDB(order),
+            type: order.discount_type || null,
+            // reason: order.discount_reason || null
+          }
         }),
       })
       const kraData = await kraRes.json()
@@ -961,6 +1143,9 @@ export function CorrectedPOSSystem() {
           gross_amount: orderTotal,
           net_amount: orderNet,
           tax_amount: orderTax,
+          discount_amount: getDiscountAmountFromDB(order) || 0,
+          discount_type: order.discount_type || null,
+          // discount_reason: order.discount_reason || null,
           kra_status: 'error',
           kra_error: kraData.error || kraData.kraData?.resultMsg || 'KRA push failed',
           created_at: new Date().toISOString(),
@@ -981,6 +1166,9 @@ export function CorrectedPOSSystem() {
           gross_amount: orderTotal,
           net_amount: orderNet,
           tax_amount: orderTax,
+          discount_amount: getDiscountAmountFromDB(order) || 0,
+          discount_type: order.discount_type || null,
+          // discount_reason: order.discount_reason || null,
           kra_curRcptNo: curRcptNo,
           kra_totRcptNo: totRcptNo,
           kra_intrlData: intrlData,
@@ -1045,9 +1233,9 @@ export function CorrectedPOSSystem() {
             net_amount: orderNet,
             order_id: order.id,
             // Add discount information if applicable
-            discount_amount: 0, // You can calculate this based on your discount logic
-            discount_percentage: 0,
-            discount_narration: ''
+            discount_amount: getDiscountAmountFromDB(order) || 0,
+            discount_percentage: order.discount_type === 'percentage' ? getDiscountAmountFromDB(order) : 0,
+            discount_narration: getDiscountAmountFromDB(order) > 0 ? `${order.discount_type === 'percentage' ? getDiscountAmountFromDB(order) : 'Fixed'} discount` : undefined
           }
 
           // Generate and download KRA receipt as PDF
@@ -1756,6 +1944,82 @@ export function CorrectedPOSSystem() {
     }
   }
 
+  // Discount Application Handlers
+  const handleApplyDiscount = () => {
+    // For BOGO, we don't need to validate discountValue
+    if (discountType !== 'bogo' && (!discountValue || parseFloat(discountValue) <= 0)) {
+      toast({
+        title: "Invalid Discount",
+        description: "Please enter a valid discount value",
+        variant: "destructive"
+      })
+      return
+    }
+
+    const value = discountType === 'bogo' ? 0 : parseFloat(discountValue)
+    const subtotal = calcCartTotal()
+
+    // Validate discount value for non-BOGO types
+    if (discountType === 'percentage' && (value <= 0 || value > 100)) {
+      toast({
+        title: "Invalid Percentage",
+        description: "Percentage must be between 0 and 100",
+        variant: "destructive"
+      })
+      return
+    }
+
+    if (discountType === 'fixed' && value > subtotal) {
+      toast({
+        title: "Invalid Fixed Amount",
+        description: "Fixed discount cannot exceed order total",
+        variant: "destructive"
+      })
+      return
+    }
+
+    // Apply BOGO discount logic
+    if (discountType === 'bogo') {
+      applyBogoDiscount()
+    }
+
+    const discountAmount = calculateDiscountAmount(subtotal, discountType, value)
+    
+    setAppliedDiscount({
+      type: discountType,
+      value: value,
+      reason: discountReason || `${discountType === 'percentage' ? value + '%' : discountType === 'bogo' ? 'BOGO' : 'Ksh ' + value} discount`,
+      amount: discountAmount
+    })
+
+    setShowDiscountDialog(false)
+    setDiscountValue('')
+    setDiscountReason('')
+
+    toast({
+      title: "Discount Applied",
+      description: `${discountType === 'percentage' ? value + '%' : discountType === 'bogo' ? 'BOGO' : 'Ksh ' + value} discount applied`,
+    })
+  }
+
+  const handleRemoveDiscount = () => {
+    setAppliedDiscount(null)
+    setBogoItems([])
+    setDiscountValue('')
+    setDiscountReason('')
+    setDiscountType('percentage')
+    toast({
+      title: "Discount Removed",
+      description: "Discount has been removed from the order",
+    })
+  }
+
+  const handleClearDiscountForm = () => {
+    setDiscountValue('')
+    setDiscountReason('')
+    setDiscountType('percentage')
+  }
+
   return (
     <div className="h-screen flex flex-col bg-background overflow-hidden">
       <div className="flex-shrink-0 border-b border-border bg-card/50 backdrop-blur-sm">
@@ -2030,12 +2294,18 @@ export function CorrectedPOSSystem() {
                     </div>
                     <div className="flex justify-between text-xs text-muted-foreground">
                       <span>Subtotal (before tax):</span>
-                      <span>Ksh {calcCartSubtotal().toFixed(2)}</span>
+                      <span>Ksh {getDiscountedOrderSubtotal(order.items).toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between text-xs text-muted-foreground">
                       <span>Tax (16% VAT):</span>
-                      <span>Ksh {calcCartTax().toFixed(2)}</span>
+                      <span>Ksh {getDiscountedTax().toFixed(2)}</span>
                     </div>
+                    {getDiscountAmountFromDB(order) > 0 && (
+                      <div className="flex justify-between text-xs text-green-600">
+                        <span>Discount ({order.discount_type || 'fixed'}):</span>
+                        <span>-Ksh {getDiscountAmountFromDB(order).toFixed(2)}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))
@@ -2302,15 +2572,21 @@ export function CorrectedPOSSystem() {
                   
                   <div className="flex justify-between text-xs text-muted-foreground">
                     <span>Subtotal (before tax):</span>
-                    <span>Ksh {calcCartSubtotal().toFixed(2)}</span>
+                    <span>Ksh {getDiscountedSubtotal().toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between text-xs text-muted-foreground">
                     <span>Tax (16% VAT):</span>
-                    <span>Ksh {calcCartTax().toFixed(2)}</span>
+                    <span>Ksh {getDiscountedTax().toFixed(2)}</span>
                   </div>
+                  {appliedDiscount && (
+                    <div className="flex justify-between text-xs text-green-600 dark:text-green-400">
+                      <span>Discount ({appliedDiscount.type === 'percentage' ? appliedDiscount.value + '%' : 'Fixed'}):</span>
+                      <span>-Ksh {getDiscountAmount().toFixed(2)}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between font-semibold">
                   <span>Total:</span>
-                    <span>Ksh {(calcCartTotal() + existingOrderItems.reduce((sum, item) => sum + item.total_price, 0)).toFixed(2)}</span>
+                    <span>Ksh {(getFinalTotal() + existingOrderItems.reduce((sum, item) => sum + item.total_price, 0)).toFixed(2)}</span>
                 </div>
                 <div className="mb-2">
   <Button variant="outline" onClick={() => setShowCustomerDialog(true)} className="w-full">
@@ -2322,6 +2598,60 @@ export function CorrectedPOSSystem() {
     <span className="font-semibold">Customer:</span> {selectedCustomer.name} (<span className="font-mono">{selectedCustomer.kra_pin}</span>)
   </div>
 )}
+                  {/* Discount Section */}
+                  <div className="mb-2">
+                    {appliedDiscount ? (
+                      <div className="bg-green-50 dark:bg-green-950/20 p-3 rounded-lg border border-green-200 dark:border-green-800">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-sm font-medium text-green-800 dark:text-green-200">
+                            Discount Applied
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 px-2 text-xs text-red-600 hover:text-red-700"
+                            onClick={handleRemoveDiscount}
+                          >
+                            Remove
+                          </Button>
+                        </div>
+                        <div className="text-xs text-green-700 dark:text-green-300">
+                          <div className="flex justify-between">
+                            <span>Type:</span>
+                            <span className="font-medium capitalize">{appliedDiscount.type}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span>Value:</span>
+                            <span className="font-medium">
+                              {appliedDiscount.type === 'percentage' 
+                                ? appliedDiscount.value + '%' 
+                                : 'Ksh ' + appliedDiscount.value.toFixed(2)
+                              }
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span>Amount:</span>
+                            <span className="font-medium">-Ksh {appliedDiscount.amount.toFixed(2)}</span>
+                          </div>
+                          {appliedDiscount.reason && (
+                            <div className="mt-1 text-xs italic">
+                              Reason: {appliedDiscount.reason}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <Button 
+                        variant="outline" 
+                        onClick={() => setShowDiscountDialog(true)} 
+                        className="w-full"
+                        disabled={cart.length === 0 && existingOrderItems.length === 0}
+                      >
+                        <Minus className="h-4 w-4 mr-2" />
+                        Apply Discount
+                      </Button>
+                    )}
+                  </div>
                   <Button className="w-full" size="lg" onClick={handlePlaceOrder} disabled={placingOrder}>
                     {placingOrder ? (
                       <span className="flex items-center justify-center"><span className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary mr-2"></span>Placing...</span>
@@ -2441,8 +2771,14 @@ export function CorrectedPOSSystem() {
                     </div>
                     <div className="flex justify-between text-xs text-muted-foreground">
                       <span>Tax (16% VAT):</span>
-                      <span>Ksh {calcOrderTax(order.items).toFixed(2)}</span>
+                      <span>Ksh {getDiscountedOrderTax(order.items).toFixed(2)}</span>
                     </div>
+                    {getDiscountAmountFromDB(order) > 0 && (
+                      <div className="flex justify-between text-xs text-green-600">
+                        <span>Discount ({order.discount_type || 'fixed'}):</span>
+                        <span>-Ksh {getDiscountAmountFromDB(order).toFixed(2)}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))
@@ -2905,6 +3241,155 @@ export function CorrectedPOSSystem() {
             <Input placeholder="KRA PIN" value={newCustomerPin} onChange={e => setNewCustomerPin(e.target.value)} className="mb-2" />
             <Button onClick={handleAddCustomer} disabled={customerLoading}>Add Customer</Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Discount Dialog */}
+      <Dialog open={showDiscountDialog} onOpenChange={setShowDiscountDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Apply Discount</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            {/* Discount Type Selection */}
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Discount Type</Label>
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  variant={discountType === 'percentage' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setDiscountType('percentage')}
+                  className="h-10"
+                >
+                  Percentage
+                </Button>
+                <Button
+                  variant={discountType === 'fixed' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setDiscountType('fixed')}
+                  className="h-10"
+                >
+                  Fixed Amount
+                </Button>
+                <Button
+                  variant={discountType === 'bogo' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setDiscountType('bogo')}
+                  className="h-10"
+                >
+                  BOGO
+                </Button>
+                <Button
+                  variant={discountType === 'custom' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setDiscountType('custom')}
+                  className="h-10"
+                >
+                  Custom
+                </Button>
+              </div>
+            </div>
+
+            {/* Discount Value Input */}
+            {discountType !== 'bogo' && (
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">
+                  {discountType === 'percentage' ? 'Percentage (%)' : 
+                   discountType === 'fixed' ? 'Fixed Amount (Ksh)' : 
+                   'Custom Amount (Ksh)'}
+                </Label>
+                <Input
+                  type="number"
+                  placeholder={discountType === 'percentage' ? 'e.g., 10' : 'e.g., 500'}
+                  value={discountValue}
+                  onChange={(e) => setDiscountValue(e.target.value)}
+                  min="0"
+                  max={discountType === 'percentage' ? "100" : undefined}
+                  step={discountType === 'percentage' ? "1" : "0.01"}
+                />
+              </div>
+            )}
+
+            {/* BOGO Information */}
+            {discountType === 'bogo' && (
+              <div className="p-3 bg-blue-50 dark:bg-blue-950/20 rounded-lg border border-blue-200 dark:border-blue-800">
+                <div className="flex items-start gap-2">
+                  <div className="w-2 h-2 bg-blue-500 rounded-full mt-2 flex-shrink-0"></div>
+                  <div className="text-sm text-blue-800 dark:text-blue-200">
+                    <p className="font-medium mb-1">Buy One Get One Free</p>
+                    <p className="text-xs">
+                      Automatically applies 50% discount to pairs of identical items in your cart.
+                      Items will be grouped and discounted accordingly.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Discount Preview */}
+            {discountValue && discountType !== 'bogo' && (
+              <div className="p-3 bg-muted rounded-lg">
+                <div className="text-sm space-y-1">
+                  <div className="flex justify-between">
+                    <span>Subtotal:</span>
+                    <span>Ksh {calcCartTotal().toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between text-green-600">
+                    <span>Discount:</span>
+                    <span>-Ksh {calculateDiscountAmount(calcCartTotal(), discountType, parseFloat(discountValue)).toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between font-medium border-t pt-1">
+                    <span>New Total:</span>
+                    <span>Ksh {(calcCartTotal() - calculateDiscountAmount(calcCartTotal(), discountType, parseFloat(discountValue))).toFixed(2)}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* BOGO Preview */}
+            {discountType === 'bogo' && cart.length > 0 && (
+              <div className="p-3 bg-muted rounded-lg">
+                <div className="text-sm space-y-1">
+                  <div className="flex justify-between">
+                    <span>Subtotal:</span>
+                    <span>Ksh {calcCartTotal().toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between text-green-600">
+                    <span>BOGO Savings:</span>
+                    <span>-Ksh {calculateBogoDiscount().toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between font-medium border-t pt-1">
+                    <span>New Total:</span>
+                    <span>Ksh {(calcCartTotal() - calculateBogoDiscount()).toFixed(2)}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Discount Reason */}
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Reason (Optional)</Label>
+              <Input
+                placeholder="e.g., Loyalty discount, Special offer..."
+                value={discountReason}
+                onChange={(e) => setDiscountReason(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={handleClearDiscountForm}>
+              Clear
+            </Button>
+            <Button variant="ghost" onClick={() => setShowDiscountDialog(false)}>
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleApplyDiscount}
+              disabled={discountType !== 'bogo' && !discountValue}
+            >
+              Apply Discount
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
       </div>

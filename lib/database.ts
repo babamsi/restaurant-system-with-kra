@@ -1213,6 +1213,8 @@ export const tableOrdersService = {
     tax_rate = 0,
     tax_amount = 0,
     total_amount = 0,
+    discount_amount = 0,
+    discount_type = null,
     special_instructions,
     notes,
     items,
@@ -1226,6 +1228,8 @@ export const tableOrdersService = {
     tax_rate?: number;
     tax_amount?: number;
     total_amount?: number;
+    discount_amount?: number;
+    discount_type?: string | null;
     special_instructions?: string;
     notes?: string;
     items: Array<{
@@ -1260,6 +1264,8 @@ export const tableOrdersService = {
           tax_rate,
           tax_amount,
           total_amount,
+          discount_amount,
+          discount_type,
           special_instructions,
           notes,
           session_id
@@ -1423,12 +1429,26 @@ export const tableOrdersService = {
       const taxAmount = newSubtotal * 0.16; // 16% tax rate
       const totalAmount = newSubtotal + taxAmount;
 
+      // Get current discount info
+      const { data: order, error: orderError } = await supabase
+        .from('table_orders')
+        .select('discount_amount, discount_type')
+        .eq('id', order_id)
+        .single();
+      
+      if (orderError) {
+        throw new Error(orderError.message || 'Failed to get order discount info');
+      }
+      
+      // Apply discount if present
+      const finalTotalAmount = order?.discount_amount ? totalAmount - order.discount_amount : totalAmount;
+
       const { data, error: updateError } = await supabase
         .from('table_orders')
         .update({
           subtotal: newSubtotal,
           tax_amount: taxAmount,
-          total_amount: totalAmount
+          total_amount: finalTotalAmount
         })
         .eq('id', order_id)
         .select()
@@ -1488,14 +1508,28 @@ export const tableOrdersService = {
     const subtotal = items?.reduce((sum, item) => sum + item.total_price, 0) || 0
     const taxAmount = subtotal * 0.16
     const totalAmount = subtotal + taxAmount
+    
+    // Get current discount info
+    const { data: order, error: orderError } = await supabase
+      .from('table_orders')
+      .select('discount_amount, discount_type')
+      .eq('id', order_id)
+      .single()
+    
+    if (orderError) return { error: orderError.message }
+    
+    // Apply discount if present
+    const finalTotalAmount = order?.discount_amount ? totalAmount - order.discount_amount : totalAmount
+    
     const { error: updateError } = await supabase
       .from('table_orders')
       .update({
         subtotal,
         tax_amount: taxAmount,
-        total_amount: totalAmount
+        total_amount: finalTotalAmount
       })
       .eq('id', order_id)
+    
     return { error: updateError?.message || null }
   },
 

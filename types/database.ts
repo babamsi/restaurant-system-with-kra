@@ -493,6 +493,9 @@ export interface TableOrder {
   tax_rate: number;
   tax_amount: number;
   total_amount: number;
+  discount_amount: number;
+  discount_type?: string;
+  discount_reason?: string;
   status: 'pending' | 'preparing' | 'ready' | 'completed' | 'cancelled' | 'paid';
   payment_method?: string;
   payment_date?: string;
@@ -514,6 +517,9 @@ export interface CreateTableOrderInput {
   tax_rate?: number;
   tax_amount?: number;
   total_amount?: number;
+  discount_amount?: number;
+  discount_type?: string;
+  discount_reason?: string;
   status?: 'pending' | 'preparing' | 'ready' | 'completed' | 'cancelled' | 'paid';
   payment_method?: string;
   payment_date?: string;

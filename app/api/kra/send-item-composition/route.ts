@@ -66,7 +66,7 @@ async function registerIngredientIfNeeded(ingredient: any) {
         id: ingredientData.id,
         name: ingredientData.name,
         price: ingredientData.cost_per_unit || 0,
-        description: ingredientData.description || ingredientData.name,
+        // description: ingredientData.description || ingredientData.name,
         itemCd: ingredientData.itemCd,
         unit: ingredientData.unit,
         category: ingredientData.category,

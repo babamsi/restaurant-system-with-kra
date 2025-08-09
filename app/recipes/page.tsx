@@ -61,6 +61,7 @@ export default function RecipesPage() {
   const [showRecipeDetails, setShowRecipeDetails] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [recipeToEdit, setRecipeToEdit] = useState<any>(null);
+  const [inventoryIngredients, setInventoryIngredients] = useState<any[]>([]);
 
   // Filter recipes based on search and filters
   const filteredRecipes = recipes.filter(recipe => {
@@ -92,6 +93,32 @@ export default function RecipesPage() {
     }
     fetchOptions();
   }, []);
+
+  // Fetch inventory ingredients for direct sales
+  const fetchInventoryIngredients = async () => {
+    try {
+      const { data: ingredients } = await supabase
+        .from("ingredients")
+        .select(`
+          id, 
+          name, 
+          category, 
+          unit, 
+          cost_per_unit, 
+          current_stock,
+          itemCd,
+          itemClsCd,
+          taxTyCd
+        `)
+        .not('itemCd', 'is', null)
+        .not('itemClsCd', 'is', null)
+        .gt('current_stock', 0);
+
+      setInventoryIngredients(ingredients || []);
+    } catch (error) {
+      console.error("Error fetching inventory ingredients:", error);
+    }
+  };
 
   // Fetch all recipes and their components
   const fetchRecipes = async () => {
@@ -130,6 +157,7 @@ export default function RecipesPage() {
 
   useEffect(() => {
     fetchRecipes();
+    fetchInventoryIngredients();
   }, []);
 
   // Register recipe with KRA
@@ -257,7 +285,13 @@ export default function RecipesPage() {
             description: data.description, 
             restaurant: data.restaurant,
             price: data.price, 
-            category: data.category 
+            category: data.category,
+            recipeType: data.recipeType,
+            // Store KRA codes directly in recipes table for inventory-based recipes
+            itemCd: data.recipeType === "inventory" && data.selectedInventoryItem ? data.selectedInventoryItem.itemCd : null,
+            itemClsCd: data.recipeType === "inventory" && data.selectedInventoryItem ? data.selectedInventoryItem.itemClsCd : null,
+            taxTyCd: data.recipeType === "inventory" && data.selectedInventoryItem ? data.selectedInventoryItem.taxTyCd : null,
+            selectedInventoryItem: data.selectedInventoryItem
           })
           .eq("id", data.id);
         
@@ -270,34 +304,177 @@ export default function RecipesPage() {
           throw new Error(recipeError.message);
         }
         
-        // Delete existing components and insert new ones
-        await supabase.from("recipe_components").delete().eq("recipe_id", data.id);
+        // Handle components based on recipe type
+        if (data.recipeType === "complex") {
+          // Delete existing components and insert new ones
+          await supabase.from("recipe_components").delete().eq("recipe_id", data.id);
+          
+          const componentsToInsert = data.components.map((c: any) => ({
+            recipe_id: data.id,
+            component_type: c.type,
+            component_id: c.id,
+            quantity: c.quantity,
+            unit: c.unit,
+          }));
+          
+          await supabase.from("recipe_components").insert(componentsToInsert);
+        }
         
-        const componentsToInsert = data.components.map((c: any) => ({
-          recipe_id: data.id,
-          component_type: c.type,
-          component_id: c.id,
-          quantity: c.quantity,
-          unit: c.unit,
-        }));
-        
-        await supabase.from("recipe_components").insert(componentsToInsert);
-        
-        // Refetch recipes and close form
+        // Refetch recipes to get updated data with components
         await fetchRecipes();
+        
+        // Get the updated recipe with components for KRA composition
+        const updatedRecipe = recipes.find(r => r.id === data.id);
+        if (updatedRecipe && updatedRecipe.itemCd && data.recipeType === "complex") {
+          // Automatically send item composition to KRA after update (only for complex recipes)
+          try {
+            toast({ 
+              title: 'Updating KRA Composition...', 
+              description: 'Sending updated composition to KRA...', 
+            })
+
+            const res = await fetch('/api/kra/send-item-composition', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                recipe_id: data.id,
+                recipe_name: data.name,
+                recipe_price: data.price,
+                recipe_category: data.category,
+                recipe_itemCd: updatedRecipe.itemCd,
+                components: data.components
+              }),
+            })
+            
+            const compositionData = await res.json()
+            
+            if (compositionData.success) {
+              const successfulCompositions = compositionData.compositionResults?.filter((r: any) => r.success).length || 0
+              const failedCompositions = compositionData.compositionResults?.filter((r: any) => !r.success).length || 0
+              
+              if (failedCompositions === 0) {
+                toast({ 
+                  title: 'Recipe Updated & KRA Composition Updated', 
+                  description: `Recipe updated successfully. KRA composition #${compositionData.compositionNo} updated.`,
+                  variant: 'default'
+                })
+              } else {
+                toast({ 
+                  title: 'Recipe Updated (KRA Partial Success)', 
+                  description: `Recipe updated. KRA composition: ${successfulCompositions} successful, ${failedCompositions} failed components.`,
+                  variant: 'default'
+                })
+              }
+            } else {
+              toast({ 
+                title: 'Recipe Updated (KRA Failed)', 
+                description: `Recipe updated successfully, but KRA composition update failed: ${compositionData.error}`, 
+                variant: 'destructive' 
+              })
+            }
+          } catch (compositionError: any) {
+            console.error('KRA composition error:', compositionError)
+            toast({ 
+              title: 'Recipe Updated (KRA Error)', 
+              description: `Recipe updated successfully, but KRA composition update failed.`, 
+              variant: 'destructive' 
+            })
+          }
+        } else if (updatedRecipe && !updatedRecipe.itemCd && data.recipeType === "complex") {
+          // Recipe not registered with KRA, register it first then send composition (only for complex recipes)
+          try {
+            const registerRes = await fetch('/api/kra/register-item', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                id: data.id,
+                name: data.name,
+                price: data.price,
+                description: data.description,
+                itemCd: updatedRecipe.itemCd || undefined,
+              }),
+            })
+            const registerData = await registerRes.json()
+            
+            if (registerData.success) {
+              // Now send composition with the new itemCd
+              const compositionRes = await fetch('/api/kra/send-item-composition', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  recipe_id: data.id,
+                  recipe_name: data.name,
+                  recipe_price: data.price,
+                  recipe_category: data.category,
+                  recipe_itemCd: registerData.itemCd,
+                  components: data.components
+                }),
+              })
+              
+              const compositionData = await compositionRes.json()
+              
+              if (compositionData.success) {
+                toast({ 
+                  title: 'Recipe Updated & Registered with KRA', 
+                  description: `Recipe updated and registered with KRA. Composition #${compositionData.compositionNo} sent.`,
+                  variant: 'default'
+                })
+              } else {
+                toast({ 
+                  title: 'Recipe Updated & Registered (Composition Failed)', 
+                  description: `Recipe updated and registered with KRA, but composition failed: ${compositionData.error}`, 
+                  variant: 'destructive' 
+                })
+              }
+            } else {
+              toast({ 
+                title: 'Recipe Updated (KRA Registration Failed)', 
+                description: `Recipe updated successfully, but KRA registration failed: ${registerData.error}`, 
+                variant: 'destructive' 
+              })
+            }
+          } catch (kraError: any) {
+            console.error('KRA registration error:', kraError)
+            toast({ 
+              title: 'Recipe Updated (KRA Error)', 
+              description: `Recipe updated successfully, but KRA registration failed.`, 
+              variant: 'destructive' 
+            })
+          }
+        } else if (data.recipeType === "inventory") {
+          // For inventory-based recipes, no KRA registration needed as it uses existing codes
+          toast({ 
+            title: 'Recipe Updated', 
+            description: `Inventory-based recipe updated successfully. Uses existing KRA codes: ${data.selectedInventoryItem?.itemCd}`,
+            variant: 'default'
+          })
+        }
+        
+        // Close form and reset edit mode
         setShowRecipeForm(false);
         setEditMode(false);
         setRecipeToEdit(null);
         
-        toast({
-          title: "Recipe Updated",
-          description: `Recipe "${data.name}" was updated successfully!`,
-        });
+        // Refetch recipes to show updated data
+        await fetchRecipes();
+        
       } else {
         // Create new recipe
         const { data: newRecipe, error } = await supabase
           .from("recipes")
-          .insert([{ name: data.name, description: data.description, restaurant: data.restaurant, price: data.price, category: data.category }])
+          .insert([{ 
+            name: data.name, 
+            description: data.description, 
+            restaurant: data.restaurant, 
+            price: data.price, 
+            category: data.category,
+            recipeType: data.recipeType,
+            // Store KRA codes directly in recipes table for inventory-based recipes
+            itemCd: data.recipeType === "inventory" && data.selectedInventoryItem ? data.selectedInventoryItem.itemCd : null,
+            itemClsCd: data.recipeType === "inventory" && data.selectedInventoryItem ? data.selectedInventoryItem.itemClsCd : null,
+            taxTyCd: data.recipeType === "inventory" && data.selectedInventoryItem ? data.selectedInventoryItem.taxTyCd : null,
+            selectedInventoryItem: data.selectedInventoryItem
+          }])
           .select()
           .single();
         
@@ -310,33 +487,38 @@ export default function RecipesPage() {
           throw new Error(error?.message || "Failed to add recipe.");
         }
         
-        // Insert components
-        const componentsToInsert = data.components.map((c: any) => ({
-          recipe_id: newRecipe.id,
-          component_type: c.type,
-          component_id: c.id,
-          quantity: c.quantity,
-          unit: c.unit,
-        }));
+        // Handle components based on recipe type
+        if (data.recipeType === "complex") {
+          // Insert components for complex recipes
+          const componentsToInsert = data.components.map((c: any) => ({
+            recipe_id: newRecipe.id,
+            component_type: c.type,
+            component_id: c.id,
+            quantity: c.quantity,
+            unit: c.unit,
+          }));
+          
+          await supabase.from("recipe_components").insert(componentsToInsert);
+          
+          // Register with KRA for complex recipes
+          await handleRegisterKRA({
+            id: newRecipe.id,
+            name: newRecipe.name,
+            price: newRecipe.price,
+            description: newRecipe.description,
+            itemCd: newRecipe.itemCd,
+          })
+        } else if (data.recipeType === "inventory") {
+          // For inventory-based recipes, no KRA registration needed
+          toast({
+            title: "Inventory Recipe Added",
+            description: `Recipe "${data.name}" added successfully! Uses existing KRA codes: ${data.selectedInventoryItem?.itemCd}`,
+          });
+        }
         
-        await supabase.from("recipe_components").insert(componentsToInsert);
-        
-        // Register with KRA
-        await handleRegisterKRA({
-          id: newRecipe.id,
-          name: newRecipe.name,
-          price: newRecipe.price,
-          description: newRecipe.description,
-          itemCd: newRecipe.itemCd,
-        })
         // After successful add, refetch recipes from DB for consistency
         await fetchRecipes();
         setShowRecipeForm(false);
-        
-        toast({
-          title: "Recipe Added",
-          description: `Recipe "${data.name}" was added successfully!`,
-        });
       }
     } catch (error) {
       // Error is already handled with toast above
@@ -586,6 +768,7 @@ export default function RecipesPage() {
           categories={staticCategories}
           editMode={editMode}
           recipe={recipeToEdit}
+          inventoryIngredients={inventoryIngredients}
         />
         <RecipeDetailsDialog
           open={showRecipeDetails}

@@ -4,7 +4,7 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useState, useEffect } from "react"
 import { cn } from "@/lib/utils"
-import { BarChart3, ChefHat, Home, Package, ShoppingCart, Users, ClipboardList, Store, Menu, X, FileText, BadgeAlert, Receipt, Globe, Building2 } from "lucide-react"
+import { BarChart3, ChefHat, Home, Package, ShoppingCart, Users, ClipboardList, Store, Menu, X, FileText, BadgeAlert, Receipt, Globe, Building2, Database, Calculator, Bell, Shield, TrendingUp } from "lucide-react"
 import { ModeToggleSimple } from "@/components/mode-toggle"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -20,13 +20,23 @@ const navigation = [
   { name: "Point of Sale", href: "/pos", icon: ShoppingCart },
   { name: "Orders", href: "/orders", icon: ClipboardList },
   // { name: "Customer Portal", href: "/customer-portal", icon: Store },
+  { name: "Customers", href: "/customers", icon: Users },
   { name: "Suppliers", href: "/suppliers", icon: Users },
   { name: "Reports", href: "/reports", icon: BarChart3 },
   { name: "System Logs", href: "/kitchen/logs", icon: FileText },
   { name: "KRA Failed", href: "/kra-failed-sales", icon: BadgeAlert},
   { name: "KRA Sales", href: "/kra/purchases", icon: Receipt},
   { name: "KRA Imported Items", href: "/kra/imported-items", icon: Globe},
-  { name: "Branch Registration", href: "/branch-registration", icon: Building2}
+  { name: "KRA Data Management", href: "/kra-data", icon: Database},
+  { name: "KRA Test Items", href: "/kra-test-items", icon: Package},
+  { name: "KRA Test Recipes", href: "/kra-test-recipes", icon: Menu},
+  { name: "KRA Branches", href: "/kra-branches", icon: Database},
+  { name: "KRA Test POS", href: "/kra-test-pos", icon: Calculator},
+  { name: "Branch Registration", href: "/branch-registration", icon: Building2},
+  { name: "Branch Users", href: "/branch-users", icon: Users},
+  { name: "Branch Insurance", href: "/branch-insurance", icon: Shield},
+  { name: "Stock Movement", href: "/stock-movement", icon: TrendingUp},
+  { name: "KRA Notices", href: "/kra-notices", icon: Bell}
   // { name: "Test Responsive", href: "/test-responsive", icon: FileText },
 ]
 

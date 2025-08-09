@@ -1,7 +1,10 @@
-import React from "react"
+import React, { useState } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { useToast } from "@/hooks/use-toast"
 import { format } from "date-fns"
+import { Send, Loader2 } from "lucide-react"
 
 interface KRAImportedItem {
   itemCd: string
@@ -61,6 +64,9 @@ interface ImportedItemDetailsDialogProps {
 }
 
 export function ImportedItemDetailsDialog({ open, onOpenChange, item }: ImportedItemDetailsDialogProps) {
+  const { toast } = useToast()
+  const [sendingToKRA, setSendingToKRA] = useState(false)
+
   if (!item) return null
 
   // Format currency
@@ -114,11 +120,88 @@ export function ImportedItemDetailsDialog({ open, onOpenChange, item }: Imported
     }
   }
 
+  // Send imported item to KRA
+  const sendToKRA = async () => {
+    if (!item) return
+
+    setSendingToKRA(true)
+    try {
+      // Format date for KRA (YYYYMMDD)
+      const importDate = new Date(item.importDt)
+      const dclDe = importDate.getFullYear().toString() + 
+                   String(importDate.getMonth() + 1).padStart(2, '0') + 
+                   String(importDate.getDate()).padStart(2, '0')
+
+      const payload = {
+        taskCd: item.importInvcNo || "2231943", // Use invoice number as task code or default
+        dclDe: dclDe,
+        itemSeq: 1, // Default to 1 for single item
+        hsCd: item.itemClsCd || "1231531231", // Use item classification as HS code or default
+        itemClsCd: item.itemClsCd,
+        itemCd: item.itemCd,
+        imptItemSttsCd: "1", // Default to "1" for active status
+        remark: item.importRemark || `Imported item: ${item.itemNm}`,
+        modrNm: "TestVSCU",
+        modrId: "11999"
+      }
+
+      console.log('Sending imported item to KRA:', payload)
+
+      const response = await fetch('/api/kra/update-import-item', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      })
+
+      const data = await response.json()
+
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to send imported item to KRA')
+      }
+
+      toast({
+        title: "Success",
+        description: `Imported item "${item.itemNm}" successfully sent to KRA`,
+      })
+
+    } catch (error: any) {
+      console.error('Error sending imported item to KRA:', error)
+      toast({
+        title: "Error",
+        description: error.message || "Failed to send imported item to KRA",
+        variant: "destructive",
+      })
+    } finally {
+      setSendingToKRA(false)
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Imported Item Details</DialogTitle>
+          <DialogTitle className="flex justify-between items-center">
+            <span>Imported Item Details</span>
+            <Button
+              onClick={sendToKRA}
+              disabled={sendingToKRA}
+              className="ml-4"
+            >
+              {sendingToKRA ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Sending to KRA...
+                </>
+              ) : (
+                <>
+                  <Send className="h-4 w-4 mr-2" />
+                  Send to KRA
+                </>
+              )}
+            </Button>
+          </DialogTitle>
         </DialogHeader>
 
         <div className="space-y-6">

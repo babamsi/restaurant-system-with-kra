@@ -67,6 +67,55 @@ interface DatabaseIngredient {
   created_at: string
   updated_at: string
   suppliers?: { name: string; contact_person: string | null }
+  itemCd?: string // KRA item code
+  itemClsCd?: string // KRA item classification code
+}
+
+// KRA Unit Codes mapping
+const KRA_UNIT_CODES = {
+  '4B': { name: 'Pair', description: 'Pair' },
+  'AV': { name: 'Cap', description: 'Cap' },
+  'BA': { name: 'Barrel', description: 'Barrel' },
+  'BE': { name: 'bundle', description: 'bundle' },
+  'BG': { name: 'bag', description: 'bag' },
+  'BL': { name: 'block', description: 'block' },
+  'BLL': { name: 'BLL Barrel', description: 'BLL Barrel (petroleum) (158,987 dm3)' },
+  'BX': { name: 'box', description: 'box' },
+  'CA': { name: 'Can', description: 'Can' },
+  'CEL': { name: 'Cell', description: 'Cell' },
+  'CMT': { name: 'centimetre', description: 'centimetre' },
+  'CR': { name: 'CARAT', description: 'CARAT' },
+  'DR': { name: 'Drum', description: 'Drum' },
+  'DZ': { name: 'Dozen', description: 'Dozen' },
+  'GLL': { name: 'Gallon', description: 'Gallon' },
+  'GRM': { name: 'Gram', description: 'Gram' },
+  'GRO': { name: 'Gross', description: 'Gross' },
+  'KG': { name: 'Kilo-Gramme', description: 'Kilo-Gramme' },
+  'KTM': { name: 'kilometre', description: 'kilometre' },
+  'KWT': { name: 'kilowatt', description: 'kilowatt' },
+  'L': { name: 'Litre', description: 'Litre' },
+  'LBR': { name: 'pound', description: 'pound' },
+  'LK': { name: 'link', description: 'link' },
+  'LTR': { name: 'Litre', description: 'Litre' },
+  'M': { name: 'Metre', description: 'Metre' },
+  'M2': { name: 'Square Metre', description: 'Square Metre' },
+  'M3': { name: 'Cubic Metre', description: 'Cubic Metre' },
+  'MGM': { name: 'milligram', description: 'milligram' },
+  'MTR': { name: 'metre', description: 'metre' },
+  'MWT': { name: 'megawatt hour', description: 'megawatt hour (1000 kW.h)' },
+  'NO': { name: 'Number', description: 'Number' },
+  'NX': { name: 'part per thousand', description: 'part per thousand' },
+  'PA': { name: 'packet', description: 'packet' },
+  'PG': { name: 'plate', description: 'plate' },
+  'PR': { name: 'pair', description: 'pair' },
+  'RL': { name: 'reel', description: 'reel' },
+  'RO': { name: 'roll', description: 'roll' },
+  'SET': { name: 'set', description: 'set' },
+  'ST': { name: 'sheet', description: 'sheet' },
+  'TNE': { name: 'tonne', description: 'tonne (metric ton)' },
+  'TU': { name: 'tube', description: 'tube' },
+  'U': { name: 'Pieces/item', description: 'Pieces/item [Number]' },
+  'YRD': { name: 'yard', description: 'yard' }
 }
 
 // System log type
@@ -116,6 +165,10 @@ export function SynchronizedInventoryManager() {
     description: "",
     supplier_id: "",
   })
+
+  // State for KRA registration
+  const [isRegisteringWithKRA, setIsRegisteringWithKRA] = useState(false)
+  const [isSyncingWithKRA, setIsSyncingWithKRA] = useState(false)
 
   // Get suppliers for the selected category
   const categorySuppliers = allSuppliers.filter(supplier => supplier.status === 'active')
@@ -195,7 +248,10 @@ export function SynchronizedInventoryManager() {
     }
 
     try {
+      setIsRegisteringWithKRA(true)
       console.log(newIngredient)
+      
+      // First, create the ingredient in the database
       const result = await inventoryService.createIngredient({
         name: newIngredient.name,
         category: newIngredient.category,
@@ -210,10 +266,42 @@ export function SynchronizedInventoryManager() {
       })
 
       if (result.success) {
-        toast({
-          title: "Ingredient Added",
-          description: `${newIngredient.name} has been added to inventory.`,
-        })
+        // Now register with KRA
+        try {
+          const kraResponse = await fetch('/api/kra/register-item', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ingredientId: result.data.id,
+              name: newIngredient.name,
+              category: newIngredient.category,
+              unit: newIngredient.unit,
+              cost_per_unit: newIngredient.cost_per_unit || 0,
+              description: newIngredient.description || ''
+            })
+          })
+
+          const kraResult = await kraResponse.json()
+
+          if (kraResult.success) {
+            toast({
+              title: "Ingredient Added & Registered",
+              description: `${newIngredient.name} has been added to inventory and registered with KRA successfully.`,
+            })
+          } else {
+            toast({
+              title: "Ingredient Added (KRA Registration Failed)",
+              description: `${newIngredient.name} has been added to inventory, but KRA registration failed: ${kraResult.error}`,
+              variant: "warning",
+            })
+          }
+        } catch (kraError) {
+          toast({
+            title: "Ingredient Added (KRA Registration Failed)",
+            description: `${newIngredient.name} has been added to inventory, but KRA registration failed.`,
+            variant: "warning",
+          })
+        }
         
         // Reset form
         setIsAddingIngredient(false)
@@ -243,6 +331,8 @@ export function SynchronizedInventoryManager() {
         description: "Failed to add ingredient to database",
         variant: "destructive",
       })
+    } finally {
+      setIsRegisteringWithKRA(false)
     }
   }
 
@@ -306,6 +396,80 @@ export function SynchronizedInventoryManager() {
         description: "Failed to update stock in database",
         variant: "destructive",
       })
+    }
+  }
+
+  // Sync current inventory with KRA stock-in
+  const handleSyncInventoryWithKRA = async () => {
+    setIsSyncingWithKRA(true)
+    
+    try {
+      // Filter ingredients that have KRA item codes
+      const ingredientsWithKRA = ingredients.filter(ingredient => 
+        ingredient.itemCd && ingredient.itemClsCd && ingredient.current_stock > 0
+      )
+
+      if (ingredientsWithKRA.length === 0) {
+        toast({
+          title: "No Items to Sync",
+          description: "No ingredients with KRA codes and stock available for syncing.",
+          variant: "destructive",
+        })
+        return
+      }
+
+      // Prepare items for KRA stock-in
+      const stockItems = ingredientsWithKRA.map((ingredient, index) => ({
+        itemCd: ingredient.itemCd,
+        itemClsCd: ingredient.itemClsCd,
+        name: ingredient.name,
+        category: ingredient.category,
+        unit: ingredient.unit,
+        cost_per_unit: ingredient.cost_per_unit,
+        quantity: ingredient.current_stock,
+        ingredient: ingredient
+      }))
+
+      // Generate a unique receipt code for this sync
+      const syncReceiptCode = `SYNC${Date.now()}`
+      
+      // Send stock-in transaction to KRA
+      const res = await fetch('/api/kra/stock-in-enhanced', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: stockItems,
+          sarTyCd: '01', // Initial stock-in (not purchase)
+          receiptCode: syncReceiptCode,
+          vatAmount: '0', // No VAT for inventory sync
+          stockDate: new Date().toISOString().slice(0, 10).replace(/-/g, ''),
+          supplierOrderId: null // No supplier order for inventory sync
+        }),
+      })
+
+      const kraResult = await res.json()
+
+      if (kraResult.success) {
+        toast({
+          title: "Inventory Synced with KRA",
+          description: `Successfully synced ${ingredientsWithKRA.length} items with current stock levels to KRA.`,
+        })
+      } else {
+        toast({
+          title: "KRA Sync Error",
+          description: kraResult.error || "Failed to sync inventory with KRA",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      console.error('KRA sync error:', error)
+      toast({
+        title: "Sync Error",
+        description: "Failed to sync inventory with KRA. Please try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsSyncingWithKRA(false)
     }
   }
 
@@ -821,6 +985,23 @@ export function SynchronizedInventoryManager() {
       <div className="flex justify-between items-center">
         <h3 className="text-lg font-medium">Ingredient Inventory</h3>
         <div className="flex gap-2">
+          <Button 
+            variant="outline" 
+            onClick={handleSyncInventoryWithKRA}
+            disabled={isSyncingWithKRA}
+          >
+            {isSyncingWithKRA ? (
+              <>
+                <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-current mr-2"></span>
+                Syncing...
+              </>
+            ) : (
+              <>
+                <Upload className="h-4 w-4 mr-2" />
+                Sync with KRA
+              </>
+            )}
+          </Button>
           <Button variant="outline" onClick={() => setShowSupplierReceiptUpload(true)}>
             <Receipt className="h-4 w-4 mr-2" />
             New Receipt
@@ -864,20 +1045,126 @@ export function SynchronizedInventoryManager() {
                           <SelectValue placeholder="Select category" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="proteins">Proteins</SelectItem>
+                          {/* Basic Categories */}
                           <SelectItem value="meats">Meats</SelectItem>
-                          <SelectItem value="drinks">Drinks</SelectItem>
+                          <SelectItem value="eggs">Eggs</SelectItem>
+                          <SelectItem value="beverages">Beverages</SelectItem>
                           <SelectItem value="vegetables">Vegetables</SelectItem>
-                          <SelectItem value="grains">Grains</SelectItem>
+                          <SelectItem value="package">Package</SelectItem>
+                          <SelectItem value="alcohol">Alcohol</SelectItem>
+                          <SelectItem value="tissue_paper">Tissue Paper</SelectItem>
+                          <SelectItem value="label">Label</SelectItem>
                           <SelectItem value="dairy">Dairy</SelectItem>
+                          <SelectItem value="grains">Grains</SelectItem>
+                          <SelectItem value="oil">Oil</SelectItem>
+                          <SelectItem value="fruits">Fruits</SelectItem>
+                          <SelectItem value="canned">Canned</SelectItem>
+                          <SelectItem value="nuts">Nuts</SelectItem>
                           <SelectItem value="spices">Spices</SelectItem>
                           <SelectItem value="cans">Cans</SelectItem>
                           <SelectItem value="oils">Oils</SelectItem>
                           <SelectItem value="packaging">Packaging</SelectItem>
-                          <SelectItem value="dishes">Dishes</SelectItem>
-                          <SelectItem value="fruits">Fruits</SelectItem>
-                          <SelectItem value="nuts">Nuts</SelectItem>
                           <SelectItem value="sauces">Sauces</SelectItem>
+                          <SelectItem value="milk">Milk</SelectItem>
+                          <SelectItem value="bread">Bread</SelectItem>
+                          <SelectItem value="flour">Flour</SelectItem>
+                          
+                          {/* Additional Categories */}
+                          <SelectItem value="condiments">Condiments</SelectItem>
+                          <SelectItem value="herbs">Herbs</SelectItem>
+                          <SelectItem value="seasonings">Seasonings</SelectItem>
+                          <SelectItem value="pasta">Pasta</SelectItem>
+                          <SelectItem value="rice">Rice</SelectItem>
+                          <SelectItem value="beans">Beans</SelectItem>
+                          <SelectItem value="legumes">Legumes</SelectItem>
+                          <SelectItem value="seafood">Seafood</SelectItem>
+                          <SelectItem value="poultry">Poultry</SelectItem>
+                          <SelectItem value="beef">Beef</SelectItem>
+                          <SelectItem value="pork">Pork</SelectItem>
+                          <SelectItem value="lamb">Lamb</SelectItem>
+                          <SelectItem value="fish">Fish</SelectItem>
+                          <SelectItem value="cheese">Cheese</SelectItem>
+                          <SelectItem value="yogurt">Yogurt</SelectItem>
+                          <SelectItem value="butter">Butter</SelectItem>
+                          <SelectItem value="cream">Cream</SelectItem>
+                          <SelectItem value="juice">Juice</SelectItem>
+                          <SelectItem value="soda">Soda</SelectItem>
+                          <SelectItem value="coffee">Coffee</SelectItem>
+                          <SelectItem value="tea">Tea</SelectItem>
+                          <SelectItem value="water">Water</SelectItem>
+                          <SelectItem value="wine">Wine</SelectItem>
+                          <SelectItem value="beer">Beer</SelectItem>
+                          <SelectItem value="spirits">Spirits</SelectItem>
+                          <SelectItem value="tomatoes">Tomatoes</SelectItem>
+                          <SelectItem value="onions">Onions</SelectItem>
+                          <SelectItem value="potatoes">Potatoes</SelectItem>
+                          <SelectItem value="carrots">Carrots</SelectItem>
+                          <SelectItem value="lettuce">Lettuce</SelectItem>
+                          <SelectItem value="cabbage">Cabbage</SelectItem>
+                          <SelectItem value="spinach">Spinach</SelectItem>
+                          <SelectItem value="kale">Kale</SelectItem>
+                          <SelectItem value="apples">Apples</SelectItem>
+                          <SelectItem value="bananas">Bananas</SelectItem>
+                          <SelectItem value="oranges">Oranges</SelectItem>
+                          <SelectItem value="lemons">Lemons</SelectItem>
+                          <SelectItem value="limes">Limes</SelectItem>
+                          <SelectItem value="grapes">Grapes</SelectItem>
+                          <SelectItem value="strawberries">Strawberries</SelectItem>
+                          <SelectItem value="peanuts">Peanuts</SelectItem>
+                          <SelectItem value="almonds">Almonds</SelectItem>
+                          <SelectItem value="walnuts">Walnuts</SelectItem>
+                          <SelectItem value="cashews">Cashews</SelectItem>
+                          <SelectItem value="olive_oil">Olive Oil</SelectItem>
+                          <SelectItem value="vegetable_oil">Vegetable Oil</SelectItem>
+                          <SelectItem value="coconut_oil">Coconut Oil</SelectItem>
+                          <SelectItem value="sunflower_oil">Sunflower Oil</SelectItem>
+                          <SelectItem value="salt">Salt</SelectItem>
+                          <SelectItem value="pepper">Pepper</SelectItem>
+                          <SelectItem value="garlic">Garlic</SelectItem>
+                          <SelectItem value="ginger">Ginger</SelectItem>
+                          <SelectItem value="cinnamon">Cinnamon</SelectItem>
+                          <SelectItem value="nutmeg">Nutmeg</SelectItem>
+                          <SelectItem value="oregano">Oregano</SelectItem>
+                          <SelectItem value="basil">Basil</SelectItem>
+                          <SelectItem value="thyme">Thyme</SelectItem>
+                          <SelectItem value="rosemary">Rosemary</SelectItem>
+                          <SelectItem value="paprika">Paprika</SelectItem>
+                          <SelectItem value="curry">Curry</SelectItem>
+                          <SelectItem value="chili">Chili</SelectItem>
+                          <SelectItem value="vinegar">Vinegar</SelectItem>
+                          <SelectItem value="soy_sauce">Soy Sauce</SelectItem>
+                          <SelectItem value="ketchup">Ketchup</SelectItem>
+                          <SelectItem value="mustard">Mustard</SelectItem>
+                          <SelectItem value="mayonnaise">Mayonnaise</SelectItem>
+                          <SelectItem value="honey">Honey</SelectItem>
+                          <SelectItem value="sugar">Sugar</SelectItem>
+                          <SelectItem value="brown_sugar">Brown Sugar</SelectItem>
+                          <SelectItem value="powdered_sugar">Powdered Sugar</SelectItem>
+                          <SelectItem value="chocolate">Chocolate</SelectItem>
+                          <SelectItem value="cocoa">Cocoa</SelectItem>
+                          <SelectItem value="vanilla">Vanilla</SelectItem>
+                          <SelectItem value="baking_soda">Baking Soda</SelectItem>
+                          <SelectItem value="baking_powder">Baking Powder</SelectItem>
+                          <SelectItem value="yeast">Yeast</SelectItem>
+                          <SelectItem value="cornstarch">Cornstarch</SelectItem>
+                          <SelectItem value="gelatin">Gelatin</SelectItem>
+                          <SelectItem value="food_coloring">Food Coloring</SelectItem>
+                          <SelectItem value="plastic_wrap">Plastic Wrap</SelectItem>
+                          <SelectItem value="aluminum_foil">Aluminum Foil</SelectItem>
+                          <SelectItem value="parchment_paper">Parchment Paper</SelectItem>
+                          <SelectItem value="ziploc_bags">Ziploc Bags</SelectItem>
+                          <SelectItem value="paper_towels">Paper Towels</SelectItem>
+                          <SelectItem value="toilet_paper">Toilet Paper</SelectItem>
+                          <SelectItem value="napkins">Napkins</SelectItem>
+                          <SelectItem value="disposable_gloves">Disposable Gloves</SelectItem>
+                          <SelectItem value="cleaning_supplies">Cleaning Supplies</SelectItem>
+                          <SelectItem value="detergent">Detergent</SelectItem>
+                          <SelectItem value="dish_soap">Dish Soap</SelectItem>
+                          <SelectItem value="trash_bags">Trash Bags</SelectItem>
+                          <SelectItem value="freezer_bags">Freezer Bags</SelectItem>
+                          <SelectItem value="storage_containers">Storage Containers</SelectItem>
+                          <SelectItem value="cooking_spray">Cooking Spray</SelectItem>
+                          <SelectItem value="non_stick_spray">Non-Stick Spray</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -894,17 +1181,11 @@ export function SynchronizedInventoryManager() {
                           <SelectValue placeholder="Select unit" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="kg">Kilograms (kg)</SelectItem>
-                          <SelectItem value="g">Grams (g)</SelectItem>
-                          <SelectItem value="L">Liters (L)</SelectItem>
-                          <SelectItem value="ml">Milliliters (ml)</SelectItem>
-                          <SelectItem value="pieces">Pieces</SelectItem>
-                          <SelectItem value="bunch">Bunch</SelectItem>
-                          <SelectItem value="dozen">Dozen</SelectItem>
-                          <SelectItem value="punnet">Punnet</SelectItem>
-                          <SelectItem value="tray">Tray</SelectItem>
-                          <SelectItem value="bag">Bag</SelectItem>
-                          {/* <SelectItem value="tablespoon">Tablespoon</SelectItem> */}
+                          {Object.entries(KRA_UNIT_CODES).map(([code, unit]) => (
+                            <SelectItem key={code} value={code}>
+                              {code} - {unit.name} ({unit.description})
+                            </SelectItem>
+                          ))}
                         </SelectContent>
                       </Select>
                     </div>
@@ -970,9 +1251,18 @@ export function SynchronizedInventoryManager() {
                 <Button variant="outline" onClick={() => setIsAddingIngredient(false)}>
                   Cancel
                 </Button>
-                <Button onClick={handleAddIngredient}>
-                  <Save className="h-4 w-4 mr-2" />
-                  Save Ingredient
+                <Button onClick={handleAddIngredient} disabled={isRegisteringWithKRA}>
+                  {isRegisteringWithKRA ? (
+                    <span className="flex items-center justify-center">
+                      <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></span>
+                      Registering with KRA...
+                    </span>
+                  ) : (
+                    <>
+                      <Save className="h-4 w-4 mr-2" />
+                      Save Ingredient
+                    </>
+                  )}
                 </Button>
               </div>
             </DialogContent>
@@ -1012,6 +1302,7 @@ export function SynchronizedInventoryManager() {
                   <TableHead>Quantity</TableHead>
                   <TableHead>Unit</TableHead>
                   <TableHead>Cost/Unit</TableHead>
+                  <TableHead>KRA Status</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
@@ -1029,6 +1320,18 @@ export function SynchronizedInventoryManager() {
                       </TableCell>
                       <TableCell>{ingredient.unit}</TableCell>
                       <TableCell>Ksh {ingredient.cost_per_unit.toFixed(2)}</TableCell>
+                      <TableCell>
+                        {ingredient.itemCd ? (
+                          <div className="text-xs">
+                            <div className="font-medium text-green-600">✓ Registered</div>
+                            <div className="text-muted-foreground">Code: {ingredient.itemCd}</div>
+                          </div>
+                        ) : (
+                          <Badge variant="outline" className="text-amber-500 border-amber-500">
+                            Not Registered
+                          </Badge>
+                        )}
+                      </TableCell>
                       <TableCell>
                         <Badge variant={status.variant} className={status.className}>
                           <status.icon className="h-3 w-3 mr-1" />

@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { Textarea } from "@/components/ui/textarea"
+import { Label } from "@/components/ui/label"
 import {
   Search,
   Plus,
@@ -29,6 +30,11 @@ import {
   QrCode,
   ArrowLeft,
   X,
+  Loader2,
+  CreditCard,
+  DollarSign,
+  Smartphone,
+  UtensilsCrossed,
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { supabase } from "@/lib/supabase"
@@ -91,6 +97,10 @@ export function CompleteCustomerPortal() {
   const [addingToExisting, setAddingToExisting] = useState(false)
   const [showPaymentDialog, setShowPaymentDialog] = useState(false)
   const [showOrderStatus, setShowOrderStatus] = useState(false)
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'mobile'>('cash')
+  const [showSessionDialog, setShowSessionDialog] = useState(false)
+  const [sessionValid, setSessionValid] = useState(false)
+  const [sessionError, setSessionError] = useState<string | null>(null)
 
   // Recipe and cart state
   const [recipes, setRecipes] = useState<Recipe[]>([])
@@ -104,6 +114,58 @@ export function CompleteCustomerPortal() {
 
   // Check if this is a table-specific order
   const isTableOrder = !!tableId && !!sessionId
+
+  // Comprehensive session validation function (same as POS)
+  const validateSession = async (): Promise<{ valid: boolean; error?: string }> => {
+    if (!sessionId) {
+      return { valid: false, error: 'No active session' }
+    }
+    
+    try {
+      const { data: session, error } = await supabase
+        .from('sessions')
+        .select('id, opened_at, closed_at')
+        .eq('id', sessionId)
+        .single()
+      
+      if (error || !session) {
+        return { valid: false, error: 'Session not found' }
+      }
+      
+      if (session.closed_at) {
+        return { valid: false, error: 'Session is closed' }
+      }
+      
+      return { valid: true }
+    } catch (error) {
+      return { valid: false, error: 'Failed to validate session' }
+    }
+  }
+
+  // Check session on component mount
+  useEffect(() => {
+    const checkSession = async () => {
+      if (isTableOrder) {
+        const sessionValidation = await validateSession()
+        setSessionValid(sessionValidation.valid)
+        setSessionError(sessionValidation.error || null)
+        
+        if (!sessionValidation.valid) {
+          setShowSessionDialog(true)
+          toast({
+            title: 'Session Error',
+            description: sessionValidation.error || 'Invalid session',
+            variant: 'destructive',
+          })
+        }
+      } else {
+        setSessionValid(true)
+        setSessionError(null)
+      }
+    }
+
+    checkSession()
+  }, [sessionId, isTableOrder, toast])
 
   // Fetch recipes from database
   const fetchRecipes = async () => {
@@ -162,16 +224,16 @@ export function CompleteCustomerPortal() {
 
   useEffect(() => {
     const initializeTableOrder = async () => {
-      if (isTableOrder) {
+      if (isTableOrder && sessionValid) {
         setLoading(true)
         try {
           // Get table information
           const tableNumber = `T${tableId}`
           setTableInfo({ number: tableNumber, id: parseInt(tableId) })
           
-          // Check for existing order on this table
+          // Check for existing order on this table in current session
           const { data: existingOrderData } = await tableOrdersService.getActiveOrderByTable(parseInt(tableId))
-          if (existingOrderData) {
+          if (existingOrderData && existingOrderData.session_id === sessionId) {
             setExistingOrder(existingOrderData)
             toast({
               title: "Existing Order Found",
@@ -183,13 +245,15 @@ export function CompleteCustomerPortal() {
         } finally {
           setLoading(false)
         }
-      } else {
+      } else if (!isTableOrder) {
         setLoading(false)
       }
     }
 
+    if (sessionValid) {
     initializeTableOrder()
-  }, [tableId, sessionId, isTableOrder, toast])
+    }
+  }, [tableId, sessionId, isTableOrder, sessionValid, toast])
 
   const recipesAsMenuItems: CartItem[] = recipes.map(recipe => ({
     id: recipe.id,
@@ -198,29 +262,21 @@ export function CompleteCustomerPortal() {
     category: recipe.category || "Uncategorized",
     available_quantity: recipe.available ? 999 : 0,
     description: recipe.description || "",
+    restaurant: recipe.restaurant,
+    quantity: 1,
+    total_price: recipe.price || 0,
     type: "recipe" as const,
     nutrition: { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0 },
     unit: "portion",
-    restaurant: recipe.restaurant,
-    quantity: 0,
-    total_price: 0,
   }))
 
-  const filteredRecipes = recipesAsMenuItems.filter(recipe => {
-    const matchesSearch = recipe.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         (recipe.description && recipe.description.toLowerCase().includes(searchTerm.toLowerCase()))
-    const matchesCategory = selectedCategory === "All" || recipe.category === selectedCategory
-    const matchesRestaurant = selectedRestaurant === "all" || recipe.restaurant === selectedRestaurant
-    
-    return matchesSearch && matchesCategory && matchesRestaurant
+  const filteredMenuItems = recipesAsMenuItems.filter(item => {
+    const matchesSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         item.description.toLowerCase().includes(searchTerm.toLowerCase())
+    const matchesCategory = selectedCategory === "All" || item.category === selectedCategory
+    const matchesRestaurant = selectedRestaurant === "all" || item.restaurant === selectedRestaurant
+    return matchesSearch && matchesCategory && matchesRestaurant && item.available_quantity > 0
   })
-
-  const groupedRecipes = filteredRecipes.reduce((acc, recipe) => {
-    const category = recipe.category || "Uncategorized"
-    if (!acc[category]) acc[category] = []
-    acc[category].push(recipe)
-    return acc
-  }, {} as Record<string, CartItem[]>)
 
   const handleOpenCustomization = (menuItem: CartItem) => {
     setCustomizingItem(menuItem)
@@ -230,23 +286,22 @@ export function CompleteCustomerPortal() {
   const handleConfirmAddToCart = () => {
     if (!customizingItem) return
 
-    let displayText = customizingItem.name
-    const cartItemId = `${customizingItem.id}${customizationNotes ? `-${customizationNotes}` : ""}`
-
-    const newCartItem: CartItem = {
+    const cartItem: CartItem = {
       ...customizingItem,
-      id: cartItemId,
-      quantity: 1,
-      total_price: customizingItem.price,
       customization: customizationNotes,
     }
 
-    setCart(prev => [...prev, newCartItem])
-
-    toast({
-      title: "Added to Order",
-      description: displayText + (customizationNotes ? ` (${customizationNotes})` : ""),
-      duration: 500,
+    setCart(prev => {
+      const existingItem = prev.find(item => item.id === cartItem.id)
+      if (existingItem) {
+        return prev.map(item =>
+          item.id === cartItem.id
+            ? { ...item, quantity: item.quantity + 1, total_price: (item.quantity + 1) * item.price }
+            : item
+        )
+      } else {
+        return [...prev, cartItem]
+      }
     })
 
     setIsCustomizing(false)
@@ -259,9 +314,10 @@ export function CompleteCustomerPortal() {
       removeFromCart(itemId)
       return
     }
+
     setCart(prev => prev.map(item => 
       item.id === itemId 
-        ? { ...item, quantity: newQuantity, total_price: item.price * newQuantity }
+        ? { ...item, quantity: newQuantity, total_price: newQuantity * item.price }
         : item
     ))
   }
@@ -282,10 +338,20 @@ export function CompleteCustomerPortal() {
     return cart.reduce((sum, item) => sum + item.quantity, 0)
   }
 
-  // Remove or update getTotal function if not needed
-  // function getTotal() { ... }
-
   const completeOrder = async () => {
+    // Validate session first (same as POS)
+    if (isTableOrder) {
+      const sessionValidation = await validateSession()
+      if (!sessionValidation.valid) {
+        toast({
+          title: 'Session Error',
+          description: sessionValidation.error || 'Invalid session',
+          variant: 'destructive',
+        })
+        return
+      }
+    }
+
     if (cart.length === 0) {
       toast({
         title: "Empty Cart",
@@ -306,6 +372,20 @@ export function CompleteCustomerPortal() {
 
     setPlacingOrder(true)
     try {
+      // Validate session is still active before placing order (same as POS)
+      if (isTableOrder) {
+        const { data: sessionCheck, error: sessionError } = await supabase
+          .from('sessions')
+          .select('id')
+          .eq('id', sessionId)
+          .is('closed_at', null)
+          .single()
+        
+        if (sessionError || !sessionCheck) {
+          throw new Error('Session is no longer active. Please refresh and try again.')
+        }
+      }
+
       const cartItems = cart.map(item => ({
         menu_item_id: item.id,
         menu_item_name: item.name,
@@ -329,6 +409,8 @@ export function CompleteCustomerPortal() {
           if (error) {
             throw new Error(error)
           }
+          setExistingOrder(data)
+          setAddingToExisting(false)
           toast({
             title: "Order Updated",
             description: `Added items to your order on ${tableInfo?.number}`,
@@ -383,6 +465,48 @@ export function CompleteCustomerPortal() {
     }
   }
 
+  const handlePayment = async () => {
+    if (!existingOrder) {
+      toast({
+        title: "No Order",
+        description: "No order found to process payment",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setPlacingOrder(true)
+    try {
+      // Update order with payment information
+      const { error } = await tableOrdersService.updateOrder(existingOrder.id, {
+        payment_method: paymentMethod,
+        payment_date: new Date().toISOString(),
+        status: 'paid'
+      })
+
+      if (error) {
+        throw new Error(error)
+      }
+
+      toast({
+        title: "Payment Successful",
+        description: `Payment processed for ${tableInfo?.number}`,
+      })
+
+      setShowPaymentDialog(false)
+      setExistingOrder((prev: any) => prev ? { ...prev, status: 'paid', payment_method: paymentMethod } : null)
+    } catch (error: any) {
+      console.error("Error processing payment:", error)
+      toast({
+        title: "Payment Error",
+        description: error.message || "Failed to process payment",
+        variant: "destructive",
+      })
+    } finally {
+      setPlacingOrder(false)
+    }
+  }
+
   // Helper to get readable status
   const getOrderStatusLabel = (status: string) => {
     switch (status) {
@@ -406,138 +530,157 @@ export function CompleteCustomerPortal() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 flex items-center justify-center">
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
-          <p className="text-muted-foreground">Loading menu...</p>
+          <div className="p-4 bg-white rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center shadow-lg">
+            <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+          </div>
+          <p className="text-lg font-medium text-slate-900">Loading menu...</p>
+          <p className="text-sm text-slate-600 mt-2">Please wait while we fetch the latest menu items</p>
         </div>
       </div>
     )
   }
 
+  if (!sessionValid && isTableOrder) {
   return (
-    <div className="min-h-screen bg-background overflow-hidden">
-      {/* Order Status Card (show after placing order or if there's an active order and not adding more) */}
-      {showOrderStatus && isTableOrder && existingOrder && !addingToExisting && (
-        <div className="flex flex-col items-center justify-center min-h-[60vh] px-3 py-8">
-          <Card className="w-full max-w-xs mx-auto shadow-lg border-yellow-300 border-2 bg-yellow-50 dark:bg-yellow-900/20">
-            <CardContent className="p-4">
-              <div className="flex items-center gap-2 mb-2">
-                <Activity className="h-5 w-5 text-yellow-600 animate-pulse" />
-                <span className="font-semibold text-yellow-800 dark:text-yellow-200 text-base">
-                  Order for <span className="font-bold">{tableInfo?.number}</span>
-                </span>
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex items-center justify-center">
+        <div className="text-center max-w-md mx-auto p-8 bg-white rounded-lg shadow-xl border border-slate-200">
+          <div className="p-4 bg-red-100 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center">
+            <X className="h-8 w-8 text-red-600" />
               </div>
-              <div className="text-xs text-yellow-700 dark:text-yellow-200 mb-2">
-                Status: <span className="font-semibold">{getOrderStatusLabel(existingOrder.status)}</span>
-              </div>
-              <div className="mb-3">
-                <div className="font-semibold text-sm mb-1">Items in your order:</div>
-                <div className="space-y-2 max-h-40 overflow-auto">
-                  {existingOrder.items && existingOrder.items.length > 0 ? (
-                    existingOrder.items.map((item: any) => (
-                      <div key={item.id} className="flex items-center justify-between bg-yellow-100 dark:bg-yellow-900/40 rounded px-2 py-1">
-                        <div className="flex-1">
-                          <span className="font-medium text-sm">{item.menu_item_name}</span>
-                          {item.portion_size && <span className="text-xs text-muted-foreground ml-1">({item.portion_size})</span>}
-                          {item.customization_notes && <span className="block text-xs text-yellow-700 dark:text-yellow-200 italic">{item.customization_notes}</span>}
-                        </div>
-                        <span className="text-xs font-semibold">x{item.quantity}</span>
-                        <span className="text-xs font-semibold ml-2">Ksh {item.total_price?.toFixed(2)}</span>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="text-xs text-muted-foreground">No items in this order yet.</div>
-                  )}
-                </div>
-              </div>
-              <div className="flex flex-col gap-2 mt-4">
+          <h2 className="text-xl font-bold mb-2 text-slate-900">Session Error</h2>
+          <p className="text-slate-600 mb-4">{sessionError || 'Invalid session'}</p>
+          <p className="text-sm text-slate-500 mb-6">Please scan the QR code again or contact staff for assistance.</p>
                 <Button
-                  size="sm"
-                  className="rounded-full px-4 py-1 text-xs h-9 bg-yellow-500 hover:bg-yellow-600 text-yellow-50 font-semibold"
-                  onClick={() => { setAddingToExisting(true); setShowOrderStatus(false); }}
+            onClick={() => window.location.reload()} 
+            className="bg-blue-600 hover:bg-blue-700 text-white"
                 >
-                  Add More Items
+            Refresh Page
                 </Button>
               </div>
-            </CardContent>
-          </Card>
         </div>
-      )}
+    )
+  }
 
-      {/* Payment Dialog (placeholder, you can expand this as needed) */}
-      <Dialog open={showPaymentDialog} onOpenChange={setShowPaymentDialog}>
-        <DialogContent className="max-w-xs w-full mx-auto rounded-xl p-0 overflow-hidden">
-          <DialogHeader className="p-3 border-b">
-            <DialogTitle>Payment Coming Soon</DialogTitle>
-          </DialogHeader>
-          <div className="p-4 text-center text-muted-foreground">
-            Payment processing will be available soon. Please pay at the counter or ask a staff member.
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50">
+      {/* Header */}
+      <div className="bg-white shadow-lg border-b border-slate-200">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center py-6">
+            <div className="flex items-center space-x-4">
+              <div className="flex items-center space-x-3">
+                <div className="p-2 bg-gradient-to-r from-blue-600 to-purple-600 rounded-lg">
+                  <Table className="h-6 w-6 text-white" />
             </div>
-          <DialogFooter className="p-3 pt-0 flex gap-2">
-            <Button onClick={() => setShowPaymentDialog(false)} className="w-full">Close</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Recipes, Cart, and Checkout (always show unless order just placed or user is viewing status) */}
-      {(!showOrderStatus || addingToExisting || !isTableOrder) && (
-        <>
-          {/* Mobile Header */}
-          <div className="flex-shrink-0 border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-20">
-            <div className="flex items-center justify-between p-3">
-              <div className="flex items-center gap-2">
-                <h1 className="text-base font-bold text-primary tracking-tight">Maamul Cafeteria</h1>
-                {isTableOrder && tableInfo && (
-                  <Badge variant="default" className="text-xs px-2 py-0.5">
-                    <Table className="h-3 w-3 mr-1" />
-                    {tableInfo.number}
+                <div>
+                  <h1 className="text-2xl font-bold text-slate-900">
+                    {isTableOrder ? `Table ${tableInfo?.number}` : 'Customer Portal'}
+                  </h1>
+                  <p className="text-sm text-slate-600">
+                    {isTableOrder ? 'Order & Pay at Your Table' : 'Browse Our Menu'}
+                  </p>
+                </div>
+              </div>
+              {isTableOrder && (
+                <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 px-3 py-1">
+                  <CheckCircle className="h-3 w-3 mr-1" />
+                  Active Session
                   </Badge>
                 )}
               </div>
-              <Button variant="outline" size="icon" className="relative rounded-full h-9 w-9 p-0" onClick={() => setShowCart(true)}>
-                <ShoppingCart className="h-5 w-5" />
-                {getCartItemCount() > 0 && (
-                  <Badge className="absolute -top-2 -right-2 h-5 w-5 rounded-full p-0 flex items-center justify-center text-xs">
-                    {getCartItemCount()}
-                  </Badge>
-                )}
+            
+            <div className="flex items-center space-x-4">
+              {existingOrder && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowOrderStatus(true)}
+                  className="bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100"
+                >
+                  <Activity className="h-4 w-4 mr-2" />
+                  View Order
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowCart(true)}
+                className="relative bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100"
+              >
+                <ShoppingCart className="h-4 w-4 mr-2" />
+                Cart ({getCartItemCount()})
               </Button>
             </div>
           </div>
+            </div>
+          </div>
 
-          {/* Table Order Info */}
-          {isTableOrder && tableInfo && (
-            <div className="bg-primary/10 border-b border-primary/20">
-              <div className="px-3 py-2 text-xs flex items-center gap-2 justify-between">
-                <span className="flex items-center gap-1 text-primary font-medium">
-                  <Users className="h-4 w-4" /> Table {tableInfo.number}
-                </span>
+      {/* Active Order Banner */}
                 {existingOrder && (
-                  <span className="flex items-center gap-1 text-green-700">
-                    <Activity className="h-3 w-3" /> Order: #{existingOrder.id.slice(-6)}
-                  </span>
+        <div className="bg-gradient-to-r from-amber-50 to-orange-50 border-b border-amber-200">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="p-2 bg-amber-100 rounded-full">
+                  <Clock className="h-5 w-5 text-amber-600" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-amber-900">Active Order on {tableInfo?.number}</h3>
+                  <p className="text-sm text-amber-700">
+                    Status: {getOrderStatusLabel(existingOrder.status)} • Total: ${existingOrder.total_amount}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center space-x-2">
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setAddingToExisting(true)
+                    setShowCart(true)
+                  }}
+                  className="bg-amber-600 hover:bg-amber-700 text-white"
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  Add More Items
+                </Button>
+                {existingOrder.status !== 'paid' && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setShowPaymentDialog(true)}
+                    className="border-amber-300 text-amber-700 hover:bg-amber-50"
+                  >
+                    <CreditCard className="h-4 w-4 mr-1" />
+                    Pay Now
+                  </Button>
                 )}
-                <span className="text-muted-foreground">Scan QR to order</span>
+              </div>
+            </div>
         </div>
       </div>
           )}
 
-          {/* Mobile Filters */}
-          <div className="bg-white dark:bg-gray-900 border-b sticky top-[48px] z-10">
-            <div className="p-3 flex items-center gap-2 flex-wrap">
-              <Select value={selectedRestaurant} onValueChange={(value) => setSelectedRestaurant(value as "all" | "Omel Dunia" | "Mamma Mia")}>
-                <SelectTrigger className="w-28 text-xs h-8">
-                  <SelectValue placeholder="Restaurant" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  <SelectItem value="Omel Dunia">Omel Dunia</SelectItem>
-                  <SelectItem value="Mamma Mia">Mamma Mia</SelectItem>
-                </SelectContent>
-              </Select>
+      {/* Main Content */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Search and Filters */}
+        <div className="mb-8 space-y-4">
+          <div className="flex flex-col sm:flex-row gap-4">
+            <div className="flex-1">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 h-4 w-4" />
+                <Input
+                  placeholder="Search menu items..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-10 border-slate-200 focus:border-blue-500 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+            
             <Select value={selectedCategory} onValueChange={setSelectedCategory}>
-                <SelectTrigger className="w-28 text-xs h-8">
+              <SelectTrigger className="w-full sm:w-48 border-slate-200 focus:border-blue-500 focus:ring-blue-500">
                   <SelectValue placeholder="Category" />
               </SelectTrigger>
               <SelectContent>
@@ -548,57 +691,45 @@ export function CompleteCustomerPortal() {
                 ))}
               </SelectContent>
             </Select>
-              <div className="relative flex-1 min-w-[120px]">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="Search menu..."
-                  className="pl-9 text-xs h-8 rounded-full"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                />
-              </div>
+            
+            <Select value={selectedRestaurant} onValueChange={(value: any) => setSelectedRestaurant(value)}>
+              <SelectTrigger className="w-full sm:w-48 border-slate-200 focus:border-blue-500 focus:ring-blue-500">
+                <SelectValue placeholder="Restaurant" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Restaurants</SelectItem>
+                <SelectItem value="Omel Dunia">Omel Dunia</SelectItem>
+                <SelectItem value="Mamma Mia">Mamma Mia</SelectItem>
+              </SelectContent>
+            </Select>
             </div>
           </div>
 
-          {/* Mobile Menu Items */}
-          <div className="flex-1 overflow-auto p-2 bg-muted/20">
-            {loading ? (
-              <div className="flex items-center justify-center h-full">
-                <div className="text-center">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
-                  <p className="text-muted-foreground">Loading recipes...</p>
+        {/* Menu Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+          {filteredMenuItems.map((item) => (
+            <Card key={item.id} className="overflow-hidden hover:shadow-xl transition-all duration-300 border-slate-200 hover:border-blue-300">
+              <CardContent className="p-0">
+                <div className="aspect-square bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center">
+                  <UtensilsCrossed className="h-12 w-12 text-slate-400" />
         </div>
+                <div className="p-4">
+                  <div className="flex justify-between items-start mb-2">
+                    <h3 className="font-semibold text-slate-900 line-clamp-2">{item.name}</h3>
+                    <span className="text-lg font-bold text-blue-600">${item.price}</span>
           </div>
-        ) : (
-              <div>
-                {Object.entries(groupedRecipes).map(([category, items]) => (
-                  <div key={category} className="mb-4">
-                    <h2 className="text-base font-semibold mb-2 px-1 text-primary/80 tracking-tight">{category}</h2>
-                    <div className="flex flex-col gap-2">
-                      {items.map(item => (
-                        <Card
-                          key={item.id}
-                          className="overflow-hidden group border border-border rounded-xl bg-white dark:bg-card shadow-sm"
-                        >
-                          <CardContent className="p-0 flex items-center gap-3">
-                            <div className="w-20 h-20 flex-shrink-0 flex items-center justify-center bg-muted rounded-l-xl">
-                              <span className="text-3xl text-muted-foreground/30">🍽️</span>
-                    </div>
-                            <div className="flex-1 py-2 pr-2">
-                              <div className="flex items-center justify-between mb-1">
-                                <span className="font-semibold text-base text-primary line-clamp-1">{item.name}</span>
-                                <Badge variant="secondary" className="text-[10px] px-2 py-0.5 ml-2">{item.restaurant}</Badge>
-                  </div>
-                              <p className="text-xs text-muted-foreground line-clamp-2 mb-1">{item.description}</p>
-                              <div className="flex items-center justify-between mt-2">
-                                <span className="font-bold text-lg text-primary">Ksh {item.price}</span>
+                  <p className="text-sm text-slate-600 mb-3 line-clamp-2">{item.description}</p>
+                  <div className="flex justify-between items-center">
+                    <Badge variant="secondary" className="text-xs bg-slate-100 text-slate-700">
+                      {item.category}
+                    </Badge>
                       <Button
                         size="sm"
-                                  className="rounded-full px-4 py-1 text-xs h-8"
                                   onClick={() => handleOpenCustomization(item)}
-                        disabled={item.available_quantity === 0}
+                      className="flex items-center space-x-1 bg-blue-600 hover:bg-blue-700 text-white"
                       >
-                                  <Plus className="h-4 w-4 mr-1" />Add
+                      <Plus className="h-3 w-3" />
+                      <span>Add</span>
                       </Button>
                     </div>
                   </div>
@@ -606,171 +737,355 @@ export function CompleteCustomerPortal() {
               </Card>
             ))}
                     </div>
+
+        {/* Empty State */}
+        {filteredMenuItems.length === 0 && !loading && (
+          <div className="text-center py-16">
+            <div className="p-4 bg-slate-100 rounded-full w-16 h-16 mx-auto mb-4 flex items-center justify-center">
+              <UtensilsCrossed className="h-8 w-8 text-slate-400" />
                   </div>
-                ))}
-                {Object.keys(groupedRecipes).length === 0 && !loading && (
-                  <div className="text-center py-12 text-muted-foreground">
-                    <p className="text-lg mb-2">No recipes found</p>
-                    <p className="text-sm">Try adjusting your search or filters</p>
-                  </div>
-                )}
+            <h3 className="text-lg font-medium text-slate-900 mb-2">No items found</h3>
+            <p className="text-slate-600">Try adjusting your search or filters.</p>
           </div>
         )}
       </div>
 
-          {/* Cart & Checkout Dialog: single step */}
+      {/* Cart Dialog */}
       <Dialog open={showCart} onOpenChange={setShowCart}>
-            <DialogContent className="max-w-xs w-full mx-auto rounded-xl p-0 overflow-hidden">
-              <DialogHeader className="p-3 border-b">
-                <DialogTitle>
-                  <div className="flex items-center gap-2">
-              <ShoppingCart className="h-5 w-5" />
-                    Your Order
-                    {isTableOrder && tableInfo && (
-                      <Badge variant="outline" className="ml-2">
-                        {tableInfo.number}
-                      </Badge>
-                    )}
-                  </div>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center space-x-2">
+              <ShoppingCart className="h-5 w-5 text-blue-600" />
+              <span>{addingToExisting ? 'Add to Existing Order' : 'Shopping Cart'}</span>
             </DialogTitle>
           </DialogHeader>
-              <div className="space-y-3 p-3">
+          <div className="space-y-4">
             {cart.length === 0 ? (
               <div className="text-center py-8">
-                    <ShoppingCart className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-                <p className="text-muted-foreground">Your cart is empty</p>
+                <div className="p-3 bg-slate-100 rounded-full w-12 h-12 mx-auto mb-4 flex items-center justify-center">
+                  <ShoppingCart className="h-6 w-6 text-slate-400" />
+                </div>
+                <p className="text-slate-500">
+                  {addingToExisting ? 'Add items to your existing order' : 'Your cart is empty'}
+                </p>
               </div>
             ) : (
               <>
-                    <div className="space-y-2 max-h-56 overflow-auto">
+                <div className="space-y-3 max-h-64 overflow-y-auto">
                   {cart.map((item) => (
-                        <div key={item.id} className="flex items-center justify-between p-2 bg-muted/50 rounded-lg">
+                    <div key={item.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg border border-slate-200">
                           <div className="flex-1">
-                            <h4 className="font-medium text-sm line-clamp-1">{item.name}</h4>
-                            <p className="text-xs text-muted-foreground">
-                              Ksh {item.price.toFixed(2)} × {item.quantity}
-                            </p>
+                        <h4 className="font-medium text-slate-900">{item.name}</h4>
+                        <p className="text-sm text-slate-600">${item.price} each</p>
                             {item.customization && (
-                              <p className="text-xs text-primary/80 bg-primary/10 p-1 rounded mt-1">
-                                {item.customization}
-                              </p>
+                          <p className="text-xs text-slate-500 mt-1">Note: {item.customization}</p>
                             )}
                           </div>
-                          <div className="flex flex-col items-end gap-1">
-                            <span className="font-bold text-sm">Ksh {item.total_price.toFixed(2)}</span>
+                      <div className="flex items-center space-x-2">
                             <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => updateCartItemQuantity(item.id, item.quantity - 1)}
+                          className="h-8 w-8 p-0 border-slate-300"
+                        >
+                          <Minus className="h-3 w-3" />
+                        </Button>
+                        <span className="w-8 text-center font-medium">{item.quantity}</span>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => updateCartItemQuantity(item.id, item.quantity + 1)}
+                          className="h-8 w-8 p-0 border-slate-300"
+                        >
+                          <Plus className="h-3 w-3" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
                               onClick={() => removeFromCart(item.id)}
+                          className="h-8 w-8 p-0 border-red-300 text-red-600 hover:bg-red-50"
                             >
-                              <Trash2 className="h-4 w-4" />
+                          <Trash2 className="h-3 w-3" />
                             </Button>
                           </div>
                         </div>
                       ))}
                     </div>
                     <Separator />
-                    <div className="space-y-1 text-sm">
-                      <div className="flex justify-between">
-                        <span>Subtotal (before VAT):</span>
-                        <span>Ksh {(getCartTotal() / 1.16).toFixed(2)}</span>
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center">
+                    <span className="font-semibold text-slate-900">Subtotal:</span>
+                    <span className="text-lg font-bold text-blue-600">${getCartTotal()}</span>
                       </div>
-                      <div className="flex justify-between text-xs text-muted-foreground">
-                        <span>Tax (16% VAT, included):</span>
-                        <span>Ksh {(getCartTotal() * 0.16 / 1.16).toFixed(2)}</span>
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-600">Tax (16%):</span>
+                    <span className="text-slate-600">${(getCartTotal() * 0.16).toFixed(2)}</span>
                     </div>
-                      <div className="flex justify-between font-bold text-base">
-                        <span>Total:</span>
-                        <span className="font-bold">Ksh {getCartTotal().toFixed(2)}</span>
+                  <div className="flex justify-between items-center pt-2 border-t border-slate-200">
+                    <span className="font-semibold text-slate-900">Total:</span>
+                    <span className="text-xl font-bold text-blue-600">${(getCartTotal() * 1.16).toFixed(2)}</span>
                     </div>
                     </div>
-                    {/* Single step checkout: name/phone and place order */}
-                    {!existingOrder && (
-                      <>
-                        <div>
-                          <label className="text-xs font-medium">Name (Optional)</label>
-                          <Input
-                            placeholder="Your name"
-                            value={customerName}
-                            onChange={(e) => setCustomerName(e.target.value)}
-                            className="h-8 text-xs"
-                          />
-                  </div>
-                        <div>
-                          <label className="text-xs font-medium">Phone (Optional)</label>
-                          <Input
-                            placeholder="Your phone number"
-                            value={customerPhone}
-                            onChange={(e) => setCustomerPhone(e.target.value)}
-                            className="h-8 text-xs"
-                          />
-                </div>
-                      </>
-                    )}
-                    <Button 
-                      className="w-full mt-2" 
-                      onClick={async () => {
-                        await completeOrder();
-                        setShowCart(false);
-                        setShowOrderStatus(true);
-                        setAddingToExisting(false);
-                      }}
-                      disabled={placingOrder}
-                    >
-                      {placingOrder ? (
-                        <span className="flex items-center justify-center">
-                          <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></span>
-                          Placing...
-                        </span>
-                      ) : (
-                        <>
-                          <CheckCircle className="h-4 w-4 mr-2" />
-                          {isTableOrder ? "Place Table Order" : "Place Order"}
-                        </>
-                      )}
-                  </Button>
+                <Button
+                  onClick={() => {
+                    setShowCart(false)
+                    setShowCheckout(true)
+                  }}
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+                >
+                  {addingToExisting ? 'Add to Order' : 'Proceed to Checkout'}
+                </Button>
               </>
             )}
           </div>
         </DialogContent>
       </Dialog>
 
-          {/* Customization Dialog */}
-          <Dialog open={isCustomizing} onOpenChange={setIsCustomizing}>
-            <DialogContent className="max-w-xs w-full mx-auto rounded-xl p-0 overflow-hidden">
-              <DialogHeader className="p-3 border-b">
-                <DialogTitle>Customize Item</DialogTitle>
+      {/* Checkout Dialog */}
+      <Dialog open={showCheckout} onOpenChange={setShowCheckout}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center space-x-2">
+              <CreditCard className="h-5 w-5 text-blue-600" />
+              <span>{addingToExisting ? 'Add to Order' : 'Checkout'}</span>
+            </DialogTitle>
           </DialogHeader>
-              <div className="p-3">
-                {customizingItem && (
-            <div className="space-y-3">
-                    <div>
-                      <h3 className="font-semibold text-base">{customizingItem.name}</h3>
-                      {customizingItem.portionSize && (
-                        <p className="text-xs text-muted-foreground capitalize">{customizingItem.portionSize}</p>
-                      )}
-                    </div>
-                    <Textarea
-                      placeholder="e.g., No onions, extra spicy..."
-                      value={customizationNotes}
-                      onChange={(e) => setCustomizationNotes(e.target.value)}
-                      rows={3}
-                      className="text-xs"
-              />
-            </div>
-                )}
+          <div className="space-y-4">
+            {!addingToExisting && (
+                      <>
+                        <div>
+                  <Label htmlFor="customerName" className="text-slate-700">Name (Optional)</Label>
+                          <Input
+                    id="customerName"
+                            value={customerName}
+                            onChange={(e) => setCustomerName(e.target.value)}
+                    placeholder="Enter your name"
+                    className="border-slate-200 focus:border-blue-500 focus:ring-blue-500"
+                          />
+                  </div>
+                        <div>
+                  <Label htmlFor="customerPhone" className="text-slate-700">Phone (Optional)</Label>
+                          <Input
+                    id="customerPhone"
+                            value={customerPhone}
+                            onChange={(e) => setCustomerPhone(e.target.value)}
+                    placeholder="Enter your phone number"
+                    className="border-slate-200 focus:border-blue-500 focus:ring-blue-500"
+                          />
+                </div>
+                <Separator />
+                      </>
+                    )}
+            <div className="space-y-3 bg-slate-50 p-4 rounded-lg">
+              <div className="flex justify-between">
+                <span className="text-slate-600">Subtotal:</span>
+                <span className="font-medium">${getCartTotal()}</span>
               </div>
-              <DialogFooter className="p-3 pt-0 flex gap-2">
-                <Button variant="ghost" onClick={() => setIsCustomizing(false)} className="flex-1">
-                Cancel
-              </Button>
-                <Button onClick={handleConfirmAddToCart} className="flex-1">Add to Order</Button>
-              </DialogFooter>
+              <div className="flex justify-between">
+                <span className="text-slate-600">Tax (16%):</span>
+                <span className="font-medium">${(getCartTotal() * 0.16).toFixed(2)}</span>
+              </div>
+              <Separator />
+              <div className="flex justify-between font-semibold text-lg">
+                <span className="text-slate-900">Total:</span>
+                <span className="text-blue-600">${(getCartTotal() * 1.16).toFixed(2)}</span>
+              </div>
+            </div>
+                    <Button 
+              onClick={completeOrder}
+                      disabled={placingOrder}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+                    >
+                      {placingOrder ? (
+                        <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  {addingToExisting ? 'Adding to Order...' : 'Placing Order...'}
+                        </>
+              ) : (
+                addingToExisting ? 'Add to Order' : 'Place Order'
+                      )}
+                  </Button>
+          </div>
         </DialogContent>
       </Dialog>
-        </>
-      )}
+
+          {/* Customization Dialog */}
+          <Dialog open={isCustomizing} onOpenChange={setIsCustomizing}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center space-x-2">
+              <UtensilsCrossed className="h-5 w-5 text-blue-600" />
+              <span>Customize {customizingItem?.name}</span>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+                    <div>
+              <Label htmlFor="customizationNotes" className="text-slate-700">Special Instructions</Label>
+                    <Textarea
+                id="customizationNotes"
+                      value={customizationNotes}
+                      onChange={(e) => setCustomizationNotes(e.target.value)}
+                placeholder="Any special requests or modifications..."
+                      rows={3}
+                className="border-slate-200 focus:border-blue-500 focus:ring-blue-500"
+              />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setIsCustomizing(false)} className="border-slate-300">
+                Cancel
+              </Button>
+              <Button onClick={handleConfirmAddToCart} className="bg-blue-600 hover:bg-blue-700 text-white">
+                Add to Cart
+              </Button>
+              </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Payment Dialog */}
+      <Dialog open={showPaymentDialog} onOpenChange={setShowPaymentDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center space-x-2">
+              <CreditCard className="h-5 w-5 text-blue-600" />
+              <span>Payment for {tableInfo?.number}</span>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label className="text-slate-700">Payment Method</Label>
+              <div className="grid grid-cols-3 gap-2 mt-2">
+                <Button
+                  variant={paymentMethod === 'cash' ? 'default' : 'outline'}
+                  onClick={() => setPaymentMethod('cash')}
+                  className={`flex items-center gap-2 ${paymentMethod === 'cash' ? 'bg-blue-600 hover:bg-blue-700' : 'border-slate-300'}`}
+                >
+                  <DollarSign className="h-4 w-4" />
+                  Cash
+                </Button>
+                <Button
+                  variant={paymentMethod === 'card' ? 'default' : 'outline'}
+                  onClick={() => setPaymentMethod('card')}
+                  className={`flex items-center gap-2 ${paymentMethod === 'card' ? 'bg-blue-600 hover:bg-blue-700' : 'border-slate-300'}`}
+                >
+                  <CreditCard className="h-4 w-4" />
+                  Card
+                </Button>
+                <Button
+                  variant={paymentMethod === 'mobile' ? 'default' : 'outline'}
+                  onClick={() => setPaymentMethod('mobile')}
+                  className={`flex items-center gap-2 ${paymentMethod === 'mobile' ? 'bg-blue-600 hover:bg-blue-700' : 'border-slate-300'}`}
+                >
+                  <Smartphone className="h-4 w-4" />
+                  Mobile
+                </Button>
+              </div>
+            </div>
+            <div className="text-center bg-slate-50 p-4 rounded-lg">
+              <p className="text-lg font-semibold text-slate-900">Total: ${existingOrder?.total_amount || 0}</p>
+            </div>
+            <Button
+              onClick={handlePayment}
+              disabled={placingOrder}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+            >
+              {placingOrder ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Processing Payment...
+                </>
+              ) : (
+                'Process Payment'
+              )}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Order Status Dialog */}
+      <Dialog open={showOrderStatus} onOpenChange={setShowOrderStatus}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center space-x-2">
+              <Activity className="h-5 w-5 text-blue-600" />
+              <span>Order Status - {tableInfo?.number}</span>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            {existingOrder && (
+              <div className="space-y-4">
+                <div className="flex justify-between items-center p-3 bg-slate-50 rounded-lg">
+                  <span className="font-medium text-slate-700">Status:</span>
+                  <Badge variant={existingOrder.status === 'paid' ? 'default' : 'secondary'} className="bg-blue-100 text-blue-700">
+                    {getOrderStatusLabel(existingOrder.status)}
+                  </Badge>
+                </div>
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-slate-600">Total Amount:</span>
+                    <span className="font-semibold text-slate-900">${existingOrder.total_amount}</span>
+                  </div>
+                  {existingOrder.payment_method && (
+                    <div className="flex justify-between">
+                      <span className="text-slate-600">Payment Method:</span>
+                      <span className="capitalize text-slate-900">{existingOrder.payment_method}</span>
+                    </div>
+                  )}
+                </div>
+                <Separator />
+                <div className="space-y-2">
+                  <h4 className="font-medium text-slate-900">Order Items:</h4>
+                  <div className="max-h-32 overflow-y-auto space-y-1">
+                    {existingOrder.items?.map((item: any, index: number) => (
+                      <div key={index} className="flex justify-between text-sm p-2 bg-slate-50 rounded">
+                        <span className="text-slate-700">{item.menu_item_name} x{item.quantity}</span>
+                        <span className="font-medium text-slate-900">${item.total_price}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                {existingOrder.status !== 'paid' && (
+                  <Button
+                    onClick={() => {
+                      setShowOrderStatus(false)
+                      setShowPaymentDialog(true)
+                    }}
+                    className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+                  >
+                    Pay Now
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Session Error Dialog */}
+      <Dialog open={showSessionDialog} onOpenChange={setShowSessionDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center space-x-2">
+              <X className="h-5 w-5 text-red-600" />
+              <span>Session Error</span>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="p-3 bg-red-50 rounded-lg border border-red-200">
+              <p className="text-red-700">{sessionError || 'Invalid session'}</p>
+            </div>
+            <p className="text-sm text-slate-600">
+              Please scan the QR code again or contact staff for assistance.
+            </p>
+            <Button
+              onClick={() => window.location.reload()}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+            >
+              Refresh Page
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

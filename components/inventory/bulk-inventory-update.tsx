@@ -258,20 +258,25 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
 
   // Helper functions for KRA integration
   async function registerIngredientWithKRA(ingredient: BaseIngredient, newCost?: number) {
-    const res = await fetch('/api/kra/register-ingredient', {
+    console.log(`Registering ingredient with KRA: ${ingredient.name} (ID: ${ingredient.id})`)
+    
+    const res = await fetch('/api/kra/register-item', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        id: ingredient.id,
+        ingredientId: ingredient.id,
         name: ingredient.name,
-        price: newCost !== undefined ? newCost : ingredient.cost_per_unit,
-        description: ingredient.description,
-        itemCd: ingredient.itemCd,
-        unit: ingredient.unit, // Always send unit
-        category: ingredient.category, // Send category for proper itemClsCd
+        category: ingredient.category,
+        unit: ingredient.unit,
+        cost_per_unit: newCost !== undefined ? newCost : ingredient.cost_per_unit,
+        description: ingredient.description || ''
       }),
     })
-    return res.json()
+    
+    const data = await res.json()
+    console.log(`KRA registration response for ${ingredient.name}:`, data)
+    
+    return data
   }
 
   // Send purchase transaction to KRA
@@ -362,19 +367,40 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
       // Step 1: Register items with KRA if needed
       for (const item of itemsToUpdate) {
         if (!item.ingredient.itemCd || !item.ingredient.itemClsCd) {
+          console.log(`Registering ${item.ingredient.name} with KRA...`)
           const kraRes = await registerIngredientWithKRA(item.ingredient, item.newCost)
+          
           if (!kraRes.success) {
-            toast({ title: "KRA Registration Error", description: kraRes.error || "Failed to register ingredient with KRA", variant: "destructive" })
+            console.error(`KRA registration failed for ${item.ingredient.name}:`, kraRes.error)
+            toast({ 
+              title: "KRA Registration Error", 
+              description: kraRes.error || "Failed to register ingredient with KRA", 
+              variant: "destructive" 
+            })
             setIsProcessing(false)
             return
           }
+          
+          console.log(`KRA registration successful for ${item.ingredient.name}:`, kraRes)
+          
+          // Update the ingredient with KRA codes
           await inventoryService.updateIngredient(item.ingredient.id, {
             itemCd: kraRes.itemCd,
             itemClsCd: kraRes.itemClsCd,
+            taxTyCd: kraRes.taxTyCd,
             kra_status: 'ok',
           })
+          
+          // Update the local ingredient object with the new codes
           item.ingredient.itemCd = kraRes.itemCd
           item.ingredient.itemClsCd = kraRes.itemClsCd
+          item.ingredient.taxTyCd = kraRes.taxTyCd
+          
+          console.log(`Updated ingredient ${item.ingredient.name} with KRA codes:`, {
+            itemCd: kraRes.itemCd,
+            itemClsCd: kraRes.itemClsCd,
+            taxTyCd: kraRes.taxTyCd
+          })
         }
       }
 
@@ -407,6 +433,8 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
       const supplierOrderId = orderResult.data?.id
 
       // Step 3: Send purchase transaction to KRA
+      // DISABLED: Purchase API call commented out as requested
+      /*
       const kraPurchaseRes = await sendPurchaseToKRA(itemsToUpdate, selectedSupplierData, invoiceNumber, vatAmount, supplierOrderId)
       if (!kraPurchaseRes.success) {
         toast({ 
@@ -426,6 +454,7 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
           description: `Purchase transaction sent to KRA successfully. Invoice: ${kraPurchaseRes.invcNo}`, 
         })
       }
+      */
 
       // Step 4: Send stock-in transaction to KRA
       const kraStockInRes = await sendStockInToKRA(itemsToUpdate, invoiceNumber, vatAmount, supplierOrderId)
@@ -463,7 +492,7 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
 
       toast({
         title: "Success",
-        description: `Inventory updated successfully. ${!kraPurchaseRes.success || !kraStockInRes.success ? 'Some KRA transactions failed, but local inventory was updated.' : ''}`,
+        description: `Inventory updated successfully. Stock-in transaction sent to KRA. Purchase API is currently disabled.`,
       })
 
       // Reload ingredients after update and before closing dialog

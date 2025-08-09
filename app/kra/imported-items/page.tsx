@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/hooks/use-toast"
-import { Calendar, Download, RefreshCw, Search, Filter, Package } from "lucide-react"
+import { Calendar, Download, RefreshCw, Search, Filter, Package, Send, Loader2 } from "lucide-react"
 import { format } from "date-fns"
 import { Calendar as CalendarIcon } from "lucide-react"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -76,6 +76,7 @@ export default function KRAImportedItemsPage() {
   const [filterPaymentType, setFilterPaymentType] = useState<string>("all")
   const [selectedItem, setSelectedItem] = useState<KRAImportedItem | null>(null)
   const [showDetails, setShowDetails] = useState(false)
+  const [sendingItems, setSendingItems] = useState<Set<string>>(new Set())
 
   // Format date for KRA API (YYYYMMDDHHMMSS)
   const formatDateForKRA = (date: Date): string => {
@@ -102,52 +103,101 @@ export default function KRAImportedItemsPage() {
 
       const data = await response.json()
 
-      if (data.success) {
-        setImportedItems(data.importedItems || [])
-        toast({
-          title: "Imported Items Fetched",
-          description: `Successfully fetched ${data.importedItems?.length || 0} imported items from KRA`,
-        })
-      } else {
-        toast({
-          title: "Error Fetching Imported Items",
-          description: data.error || "Failed to fetch imported items from KRA",
-          variant: "destructive"
-        })
-        setImportedItems([])
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to fetch imported items')
       }
+
+      setImportedItems(data.items || [])
     } catch (error: any) {
-      console.error('Error fetching KRA imported items:', error)
+      console.error('Error fetching imported items:', error)
       toast({
         title: "Error",
-        description: error.message || "An error occurred while fetching imported items",
-        variant: "destructive"
+        description: error.message || "Failed to fetch imported items",
+        variant: "destructive",
       })
-      setImportedItems([])
     } finally {
       setLoading(false)
     }
   }
 
-  // Load imported items on component mount
+  // Send imported item to KRA
+  const sendItemToKRA = async (item: KRAImportedItem) => {
+    if (sendingItems.has(item.itemCd)) return
+
+    setSendingItems(prev => new Set([...prev, item.itemCd]))
+    
+    try {
+      // Format date for KRA (YYYYMMDD)
+      const importDate = new Date(item.importDt)
+      const dclDe = importDate.getFullYear().toString() + 
+                   String(importDate.getMonth() + 1).padStart(2, '0') + 
+                   String(importDate.getDate()).padStart(2, '0')
+
+      const payload = {
+        taskCd: item.importInvcNo || "2231943",
+        dclDe: dclDe,
+        itemSeq: 1,
+        hsCd: item.itemClsCd || "1231531231",
+        itemClsCd: item.itemClsCd,
+        itemCd: item.itemCd,
+        imptItemSttsCd: "1",
+        remark: item.importRemark || `Imported item: ${item.itemNm}`,
+        modrNm: "TestVSCU",
+        modrId: "11999"
+      }
+
+      console.log('Sending imported item to KRA:', payload)
+
+      const response = await fetch('/api/kra/update-import-item', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      })
+
+      const data = await response.json()
+
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to send imported item to KRA')
+      }
+
+      toast({
+        title: "Success",
+        description: `Imported item "${item.itemNm}" successfully sent to KRA`,
+      })
+
+    } catch (error: any) {
+      console.error('Error sending imported item to KRA:', error)
+      toast({
+        title: "Error",
+        description: error.message || "Failed to send imported item to KRA",
+        variant: "destructive",
+      })
+    } finally {
+      setSendingItems(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(item.itemCd)
+        return newSet
+      })
+    }
+  }
+
+  // Filter items based on search and payment type
+  const filteredItems = importedItems.filter(item => {
+    const matchesSearch = item.itemNm.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         item.itemCd.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         item.importInvcNo.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         item.importSpplrNm.toLowerCase().includes(searchTerm.toLowerCase())
+    const matchesPaymentType = filterPaymentType === "all" || item.importPmtTyCd === filterPaymentType
+    return matchesSearch && matchesPaymentType
+  })
+
+  // Load items on component mount
   useEffect(() => {
     fetchKRAImportedItems()
   }, [])
 
-  // Filter imported items based on search and payment type
-  const filteredItems = importedItems.filter(item => {
-    const matchesSearch = 
-      item.itemNm.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      item.itemCd.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      item.importInvcNo.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      item.importSpplrNm.toLowerCase().includes(searchTerm.toLowerCase())
-    
-    const matchesPaymentType = filterPaymentType === "all" || item.importPmtTyCd === filterPaymentType
-    
-    return matchesSearch && matchesPaymentType
-  })
-
-  // Get payment type badge
   const getPaymentTypeBadge = (type: string) => {
     switch (type) {
       case '01': return <Badge variant="default" className="bg-green-100 text-green-800">Cash</Badge>
@@ -157,7 +207,6 @@ export default function KRAImportedItemsPage() {
     }
   }
 
-  // Get receipt type badge
   const getReceiptTypeBadge = (type: string) => {
     switch (type) {
       case 'S': return <Badge variant="outline">Standard</Badge>
@@ -167,7 +216,6 @@ export default function KRAImportedItemsPage() {
     }
   }
 
-  // Get tax type badge
   const getTaxTypeBadge = (type: string) => {
     switch (type) {
       case 'A': return <Badge variant="outline" className="bg-red-100 text-red-800">Type A</Badge>
@@ -179,7 +227,6 @@ export default function KRAImportedItemsPage() {
     }
   }
 
-  // Format currency
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('en-KE', {
       style: 'currency',
@@ -187,12 +234,10 @@ export default function KRAImportedItemsPage() {
     }).format(amount)
   }
 
-  // Format date
   const formatDate = (dateString: string) => {
     try {
-      // KRA date format: YYYY-MM-DD HH:mm:ss
       const date = new Date(dateString)
-      return format(date, 'dd/MM/yyyy HH:mm')
+      return format(date, 'dd/MM/yyyy')
     } catch (error) {
       return dateString
     }
@@ -337,11 +382,12 @@ export default function KRAImportedItemsPage() {
                       <TableHead>Tax Amount</TableHead>
                       <TableHead>Payment Type</TableHead>
                       <TableHead>Tax Type</TableHead>
+                      <TableHead>Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {filteredItems.map((item, index) => (
-                      <TableRow key={`${item.itemCd}-${index}`} onClick={() => handleViewDetails(item)} className="cursor-pointer hover:bg-gray-50">
+                      <TableRow key={`${item.itemCd}-${index}`}>
                         <TableCell className="font-medium">
                           <div className="space-y-1">
                             <div>{item.itemCd}</div>
@@ -389,6 +435,35 @@ export default function KRAImportedItemsPage() {
                         </TableCell>
                         <TableCell>
                           {getTaxTypeBadge(item.taxTyCd)}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleViewDetails(item)}
+                            >
+                              View
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => sendItemToKRA(item)}
+                              disabled={sendingItems.has(item.itemCd)}
+                            >
+                              {sendingItems.has(item.itemCd) ? (
+                                <>
+                                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                                  Sending...
+                                </>
+                              ) : (
+                                <>
+                                  <Send className="h-3 w-3 mr-1" />
+                                  Send to KRA
+                                </>
+                              )}
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))}

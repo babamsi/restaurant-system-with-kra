@@ -1375,17 +1375,32 @@ export const tableOrdersService = {
       const { data, error } = await supabase
         .from('table_orders')
         .update({ 
-          status: 'paid',
           payment_method,
-          payment_date: new Date().toISOString()
+          payment_date: new Date().toISOString(),
+          status: 'paid'
         })
         .eq('id', order_id)
         .select()
-        .single();
+        .single()
       
-      return { data, error: error?.message || null };
+      return { data, error: error?.message || null }
     } catch (error) {
-      return { data: null, error: handleSupabaseError(error) };
+      return { data: null, error: handleSupabaseError(error) }
+    }
+  },
+
+  async updateOrder(order_id: string, updateData: any) {
+    try {
+      const { data, error } = await supabase
+        .from('table_orders')
+        .update(updateData)
+        .eq('id', order_id)
+        .select()
+        .single()
+      
+      return { data, error: error?.message || null }
+    } catch (error) {
+      return { data: null, error: handleSupabaseError(error) }
     }
   },
 

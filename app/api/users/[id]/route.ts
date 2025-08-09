@@ -5,11 +5,44 @@ import jwt from 'jsonwebtoken';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'devsecret';
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
-  const { id } = params;
-  const { data, error } = await supabase.from('users').select('id, name, role, active').eq('id', id).single();
-  if (error) return NextResponse.json({ error: error.message }, { status: 404 });
-  return NextResponse.json({ user: data });
+export async function GET(
+  req: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  const token = req.cookies.get('session')?.value;
+  if (!token) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+  
+  let user;
+  try {
+    user = jwt.verify(token, JWT_SECRET);
+  } catch {
+    return NextResponse.json({ error: 'Invalid session' }, { status: 401 });
+  }
+  
+  // Type guard for JwtPayload
+  if (typeof user !== 'object' || !user || !('role' in user)) {
+    return NextResponse.json({ error: 'Invalid session payload' }, { status: 401 });
+  }
+  
+  if (!(user.role === 'owner' || user.role === 'manager')) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('id, name, role, active, passcode_hash, kra_status, kra_submission_date')
+      .eq('id', params.id)
+      .single();
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+
+    return NextResponse.json({ user: data });
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 }
 
 export async function PUT(req: NextRequest, { params }: { params: { id: string } }) {

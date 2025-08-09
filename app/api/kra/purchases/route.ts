@@ -1,66 +1,57 @@
 import { NextRequest, NextResponse } from 'next/server'
-
-const TIN = "P052380018M"
-const BHF_ID = "01"
-const CMC_KEY = "34D646A326104229B0098044E7E6623E9A32CFF4CEDE4701BBC3"
+import { getKRAHeaders } from '@/lib/kra-utils'
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json()
-    const { lastReqDt } = body
-
-    if (!lastReqDt) {
+    // Get dynamic KRA headers
+    const { success: headersSuccess, headers, error: headersError } = await getKRAHeaders()
+    
+    if (!headersSuccess || !headers) {
       return NextResponse.json({ 
-        error: 'Missing required field: lastReqDt' 
+        error: headersError || 'Failed to get KRA credentials. Please initialize your device first.' 
       }, { status: 400 })
     }
 
-    console.log('Fetching KRA sales with lastReqDt:', lastReqDt)
+    const { lastReqDt } = await req.json()
 
-    // Prepare KRA API payload
+    if (!lastReqDt) {
+      return NextResponse.json({ error: 'lastReqDt is required' }, { status: 400 })
+    }
+
+    // Prepare payload for fetching purchases from KRA
     const kraPayload = {
+      tin: headers.tin,
+      bhfId: headers.bhfId,
       lastReqDt: lastReqDt
     }
 
-    console.log('KRA Sales List Payload:', JSON.stringify(kraPayload, null, 2))
+    console.log("KRA Fetch Purchases Payload:", JSON.stringify(kraPayload, null, 2))
 
-    // Call KRA API
+    // Call KRA API to fetch purchases
     const kraRes = await fetch('https://etims-api-sbx.kra.go.ke/etims-api/selectTrnsPurchaseSalesList', {
       method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json', 
-        tin: TIN, 
-        bhfId: BHF_ID, 
-        cmcKey: CMC_KEY 
-      },
+      headers: headers as unknown as Record<string, string>,
       body: JSON.stringify(kraPayload),
     })
     
     const kraData = await kraRes.json()
-    console.log('KRA Sales List Response:', kraData)
+    console.log("KRA Fetch Purchases Response:", kraData)
 
     if (kraData.resultCd !== '000') {
       return NextResponse.json({ 
-        error: kraData.resultMsg || 'KRA sales list fetch failed', 
-        kraData
+        error: kraData.resultMsg || 'KRA fetch purchases failed', 
+        kraData 
       }, { status: 400 })
     }
 
-    // Extract sales from KRA response - note it's saleList, not purchaseList
-    const sales = kraData.data?.saleList || []
-    
-    console.log(`Successfully fetched ${sales.length} sales from KRA`)
-
     return NextResponse.json({ 
       success: true, 
-      sales, // Changed from purchases to sales
-      totalCount: sales.length,
-      lastReqDt,
-      kraData
+      sales: kraData.data?.purchaseList || [],
+      message: 'Purchases fetched from KRA successfully'
     })
 
   } catch (error: any) {
-    console.error('KRA Sales List Error:', error)
+    console.error('KRA Fetch Purchases Error:', error)
     return NextResponse.json({ 
       error: error.message || 'Internal error' 
     }, { status: 500 })

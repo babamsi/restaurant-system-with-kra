@@ -1,9 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { getKRAHeaders } from '@/lib/kra-utils'
 
-const TIN = "P052380018M"
-const BHF_ID = "01"
-const CMC_KEY = "34D646A326104229B0098044E7E6623E9A32CFF4CEDE4701BBC3"
+function formatDateTime(date: Date) {
+  const pad = (n: number) => n.toString().padStart(2, '0')
+  return (
+    date.getFullYear().toString() +
+    pad(date.getMonth() + 1) +
+    pad(date.getDate()) +
+    pad(date.getHours()) +
+    pad(date.getMinutes()) +
+    pad(date.getSeconds())
+  )
+}
 
 // Generate unique invoice number for retry
 async function getNextRetryInvoiceNo() {
@@ -59,199 +68,174 @@ function generateItemClsCd(category: string): string {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json()
-    const { sales_invoice_id } = body
+    // Get dynamic KRA headers
+    const { success: headersSuccess, headers, error: headersError } = await getKRAHeaders()
 
-    if (!sales_invoice_id) {
+    if (!headersSuccess || !headers) {
       return NextResponse.json({ 
-        error: 'Missing required field: sales_invoice_id' 
+        error: headersError || 'Failed to get KRA credentials. Please initialize your device first.' 
       }, { status: 400 })
     }
 
-    // Fetch the failed sale record
-    const { data: failedSale, error: fetchError } = await supabase
-      .from('sales_invoices')
-      .select('*')
-      .eq('id', sales_invoice_id)
-      .single()
+    const { orderId, retryInvoiceNo } = await req.json()
 
-    if (fetchError || !failedSale) {
-      return NextResponse.json({ 
-        error: 'Failed sale record not found' 
-      }, { status: 404 })
+    if (!orderId || !retryInvoiceNo) {
+      return NextResponse.json({ error: 'Order ID and retry invoice number are required' }, { status: 400 })
     }
 
-    // Fetch the order and items
+    // Get the original order details
     const { data: order, error: orderError } = await supabase
       .from('table_orders')
-      .select('*, items:table_order_items(*)')
-      .eq('id', failedSale.order_id)
+      .select('*')
+      .eq('id', orderId)
       .single()
 
     if (orderError || !order) {
-      return NextResponse.json({ 
-        error: 'Order not found' 
-      }, { status: 404 })
+      return NextResponse.json({ error: 'Order not found' }, { status: 404 })
     }
 
-    // Check if the error was due to duplicate invoice number
-    const isDuplicateInvoiceError = failedSale.kra_error?.toLowerCase().includes('invoice number already exists') ||
-                                   failedSale.kra_error?.toLowerCase().includes('duplicate invoice') ||
-                                   failedSale.kra_error?.toLowerCase().includes('invoice already exists')
-
-    // Generate new invoice number if needed
-    let newInvoiceNo = failedSale.trdInvcNo
-    if (isDuplicateInvoiceError) {
-      newInvoiceNo = await getNextRetryInvoiceNo()
-      console.log(`Duplicate invoice error detected. Using new invoice number: ${newInvoiceNo}`)
-    }
-
-    // Prepare items for KRA
-    const items = order.items.map((item: any) => ({
-      id: item.menu_item_id,
-      name: item.menu_item_name,
-      price: item.unit_price,
-      qty: item.quantity,
-      itemCd: item.itemCd || 'UNKNOWN',
-      itemClsCd: item.itemClsCd || generateItemClsCd(item.category || 'general'),
-      unit: item.unit || 'piece'
-    }))
+    // Format dates
+    const now = new Date()
+    const cfmDt = formatDateTime(now)
+    const salesDt = formatDateTime(now)
 
     // Calculate totals
-    const TAX_RATE = 0.16
-    const TAX_FACTOR = TAX_RATE / (1 + TAX_RATE)
-    
-    const calculatedItems = items.map((item: any) => {
-      const total = item.price * item.qty
-      const taxAmount = total * TAX_FACTOR
-      const netAmount = total - taxAmount
-      return { ...item, total, taxAmount, netAmount }
-    })
+    const totItemCnt = order.items?.length || 0
+    const taxblAmtB = order.subtotal || 0
+    const taxAmtB = order.tax_amount || 0
+    const totAmt = order.total_amount || 0
 
-    const orderTotal = calculatedItems.reduce((sum: number, item: any) => sum + item.total, 0)
-    const orderTax = calculatedItems.reduce((sum: number, item: any) => sum + item.taxAmount, 0)
-    const orderNet = calculatedItems.reduce((sum: number, item: any) => sum + item.netAmount, 0)
+    // Create item list
+    const itemList = (order.items || []).map((item: any, index: number) => ({
+      itemSeq: index + 1,
+      itemCd: item.itemCd || 'KE2NTU0000001',
+      itemClsCd: item.itemClsCd || '5059690800',
+      itemNm: item.menu_item_name,
+      bcd: null,
+      pkgUnitCd: 'NT',
+      pkg: 1,
+      qtyUnitCd: 'U',
+      qty: item.quantity,
+      itemExprDt: null,
+      prc: item.unit_price,
+      splyAmt: item.total_price,
+      totDcAmt: 0,
+      taxblAmt: item.total_price,
+      taxTyCd: 'B',
+      taxAmt: Math.round(item.total_price * 0.16),
+      totAmt: item.total_price
+    }))
 
-    // Prepare payment and customer info
-    const payment = { method: failedSale.payment_method }
-    const customer = { tin: '', name: order.customer_name || 'Walk-in Customer' }
+    // Determine payment type
+    let pmtTyCd = '01' // Default to cash
+    if (order.payment_method) {
+      switch (order.payment_method) {
+        case 'cash':
+          pmtTyCd = '01'
+          break
+        case 'card':
+          pmtTyCd = '05'
+          break
+        case 'mobile':
+          pmtTyCd = '06'
+          break
+        default:
+          pmtTyCd = '01'
+      }
+    }
 
-    // Call KRA save-sale API with new invoice number
-    const kraRes = await fetch(`${req.nextUrl.origin}/api/kra/save-sale`, {
+    const payload = {
+      tin: headers.tin,
+      bhfId: headers.bhfId,
+      cmcKey: headers.cmcKey,
+      trdInvcNo: orderId,
+      invcNo: retryInvoiceNo,
+      orgInvcNo: retryInvoiceNo,
+      custTin: order.customer_tin || 'A123456789Z',
+      custNm: order.customer_name || 'WALK IN CUSTOMER',
+      salesTyCd: 'N',
+      rcptTyCd: 'S',
+      pmtTyCd,
+      salesSttsCd: '02',
+      cfmDt,
+      salesDt,
+      totItemCnt,
+      taxblAmtB,
+      taxRtB: 16,
+      taxAmtB,
+      totTaxblAmt: taxblAmtB,
+      totTaxAmt: taxAmtB,
+      prchrAcptcYn: 'N',
+      totAmt,
+      receipt: {
+        custTin: order.customer_tin || 'A123456789Z',
+        rcptPbctDt: cfmDt,
+        prchrAcptcYn: 'N',
+      },
+      itemList,
+      // Additional KRA fields
+      taxblAmtA: 0,
+      taxRtE: 16,
+      modrId: 'Retry Sale',
+      regrNm: 'Retry Sale',
+      regrId: 'Retry Sale',
+      taxblAmtD: 0,
+      taxRtA: 0,
+      taxAmtC: 0,
+      taxAmtD: 0,
+      taxAmtA: 0,
+      taxblAmtE: 0,
+      taxblAmtC: 0,
+      modrNm: 'Retry Sale',
+      taxAmtE: 0,
+      taxRtC: 0,
+      taxRtD: 0,
+    }
+
+    console.log("Retry Sale Payload:", payload)
+
+    // Call KRA API with dynamic headers
+    const kraRes = await fetch('https://etims-api-sbx.kra.go.ke/etims-api/saveTrnsSalesOsdc', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        items: calculatedItems,
-        payment,
-        customer,
-        saleId: order.id,
-        retryInvoiceNo: newInvoiceNo // Pass the new invoice number
-      }),
+      headers: headers as unknown as Record<string, string>,
+      body: JSON.stringify(payload),
     })
 
     const kraData = await kraRes.json()
+    console.log("Retry Sale KRA Response:", kraData)
 
-    if (!kraData.success) {
-      // Update the failed sale record with new error
-      await supabase
-        .from('sales_invoices')
-        .update({
-          kra_error: kraData.error || kraData.kraData?.resultMsg || 'KRA retry failed',
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', sales_invoice_id)
-
+    if (kraData.resultCd !== '000') {
       return NextResponse.json({ 
-        error: kraData.error || 'KRA retry failed', 
-        kraData 
+        error: kraData.resultMsg || 'KRA retry sale failed', 
+        kraData, 
+        retryInvoiceNo 
       }, { status: 400 })
     }
 
-    // KRA retry successful - update the sale record
-    const { curRcptNo, totRcptNo, intrlData, rcptSign, sdcDateTime } = kraData.kraData.data
-    
-    await supabase
-      .from('sales_invoices')
+    // Update the order with KRA response
+    const { error: updateError } = await supabase
+      .from('table_orders')
       .update({
-        trdInvcNo: kraData.invcNo,
-        kra_curRcptNo: curRcptNo,
-        kra_totRcptNo: totRcptNo,
-        kra_intrlData: intrlData,
-        kra_rcptSign: rcptSign,
-        kra_sdcDateTime: sdcDateTime,
-        kra_status: 'ok',
-        kra_error: null,
+        kra_status: 'success',
+        kra_response: kraData,
+        kra_curRcptNo: kraData.data?.curRcptNo || null,
         updated_at: new Date().toISOString()
       })
-      .eq('id', sales_invoice_id)
+      .eq('id', orderId)
 
-    // Prepare receipt data for client-side PDF generation
-    const receiptItems = order.items.map((item: any) => {
-      // Determine tax type based on item category
-      let taxType: 'A-EX' | 'B' | 'C' | 'D' | 'E' = 'B' // Default to 16% VAT
-      
-      if (item.category?.toLowerCase().includes('exempt') || item.category?.toLowerCase().includes('basic')) {
-        taxType = 'A-EX' // Exempt
-      } else if (item.category?.toLowerCase().includes('zero') || item.category?.toLowerCase().includes('export')) {
-        taxType = 'C' // Zero rated
-      } else if (item.category?.toLowerCase().includes('non-vat') || item.category?.toLowerCase().includes('service')) {
-        taxType = 'D' // Non-VAT
-      } else if (item.category?.toLowerCase().includes('8%')) {
-        taxType = 'E' // 8% VAT
-      }
-      
-      const itemTotal = item.unit_price * item.quantity
-      const taxAmount = taxType === 'B' ? itemTotal * 0.16 : 
-                       taxType === 'E' ? itemTotal * 0.08 : 0
-      
-      return {
-        name: item.menu_item_name,
-        unit_price: item.unit_price,
-        quantity: item.quantity,
-        total: itemTotal,
-        tax_rate: taxType === 'B' ? 16 : taxType === 'E' ? 8 : 0,
-        tax_amount: taxAmount,
-        tax_type: taxType
-      }
-    })
-
-    const receiptData = {
-      kraData: {
-        curRcptNo,
-        totRcptNo,
-        intrlData,
-        rcptSign,
-        sdcDateTime,
-        invcNo: kraData.invcNo,
-        trdInvcNo: order.id
-      },
-      items: receiptItems,
-      customer: {
-        name: order.customer_name || 'Walk-in Customer',
-        pin: order.customer_pin
-      },
-      payment_method: failedSale.payment_method,
-      total_amount: orderTotal,
-      tax_amount: orderTax,
-      net_amount: orderNet,
-      order_id: order.id,
-      discount_amount: 0,
-      discount_percentage: 0,
-      discount_narration: ''
+    if (updateError) {
+      console.error('Error updating order with KRA response:', updateError)
     }
 
     return NextResponse.json({ 
       success: true, 
       kraData,
-      invcNo: kraData.invcNo,
-      message: 'Sale successfully retried and pushed to KRA',
-      receiptData: receiptData // Return receipt data for client-side PDF generation
+      retryInvoiceNo,
+      message: 'Retry sale processed successfully'
     })
 
-  } catch (error: any) {
-    console.error('KRA Retry Error:', error)
-    return NextResponse.json({ 
-      error: error.message || 'Internal error' 
-    }, { status: 500 })
+  } catch (e: any) {
+    console.error('Retry sale error:', e)
+    return NextResponse.json({ error: e.message || 'Internal error' }, { status: 500 })
   }
 } 

@@ -1,9 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { getKRAHeaders } from '@/lib/kra-utils'
 
-const TIN = "P052380018M"
-const BHF_ID = "01"
-const CMC_KEY = "34D646A326104229B0098044E7E6623E9A32CFF4CEDE4701BBC3"
+function formatDateTime(date: Date) {
+  const pad = (n: number) => n.toString().padStart(2, '0')
+  return (
+    date.getFullYear().toString() +
+    pad(date.getMonth() + 1) +
+    pad(date.getDate()) +
+    pad(date.getHours()) +
+    pad(date.getMinutes()) +
+    pad(date.getSeconds())
+  )
+}
 
 // Generate item classification code based on category
 function generateItemClsCd(category: string): string {
@@ -120,189 +129,118 @@ async function getNextItemCompositionNo() {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json()
-    const { recipe_id, recipe_name, recipe_price, recipe_category, components, recipe_itemCd } = body
+    // Get dynamic KRA headers
+    const { success: headersSuccess, headers, error: headersError } = await getKRAHeaders()
 
-    if (!recipe_id || !recipe_name || !components || components.length === 0) {
+    if (!headersSuccess || !headers) {
       return NextResponse.json({ 
-        error: 'Missing required fields: recipe_id, recipe_name, or components' 
+        error: headersError || 'Failed to get KRA credentials. Please initialize your device first.' 
       }, { status: 400 })
     }
 
-    if (!recipe_itemCd) {
-      return NextResponse.json({ 
-        error: 'Recipe must be registered with KRA first. Please register the recipe item before sending composition.' 
-      }, { status: 400 })
+    const { recipeId } = await req.json()
+
+    if (!recipeId) {
+      return NextResponse.json({ error: 'Recipe ID is required' }, { status: 400 })
     }
 
-    console.log('Processing item composition for recipe:', recipe_name, 'with itemCd:', recipe_itemCd)
+    // Get recipe details
+    const { data: recipe, error: recipeError } = await supabase
+      .from('recipes')
+      .select('*')
+      .eq('id', recipeId)
+      .single()
 
-    // Step 1: Register all ingredients with KRA if needed
-    const registrationResults = []
-    for (const component of components) {
-      if (component.component_type === 'ingredient') {
-        const result = await registerIngredientIfNeeded(component)
-        registrationResults.push({
-          component_id: component.component_id,
-          component_name: component.name,
-          success: result.success,
-          itemCd: result.itemCd,
-          itemClsCd: result.itemClsCd,
-          error: result.error
-        })
-        
-        if (!result.success) {
-          return NextResponse.json({ 
-            error: `Failed to register ingredient ${component.name}: ${result.error}` 
-          }, { status: 400 })
-        }
-        
-        // Update component with KRA codes from the database
-        component.itemCd = result.itemCd
-        component.itemClsCd = result.itemClsCd
-        console.log(`Updated component ${component.name} with KRA codes:`, {
-          itemCd: result.itemCd,
-          itemClsCd: result.itemClsCd
-        })
+    if (recipeError || !recipe) {
+      return NextResponse.json({ error: 'Recipe not found' }, { status: 404 })
+    }
+
+    // Get recipe components
+    const { data: components, error: componentsError } = await supabase
+      .from('recipe_components')
+      .select('*, ingredient:ingredients(*), batch:batches(*)')
+      .eq('recipe_id', recipeId)
+
+    if (componentsError) {
+      return NextResponse.json({ error: 'Failed to fetch recipe components' }, { status: 500 })
+    }
+
+    if (!components || components.length === 0) {
+      return NextResponse.json({ error: 'Recipe has no components' }, { status: 400 })
+    }
+
+    // Generate item composition data
+    const compositionList = components.map((component, index) => {
+      const itemData = component.component_type === 'ingredient' 
+        ? component.ingredient 
+        : component.batch
+
+      return {
+        itemSeq: index + 1,
+        itemCd: itemData?.itemCd || 'KE2NTU0000001',
+        itemClsCd: itemData?.itemClsCd || '5059690800',
+        itemNm: itemData?.name || 'Unknown',
+        qty: component.quantity,
+        unit: component.unit || itemData?.unit || 'U'
       }
+    })
+
+    const now = new Date()
+    const cfmDt = formatDateTime(now)
+
+    const payload = {
+      tin: headers.tin,
+      bhfId: headers.bhfId,
+      cmcKey: headers.cmcKey,
+      itemCd: recipe.itemCd || 'KE2NTU0000001',
+      itemClsCd: recipe.itemClsCd || '5059690800',
+      itemNm: recipe.name,
+      compositionList,
+      regrId: 'Recipe Manager',
+      regrNm: 'Recipe Manager',
+      modrId: 'Recipe Manager',
+      modrNm: 'Recipe Manager',
+      cfmDt
     }
 
-    // Step 2: Generate unique composition number
-    const compositionNo = await getNextItemCompositionNo()
+    console.log("Item Composition Payload:", payload)
 
-    // Step 3: Send each component composition to KRA
-    const compositionResults = []
-    
-    for (const component of components) {
-      if (component.component_type === 'ingredient') {
-        // Validate component quantity
-        if (typeof component.quantity !== 'number' || component.quantity <= 0) {
-          return NextResponse.json({ 
-            error: `Invalid quantity for ingredient ${component.name}: ${component.quantity}. Quantity must be a positive number.` 
-          }, { status: 400 })
-        }
-
-        // Prepare KRA saveItemComposition payload
-        const compositionPayload = {
-          itemCd: recipe_itemCd, // Recipe's itemCd
-          cpstItemCd: component.itemCd, // Component's itemCd (from ingredient table)
-          cpstQty: component.quantity, // Use the actual quantity from the component
-          regrId: 'Restaurant POS',
-          regrNm: 'Restaurant POS'
-        }
-
-        console.log('KRA Item Composition Payload for component:', component.name, {
-          itemCd: recipe_itemCd,
-          cpstItemCd: component.itemCd, // This should be the ingredient's itemCd
-          cpstQty: component.quantity, // This is the actual ingredient quantity
-          unit: component.unit,
-          regrId: 'Restaurant POS',
-          regrNm: 'Restaurant POS'
-        })
-
-        // Validate that we have the ingredient's itemCd
-        if (!component.itemCd) {
-          console.error('Missing itemCd for component:', component.name)
-          compositionResults.push({
-            component_name: component.name,
-            component_itemCd: 'MISSING',
-            success: false,
-            kraData: null,
-            error: 'Missing ingredient itemCd - ingredient not properly registered with KRA'
-          })
-          continue
-        }
-
-        // Send to KRA API
+    // Call KRA API with dynamic headers
         const kraRes = await fetch('https://etims-api-sbx.kra.go.ke/etims-api/saveItemComposition', {
           method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json', 
-            tin: TIN, 
-            bhfId: BHF_ID, 
-            cmcKey: CMC_KEY 
-          },
-          body: JSON.stringify(compositionPayload),
+      headers: headers as unknown as Record<string, string>,
+      body: JSON.stringify(payload),
         })
         
         const kraData = await kraRes.json()
-        console.log('KRA Item Composition Response for component:', component.name, kraData)
-
-        compositionResults.push({
-          component_name: component.name,
-          component_itemCd: component.itemCd,
-          success: kraData.resultCd === '000',
-          kraData: kraData,
-          error: kraData.resultCd !== '000' ? kraData.resultMsg : null
-        })
+    console.log("KRA Item Composition Response:", kraData)
 
         if (kraData.resultCd !== '000') {
-          console.error('KRA composition failed for component:', component.name, kraData.resultMsg)
-          // Continue with other components but log the error
-        }
-      }
+      return NextResponse.json({ 
+        error: kraData.resultMsg || 'KRA item composition failed', 
+        kraData 
+      }, { status: 400 })
     }
 
-    // Step 4: Check if any compositions failed
-    const failedCompositions = compositionResults.filter(result => !result.success)
-    const successfulCompositions = compositionResults.filter(result => result.success)
-
-    if (failedCompositions.length > 0) {
-      console.warn('Some item compositions failed:', failedCompositions)
-    }
-
-    // Step 5: Log transaction in database
-    const transactionData = {
-      transaction_type: 'item_composition',
-      kra_invoice_no: compositionNo,
-      recipe_id: recipe_id,
-      items_data: components,
-      composition_results: compositionResults,
-      total_components: components.length,
-      successful_compositions: successfulCompositions.length,
-      failed_compositions: failedCompositions.length,
-      status: failedCompositions.length === 0 ? 'success' : 'partial_success',
-      kra_response_data: compositionResults
-    }
-
-    const { error: dbError } = await supabase
-      .from('kra_transactions')
-      .insert(transactionData)
-
-    if (dbError) {
-      console.error('Database error logging transaction:', dbError)
-    }
-
-    // Step 6: Update recipe with KRA status
-    const compositionStatus = failedCompositions.length === 0 ? 'ok' : 'partial_success'
-    await supabase
+    // Update recipe with KRA response
+    const { error: updateError } = await supabase
       .from('recipes')
       .update({
-        kra_composition_status: compositionStatus,
-        kra_composition_no: compositionNo,
+        kra_composition_status: 'success',
+        kra_composition_response: kraData,
         updated_at: new Date().toISOString()
       })
-      .eq('id', recipe_id)
+      .eq('id', recipeId)
 
-    // Step 7: Return response
-    if (failedCompositions.length === 0) {
-      return NextResponse.json({ 
-        success: true, 
-        compositionNo,
-        registrationResults,
-        compositionResults,
-        message: `Item composition successfully sent to KRA for all ${components.length} components`
-      })
-    } else {
-      return NextResponse.json({ 
-        success: true, 
-        compositionNo,
-        registrationResults,
-        compositionResults,
-        message: `Item composition completed with ${successfulCompositions.length} successful and ${failedCompositions.length} failed components`,
-        warnings: failedCompositions.map(f => `${f.component_name}: ${f.error}`)
-      })
+    if (updateError) {
+      console.error('Error updating recipe with KRA response:', updateError)
     }
+
+      return NextResponse.json({ 
+        success: true, 
+      kraData,
+      message: 'Item composition sent to KRA successfully'
+    })
 
   } catch (error: any) {
     console.error('KRA Item Composition Error:', error)

@@ -1,62 +1,52 @@
 import { NextRequest, NextResponse } from 'next/server'
-
-const CMC_KEY = "34D646A326104229B0098044E7E6623E9A32CFF4CEDE4701BBC3"
+import { getKRAHeaders } from '@/lib/kra-utils'
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json()
-    const { tin, bhfId, dvcSrlNo } = body
-
-    // Validate required fields
-    if (!tin || !bhfId || !dvcSrlNo) {
+    // Get dynamic KRA headers
+    const { success: headersSuccess, headers, error: headersError } = await getKRAHeaders()
+    
+    if (!headersSuccess || !headers) {
       return NextResponse.json({ 
-        error: 'Missing required fields: tin, bhfId, and dvcSrlNo are required' 
+        error: headersError || 'Failed to get KRA credentials. Please initialize your device first.' 
       }, { status: 400 })
     }
 
-    console.log('Registering branch with KRA:', { tin, bhfId, dvcSrlNo })
+    const { branchData } = await req.json()
 
-    // Prepare KRA API payload
-    const kraPayload = {
-      tin: tin,
-      bhfId: bhfId,
-      dvcSrlNo: dvcSrlNo
+    if (!branchData) {
+      return NextResponse.json({ error: 'Branch data is required' }, { status: 400 })
     }
 
-    console.log('KRA Branch Registration Payload:', JSON.stringify(kraPayload, null, 2))
+    console.log("KRA Branch Registration Payload:", branchData)
 
-    // Call KRA API
-    const kraRes = await fetch('https://etims-api-sbx.kra.go.ke/etims-api/selectInitOsdcInfo', {
+    // Call KRA API with dynamic headers
+    const kraRes = await fetch('https://etims-api-sbx.kra.go.ke/etims-api/saveBhf', {
       method: 'POST',
-    //   headers: { 
-    //     'Content-Type': 'application/json', 
-    //     cmcKey: CMC_KEY 
-    //   },
-      body: JSON.stringify(kraPayload),
+      headers: headers as unknown as Record<string, string>,
+      body: JSON.stringify(branchData),
     })
     
     const kraData = await kraRes.json()
-    console.log('KRA Branch Registration Response:', kraData)
+    console.log("KRA Branch Registration Response:", kraData)
 
     if (kraData.resultCd !== '000') {
       return NextResponse.json({ 
         error: kraData.resultMsg || 'KRA branch registration failed', 
-        kraData
+        kraData 
       }, { status: 400 })
     }
 
-    console.log('Successfully registered branch with KRA')
-
     return NextResponse.json({ 
       success: true, 
-      message: 'Branch registered successfully with KRA',
-      kraData
+      kraData,
+      message: 'Branch registered with KRA successfully'
     })
 
   } catch (error: any) {
     console.error('KRA Branch Registration Error:', error)
     return NextResponse.json({ 
-      error: error.message || 'Internal error during branch registration' 
+      error: error.message || 'Internal error' 
     }, { status: 500 })
   }
 } 

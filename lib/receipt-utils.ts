@@ -43,8 +43,8 @@ export interface ReceiptRequest {
 const BUSINESS_CONFIG = {
   name: "Restaurant POS",
   address: "Nairobi, Kenya",
-  pin: "P052380018M",
-  bhfId: "01",
+  pin: "P052454103Q",
+  bhfId: "00",
   commercialMessage: "Welcome to our restaurant",
   thankYouMessage: "THANK YOU\nWE LOOK FORWARD TO SERVE YOU AGAIN"
 }
@@ -310,6 +310,8 @@ export async function generatePDFReceipt(data: ReceiptRequest): Promise<Blob> {
     format: [80, 297] // 80mm width, standard receipt length
   })
   
+  console.log('Generating PDF receipt...', data)
+  
   const { kraData, items, customer, payment_method, total_amount, tax_amount, net_amount, discount_amount = 0, discount_percentage = 0, discount_narration = '' } = data
   
   // Parse KRA date time
@@ -456,7 +458,7 @@ export async function generatePDFReceipt(data: ReceiptRequest): Promise<Blob> {
   yPosition += 3
   doc.text(`SCU ID: ${kraData.curRcptNo}`, 5, yPosition)
   yPosition += 3
-  doc.text(`Invoice: ${kraData.curRcptNo}/${kraData.invcNo}`, 5, yPosition)
+  doc.text(`Invoice: ${kraData.invcNo}`, 5, yPosition)
   yPosition += 3
   doc.text('Internal Data:', 5, yPosition)
   yPosition += 3
@@ -477,7 +479,7 @@ export async function generatePDFReceipt(data: ReceiptRequest): Promise<Blob> {
   yPosition += 4
   
   doc.setFont('helvetica', 'normal')
-  doc.text(`RECEIPT: ${kraData.totRcptNo}`, 5, yPosition)
+  doc.text(`RECEIPT: ${kraData.invcNo}`, 5, yPosition)
   yPosition += 3
   doc.text(`DATE: ${date} TIME: ${time}`, 5, yPosition)
   yPosition += 5

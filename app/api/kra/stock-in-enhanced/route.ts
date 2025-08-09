@@ -1,230 +1,301 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { supabase } from '@/lib/supabase'
-import { kraTransactionService } from '@/lib/kra-transaction-service'
+import { getKRAHeaders } from '@/lib/kra-utils'
 
-const TIN = "P052380018M"
-const BHF_ID = "01"
-const CMC_KEY = "34D646A326104229B0098044E7E6623E9A32CFF4CEDE4701BBC3"
+interface StockInItem {
+  itemSeq: number
+  itemCd: string
+  itemClsCd: string
+  itemNm: string
+  bcd: string | null
+  pkgUnitCd: string
+  pkg: number
+  qtyUnitCd: string
+  qty: number
+  itemExprDt: string | null
+  prc: number
+  splyAmt: number
+  totDcAmt: number
+  taxblAmt: number
+  taxTyCd: string
+  taxAmt: number
+  totAmt: number
+}
 
-// Generate unique SAR number for stock movement
-async function generateUniqueSarNo(): Promise<number> {
-  const { data, error } = await supabase
-    .from('kra_transactions')
-    .select('kra_sar_no')
-    .not('kra_sar_no', 'is', null)
-    .order('kra_sar_no', { ascending: false })
-    .limit(1)
-  
-  let next = 1
-  if (data && data.length > 0) {
-    const lastSarNo = data[0].kra_sar_no
-    if (lastSarNo) {
-      next = lastSarNo + 1
+interface StockInPayload {
+  sarNo: number
+  orgSarNo: number
+  regTyCd: string
+  custTin: string | null
+  custNm: string | null
+  custBhfId: string | null
+  sarTyCd: string
+  ocrnDt: string
+  totItemCnt: number
+  totTaxblAmt: number
+  totTaxAmt: number
+  totAmt: number
+  remark: string | null
+  regrId: string
+  regrNm: string
+  modrNm: string
+  modrId: string
+  itemList: StockInItem[]
+}
+
+// Calculate tax amount based on tax type
+function calculateTaxAmount(amount: number, taxType: string): number {
+  switch (taxType) {
+    case 'A': return 0 // Exempt
+    case 'B': return amount * 0.16 // 16% VAT
+    case 'C': return 0 // Zero-rated
+    case 'D': return 0 // Non-VAT
+    case 'E': return amount * 0.08 // 8% Reduced rate
+    default: return amount * 0.16 // Default to 16%
+  }
+}
+
+// Determine sarTyCd based on stock movement type
+function determineSarTyCd(stockChange: number, context: string = 'manual'): string {
+  if (stockChange > 0) {
+    // Stock is being added (incoming)
+    switch (context) {
+      case 'purchase': return '02' // Incoming purchase
+      case 'import': return '01' // Incoming import
+      case 'return': return '03' // Incoming return
+      case 'processing': return '05' // Incoming processing
+      case 'adjustment': return '06' // Incoming adjustment
+      default: return '04' // Incoming stock (default for manual additions)
+    }
+  } else {
+    // Stock is being reduced (outgoing)
+    switch (context) {
+      case 'sale': return '11' // Outgoing sale
+      case 'return': return '12' // Outgoing return
+      case 'processing': return '14' // Outgoing processing
+      case 'discarding': return '15' // Outgoing discarding
+      case 'adjustment': return '16' // Outgoing adjustment
+      default: return '13' // Outgoing stock movement (default for manual reductions)
     }
   }
-  return next
-}
-
-// Map unit to KRA unit code
-function mapToKRAUnit(unit: string): string {
-  const KRA_UNIT_MAP: Record<string, string> = {
-    'bag': 'BG', 'box': 'BOX', 'can': 'CA', 'dozen': 'DZ', 'gram': 'GRM', 'g': 'GRM', 
-    'kg': 'KG', 'kilogram': 'KG', 'kilo gramme': 'KG', 'litre': 'L', 'liter': 'L', 'l': 'L', 
-    'milligram': 'MGM', 'mg': 'MGM', 'packet': 'PA', 'set': 'SET', 'piece': 'U', 
-    'pieces': 'U', 'item': 'U', 'number': 'U', 'pcs': 'U', 'u': 'U',
-  }
-  
-  if (!unit) return 'U'
-  const normalized = unit.trim().toLowerCase()
-  return KRA_UNIT_MAP[normalized] || 'U'
-}
-
-// Generate item classification code based on category
-function generateItemClsCd(category: string): string {
-  const CATEGORY_MAP: Record<string, string> = {
-    'meats': '73131600',
-    'drinks': '50200000', 
-    'vegetables': '50400000',
-    'package': '24120000',
-    'dairy': '50130000',
-    'grains': '50130000', // Same as dairy as per your mapping
-    'oil': '50150000',
-    'fruits': '50300000',
-    'canned': '50460000',
-    'nuts': '50100000'
-  }
-  
-  const normalizedCategory = category.toLowerCase().trim()
-  return CATEGORY_MAP[normalizedCategory] || '5059690800' // Default for unknown categories
 }
 
 export async function POST(req: NextRequest) {
-  let transactionId: string | undefined
-  
   try {
-    const body = await req.json()
-    const { 
-      items, 
-      sarTyCd = '02', // Default to purchase (02)
-      receiptCode,
-      vatAmount,
-      stockDate,
-      supplierOrderId // Optional: for linking to supplier order
-    } = body
-
-    if (!items || !items.length) {
+    // Get dynamic KRA headers
+    const { success: headersSuccess, headers, error: headersError } = await getKRAHeaders()
+    
+    if (!headersSuccess || !headers) {
       return NextResponse.json({ 
-        error: 'Missing required fields: items' 
+        error: headersError || 'Failed to get KRA credentials. Please initialize your device first.' 
       }, { status: 400 })
     }
 
-    const now = new Date()
-    const ocrnDt = stockDate || now.toISOString().slice(0, 10).replace(/-/g, '')
-    const sarNo = await generateUniqueSarNo() // Use async function to get unique SAR number
-    const orgSarNo = sarNo
+    const body = await req.json()
+    const { stockInData, items, sarTyCd, receiptCode, vatAmount, stockDate, supplierOrderId, sarNo, itemList, stockChange, context } = body
+
+    // Handle different payload formats
+    let finalPayload: any
+
+    if (stockInData) {
+      // Complete payload format wrapped in stockInData (from some components)
+      if (!stockInData.itemList || stockInData.itemList.length === 0) {
+        return NextResponse.json({ error: 'Item list is required' }, { status: 400 })
+      }
+
+      // Ensure ocrnDt is 8 characters (YYYYMMDD format)
+      if (stockInData.ocrnDt && stockInData.ocrnDt.length !== 8) {
+        const today = new Date()
+        stockInData.ocrnDt = today.getFullYear().toString() + 
+                             String(today.getMonth() + 1).padStart(2, '0') + 
+                             String(today.getDate()).padStart(2, '0')
+      }
+
+      // Recalculate totals to ensure accuracy
+      let totTaxblAmt = 0
+      let totTaxAmt = 0
+      let totAmt = 0
+
+      // Process each item and recalculate amounts
+      stockInData.itemList.forEach((item: StockInItem) => {
+        const supplyAmount = item.prc * item.qty
+        const taxAmount = calculateTaxAmount(supplyAmount, item.taxTyCd)
+        
+        // Update item amounts
+        item.splyAmt = supplyAmount
+        item.taxblAmt = supplyAmount
+        item.taxAmt = taxAmount
+        item.totAmt = supplyAmount
+
+        // Add to totals
+        totTaxblAmt += supplyAmount
+        totTaxAmt += taxAmount
+        totAmt += supplyAmount
+      })
+
+      // Update payload with recalculated totals and dynamic headers
+      finalPayload = {
+        tin: headers.tin,
+        bhfId: headers.bhfId,
+        ...stockInData,
+        totTaxblAmt,
+        totTaxAmt,
+        totAmt
+      }
+    } else if (sarNo && itemList) {
+      // Complete payload format sent directly (from edit-test-item-dialog)
+      if (!itemList || itemList.length === 0) {
+        return NextResponse.json({ error: 'Item list is required' }, { status: 400 })
+      }
+
+      // Ensure ocrnDt is 8 characters (YYYYMMDD format)
+      if (body.ocrnDt && body.ocrnDt.length !== 8) {
+        const today = new Date()
+        body.ocrnDt = today.getFullYear().toString() + 
+                      String(today.getMonth() + 1).padStart(2, '0') + 
+                      String(today.getDate()).padStart(2, '0')
+      }
+
+      // Determine correct sarTyCd based on stock change
+      const dynamicSarTyCd = determineSarTyCd(stockChange || 0, context || 'manual')
+
+      // Recalculate totals to ensure accuracy
+      let totTaxblAmt = 0
+      let totTaxAmt = 0
+      let totAmt = 0
+
+      // Process each item and recalculate amounts
+      itemList.forEach((item: StockInItem) => {
+        const supplyAmount = item.prc * item.qty
+        const taxAmount = calculateTaxAmount(supplyAmount, item.taxTyCd)
+        
+        // Update item amounts
+        item.splyAmt = supplyAmount
+        item.taxblAmt = supplyAmount
+        item.taxAmt = taxAmount
+        item.totAmt = supplyAmount
+
+        // Add to totals
+        totTaxblAmt += supplyAmount
+        totTaxAmt += taxAmount
+        totAmt += supplyAmount
+      })
+
+      // Update payload with recalculated totals, dynamic headers, and correct sarTyCd
+      finalPayload = {
+        tin: headers.tin,
+        bhfId: headers.bhfId,
+        ...body,
+        sarTyCd: dynamicSarTyCd, // Use dynamic sarTyCd
+        totTaxblAmt,
+        totTaxAmt,
+        totAmt
+      }
+    } else if (items) {
+      // Simple payload format (from inventory sync/bulk update)
+      if (!items || items.length === 0) {
+        return NextResponse.json({ error: 'Items are required' }, { status: 400 })
+      }
+
+      // Generate SAR number
+      const sarNo = Math.floor(Math.random() * 900000) + 100000
+      
+      // Format date
+      const today = new Date()
+      const ocrnDt = today.getFullYear().toString() + 
+                     String(today.getMonth() + 1).padStart(2, '0') + 
+                     String(today.getDate()).padStart(2, '0')
+
+      // Determine correct sarTyCd based on context
+      const dynamicSarTyCd = determineSarTyCd(0, sarTyCd === '02' ? 'purchase' : 'manual')
 
     // Calculate totals
-    const totItemCnt = items.length
-    const totTaxblAmt = items.reduce((sum: number, item: any) => {
-      const qty = item.newQuantity || item.quantity || 0
-      const prc = item.newCost || item.cost_per_unit || 0
-      return sum + (qty * prc)
-    }, 0)
-    
-    const totTaxAmt = vatAmount ? parseFloat(vatAmount) : 0
-    const totAmt = totTaxblAmt + totTaxAmt
+      let totTaxblAmt = 0
+      let totTaxAmt = 0
+      let totAmt = 0
 
-    // Build item list for KRA
-    const itemList = items.map((item: any, index: number) => {
-      const qty = item.newQuantity || item.quantity || 0
-      const prc = item.newCost || item.cost_per_unit || 0
-      const splyAmt = qty * prc
-      const taxAmt = totTaxAmt > 0 ? (splyAmt / totTaxblAmt) * totTaxAmt : 0
-      const totItemAmt = splyAmt + taxAmt
+      // Process items
+      const itemList = items.map((item: any, index: number) => {
+        const supplyAmount = item.cost_per_unit * item.quantity
+        const taxAmount = calculateTaxAmount(supplyAmount, item.tax_ty_cd || 'B')
+        
+        totTaxblAmt += supplyAmount
+        totTaxAmt += taxAmount
+        totAmt += supplyAmount
       
       return {
         itemSeq: index + 1,
-        itemCd: item.itemCd || item.ingredient?.itemCd || 'UNKNOWN',
-        itemClsCd: item.itemClsCd || item.ingredient?.itemClsCd || generateItemClsCd(item.category || item.ingredient?.category),
-        itemNm: item.name || item.ingredient?.name,
+          itemCd: item.item_cd || `ITEM${item.id}`,
+          itemClsCd: item.item_cls_cd || '73131600',
+          itemNm: item.name,
+          bcd: null,
         pkgUnitCd: 'NT',
         pkg: 1,
-        qtyUnitCd: mapToKRAUnit(item.unit || item.ingredient?.unit),
-        qty,
-        prc,
-        splyAmt,
+          qtyUnitCd: item.unit || 'U',
+          qty: item.quantity,
+          itemExprDt: null,
+          prc: item.cost_per_unit,
+          splyAmt: supplyAmount,
         totDcAmt: 0,
-        taxblAmt: splyAmt,
-        taxTyCd: 'B',
-        taxAmt,
-        totAmt: totItemAmt,
-      }
-    })
+          taxblAmt: supplyAmount,
+          taxTyCd: item.tax_ty_cd || 'B',
+          taxAmt: taxAmount,
+          totAmt: supplyAmount
+        }
+      })
 
-    // Safe name for KRA fields (max 20 chars)
-    const safeName = receiptCode ? 
-      (receiptCode.length > 20 ? receiptCode.slice(0, 20) : receiptCode) : 
-      'Restaurant POS'
-
-    // Build KRA stock movement payload
-    const stockPayload = {
-      tin: TIN,
-      bhfId: BHF_ID,
+      finalPayload = {
+        tin: headers.tin,
+        bhfId: headers.bhfId,
       sarNo,
-      orgSarNo,
+        orgSarNo: sarNo,
       regTyCd: 'M', // Manual
-      sarTyCd, // 02 for purchase, 01 for sales, etc.
+        custTin: null,
+        custNm: null,
+        custBhfId: null,
+        sarTyCd: dynamicSarTyCd, // Use dynamic sarTyCd
       ocrnDt,
-      totItemCnt,
+        totItemCnt: items.length,
       totTaxblAmt,
       totTaxAmt,
       totAmt,
-      regrId: safeName,
-      regrNm: safeName,
-      modrId: safeName,
-      modrNm: safeName,
-      itemList,
-    }
-
-    console.log('KRA Stock-In Payload:', JSON.stringify(stockPayload, null, 2))
-
-    // Create transaction record before API call
-    const transactionResult = await kraTransactionService.create({
-      transaction_type: 'stock_in',
-      kra_sar_no: sarNo,
-      supplier_order_id: supplierOrderId,
-      items_data: items,
-      total_amount: totAmt,
-      vat_amount: totTaxAmt,
-      status: 'pending'
-    })
-
-    if (transactionResult.error) {
-      console.error('Failed to create transaction record:', transactionResult.error)
+        remark: `Stock-in for ${items.length} items`,
+        regrId: 'Inventory Manager',
+        regrNm: 'Inventory Manager',
+        modrNm: 'Inventory Manager',
+        modrId: 'Inventory Manager',
+        itemList
+      }
     } else {
-      transactionId = transactionResult.data?.id
+      return NextResponse.json({ error: 'Invalid payload format' }, { status: 400 })
     }
 
-    // Call KRA API
+    console.log("KRA Stock-in Enhanced Payload:", JSON.stringify(finalPayload, null, 2))
+
+    // Call KRA API with dynamic headers
     const kraRes = await fetch('https://etims-api-sbx.kra.go.ke/etims-api/insertStockIO', {
       method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json', 
-        tin: TIN, 
-        bhfId: BHF_ID, 
-        cmcKey: CMC_KEY 
-      },
-      body: JSON.stringify(stockPayload),
+      headers: headers as unknown as Record<string, string>,
+      body: JSON.stringify(finalPayload),
     })
     
     const kraData = await kraRes.json()
-    console.log('KRA Stock-In Response:', kraData)
-
-    // Update transaction record with result
-    if (transactionId) {
-      if (kraData.resultCd !== '000') {
-        await kraTransactionService.updateError(
-          transactionId,
-          kraData.resultMsg || 'KRA stock-in failed',
-          kraData
-        )
-      } else {
-        await kraTransactionService.updateStatus(
-          transactionId,
-          'success',
-          kraData.resultCd,
-          kraData.resultMsg,
-          kraData
-        )
-      }
-    }
+    console.log("KRA Stock-in Enhanced Response:", kraData)
 
     if (kraData.resultCd !== '000') {
       return NextResponse.json({ 
         error: kraData.resultMsg || 'KRA stock-in failed', 
-        kraData,
-        sarNo 
+        kraData 
       }, { status: 400 })
     }
 
     return NextResponse.json({ 
       success: true, 
       kraData, 
-      sarNo,
-      transactionId 
+      message: 'Stock-in sent to KRA successfully'
     })
+
   } catch (error: any) {
-    console.error('KRA Stock-In Error:', error)
-    
-    // Update transaction record with error if we have an ID
-    if (transactionId) {
-      await kraTransactionService.updateError(
-        transactionId,
-        error.message || 'Internal error',
-        { stack: error.stack }
-      )
-    }
-    
+    console.error('KRA Stock-in Enhanced Error:', error)
     return NextResponse.json({ 
       error: error.message || 'Internal error' 
     }, { status: 500 })

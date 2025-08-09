@@ -1,8 +1,11 @@
-import React from "react"
+import React, { useState, useEffect } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import { useToast } from "@/hooks/use-toast"
 import { format } from "date-fns"
+import { Send, Loader2, CheckCircle } from "lucide-react"
 
 interface KRASaleItem {
   itemSeq: number
@@ -63,9 +66,41 @@ interface SalesDetailsDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   sale: KRASale | null
+  onKRASubmission?: (sale: KRASale) => void
 }
 
-export function SalesDetailsDialog({ open, onOpenChange, sale }: SalesDetailsDialogProps) {
+export function SalesDetailsDialog({ open, onOpenChange, sale, onKRASubmission }: SalesDetailsDialogProps) {
+  const { toast } = useToast()
+  const [sendingPurchase, setSendingPurchase] = useState(false)
+  const [isAlreadySubmitted, setIsAlreadySubmitted] = useState(false)
+
+  // Check if purchase has already been submitted
+  useEffect(() => {
+    const checkSubmissionStatus = async () => {
+      if (sale) {
+        try {
+          const result = await fetch('/api/kra/check-submission', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              invcNo: sale.spplrInvcNo, 
+              tin: sale.spplrTin 
+            })
+          })
+          
+          const data = await result.json()
+          setIsAlreadySubmitted(data.isSubmitted || false)
+        } catch (error) {
+          console.error('Error checking submission status:', error)
+        }
+      }
+    }
+
+    if (sale) {
+      checkSubmissionStatus()
+    }
+  }, [sale])
+
   if (!sale) return null
 
   // Format currency
@@ -91,8 +126,12 @@ export function SalesDetailsDialog({ open, onOpenChange, sale }: SalesDetailsDia
   const getPaymentTypeBadge = (type: string) => {
     switch (type) {
       case '01': return <Badge variant="default" className="bg-green-100 text-green-800">Cash</Badge>
-      case '02': return <Badge variant="secondary" className="bg-blue-100 text-blue-800">Card</Badge>
-      case '03': return <Badge variant="outline" className="bg-purple-100 text-purple-800">Mobile Money</Badge>
+      case '02': return <Badge variant="secondary" className="bg-blue-100 text-blue-800">Credit</Badge>
+      case '03': return <Badge variant="outline" className="bg-purple-100 text-purple-800">Cash/Credit</Badge>
+      case '04': return <Badge variant="outline" className="bg-yellow-100 text-yellow-800">Bank Check</Badge>
+      case '05': return <Badge variant="outline" className="bg-indigo-100 text-indigo-800">Credit/Debit Card</Badge>
+      case '06': return <Badge variant="outline" className="bg-pink-100 text-pink-800">Mobile Money</Badge>
+      case '07': return <Badge variant="outline" className="bg-gray-100 text-gray-800">Other</Badge>
       default: return <Badge variant="outline">{type}</Badge>
     }
   }
@@ -119,11 +158,94 @@ export function SalesDetailsDialog({ open, onOpenChange, sale }: SalesDetailsDia
     }
   }
 
+  // Handle sending purchase to KRA
+  const handleSendPurchase = async () => {
+    if (isAlreadySubmitted) {
+      toast({
+        title: "Already Submitted",
+        description: "This purchase has already been successfully submitted to KRA",
+        variant: "destructive"
+      })
+      return
+    }
+
+    setSendingPurchase(true)
+    try {
+      const response = await fetch('/api/kra/send-purchase', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ purchaseData: sale })
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        toast({
+          title: "Purchase Sent Successfully",
+          description: "Purchase data has been sent to KRA successfully",
+        })
+        setIsAlreadySubmitted(true)
+        // Call the callback to update the UI
+        if (onKRASubmission) {
+          onKRASubmission(sale)
+        }
+      } else {
+        if (data.alreadySubmitted) {
+          setIsAlreadySubmitted(true)
+          toast({
+            title: "Already Submitted",
+            description: "This purchase has already been successfully submitted to KRA",
+            variant: "destructive"
+          })
+        } else {
+          toast({
+            title: "Failed to Send Purchase",
+            description: data.error || "Failed to send purchase to KRA",
+            variant: "destructive"
+          })
+        }
+      }
+    } catch (error: any) {
+      console.error('Error sending purchase:', error)
+      toast({
+        title: "Error",
+        description: error.message || "An error occurred while sending purchase",
+        variant: "destructive"
+      })
+    } finally {
+      setSendingPurchase(false)
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Sale Details</DialogTitle>
+          <DialogTitle className="flex items-center justify-between">
+            <span>Purchase Details</span>
+            <Button
+              onClick={handleSendPurchase}
+              disabled={sendingPurchase || isAlreadySubmitted}
+              className="ml-4"
+            >
+              {sendingPurchase ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Sending...
+                </>
+              ) : isAlreadySubmitted ? (
+                <>
+                  <CheckCircle className="h-4 w-4 mr-2" />
+                  Already Sent
+                </>
+              ) : (
+                <>
+                  <Send className="h-4 w-4 mr-2" />
+                  Send Purchase
+                </>
+              )}
+            </Button>
+          </DialogTitle>
         </DialogHeader>
 
         <div className="space-y-6">
@@ -227,7 +349,7 @@ export function SalesDetailsDialog({ open, onOpenChange, sale }: SalesDetailsDia
 
           {/* Items Table */}
           <div>
-            <h3 className="font-semibold mb-4">Sale Items</h3>
+            <h3 className="font-semibold mb-4">Purchase Items</h3>
             <div className="border rounded-lg overflow-hidden">
               <Table>
                 <TableHeader>

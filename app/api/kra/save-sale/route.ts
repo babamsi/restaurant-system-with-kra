@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
-
-const TIN = "P052380018M"
-const BHF_ID = "01"
-const CMC_KEY = "34D646A326104229B0098044E7E6623E9A32CFF4CEDE4701BBC3"
+import { getKRAHeaders } from '@/lib/kra-utils'
 
 function formatDate(date: Date) {
   const pad = (n: number) => n.toString().padStart(2, '0')
@@ -23,6 +20,57 @@ function formatDateTime(date: Date) {
     pad(date.getMinutes()) +
     pad(date.getSeconds())
   )
+}
+
+// Function to parse itemCd and extract unit codes
+function parseItemCd(itemCd: string): { pkgUnitCd: string; qtyUnitCd: string } {
+  // Default values if parsing fails
+  let pkgUnitCd = 'NT'  // Always "NT" as specified
+  let qtyUnitCd = 'U'   // Default to "U" if parsing fails
+  
+  if (itemCd && itemCd.length >= 8) {
+    try {
+      // KRA format: KE2NT${unitCode}${7 digits}
+      // Example: KE2NTKG0000001 -> pkgUnitCd: 'NT', qtyUnitCd: 'KG'
+      // Example: KE2NTU0000003 -> pkgUnitCd: 'NT', qtyUnitCd: 'U'
+      
+      if (itemCd.startsWith('KE2NT')) {
+        // List of valid KRA unit codes to determine extraction length
+        const KRA_UNIT_CODES = [
+          '4B', 'AV', 'BA', 'BE', 'BG', 'BL', 'BLL', 'BX', 'CA', 'CEL', 'CMT', 'CR', 'DR', 'DZ',
+          'GLL', 'GRM', 'GRO', 'KG', 'KTM', 'KWT', 'L', 'LBR', 'LK', 'LTR', 'M', 'M2', 'M3',
+          'MGM', 'MTR', 'MWT', 'NO', 'NX', 'PA', 'PG', 'PR', 'RL', 'RO', 'SET', 'ST', 'TNE', 'TU', 'U', 'YRD'
+        ]
+        
+        // Try to extract unit code by checking different lengths
+        let extractedUnitCode = ''
+        
+        // First try 2 characters (for codes like KG, BG, etc.)
+        const twoCharCode = itemCd.substring(5, 7)
+        if (KRA_UNIT_CODES.includes(twoCharCode)) {
+          extractedUnitCode = twoCharCode
+        } else {
+          // Try 1 character (for codes like U, L, etc.)
+          const oneCharCode = itemCd.substring(5, 6)
+          if (KRA_UNIT_CODES.includes(oneCharCode)) {
+            extractedUnitCode = oneCharCode
+          }
+        }
+        
+        if (extractedUnitCode) {
+          qtyUnitCd = extractedUnitCode
+        }
+        
+        pkgUnitCd = 'NT'  // Always "NT" as specified
+      }
+      
+      console.log(`Parsed itemCd: ${itemCd} -> pkgUnitCd: ${pkgUnitCd}, qtyUnitCd: ${qtyUnitCd}`)
+    } catch (error) {
+      console.warn(`Failed to parse itemCd: ${itemCd}, using defaults`, error)
+    }
+  }
+  
+  return { pkgUnitCd, qtyUnitCd }
 }
 
 async function getNextInvoiceNo() {
@@ -47,133 +95,143 @@ async function getNextInvoiceNoForRetry(orgInvcNo: number) {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json()
-    // Expect: { items, payment, customer, saleId, orgInvcNo, retryInvoiceNo, discount }
-    const {
-      items, // [{id, name, price, qty, itemCd, itemClsCd, ...}]
-      payment, // { method: 'cash'|'mpesa'|'card'|'split', ... }
-      customer, // { tin, name }
-      saleId, // internal transaction id
-      orgInvcNo = 0,
-      retryInvoiceNo = null, // New parameter for retry scenarios
-      discount = null, // { amount: number, type: string, reason: string }
-    } = body
-
-    if (!items || !items.length || !payment || !saleId) {
-      return NextResponse.json({ error: 'Missing required sale data' }, { status: 400 })
+    // Get dynamic KRA headers
+    const { success: headersSuccess, headers, error: headersError } = await getKRAHeaders()
+    
+    if (!headersSuccess || !headers) {
+      return NextResponse.json({ 
+        error: headersError || 'Failed to get KRA credentials. Please initialize your device first.' 
+      }, { status: 400 })
     }
 
-    // Invoice number handling
-    let invcNo: number;
-    if (retryInvoiceNo) {
-      // Use the provided retry invoice number
-      invcNo = retryInvoiceNo;
-      console.log(`Using retry invoice number: ${invcNo}`);
-    } else if (orgInvcNo && orgInvcNo > 0) {
-      invcNo = await getNextInvoiceNoForRetry(orgInvcNo);
-    } else {
-      invcNo = await getNextInvoiceNo();
+    const { orderData } = await req.json()
+    const { items, totalAmount, discount } = orderData
+
+    if (!items || items.length === 0) {
+      return NextResponse.json({ error: 'No items provided' }, { status: 400 })
     }
-    
-    const now = new Date()
-    const cfmDt = formatDateTime(now)
-    const salesDt = formatDate(now)
 
-    // Payment type code mapping
-    const paymentTypeMap: Record<string, string> = {
-      cash: '01',
-      card: '02',
-      mpesa: '05',
-      split: '99', // custom code for split, adjust as needed
-    }
-    const pmtTyCd = paymentTypeMap[payment.method] || '01'
+    const saleId = await getNextInvoiceNo()
+    const invcNo = saleId
+    const cfmDt = formatDateTime(new Date())
+    const salesDt = formatDate(new Date())
+    const totItemCnt = items.length
 
-    // Customer info
-    const custTin = customer?.tin || null
-    const custNm = customer?.name || null
+    // Calculate totals
+    let taxblAmtB = 0
+    let taxAmtB = 0
+    let totalOrderValue = 0
 
-    // Calculate totals (all prices are tax-inclusive)
-    let totItemCnt = items.length
-    let taxblAmtB = 0, taxAmtB = 0, totAmt = 0
-    
-    // Calculate total order value for discount distribution
-    const totalOrderValue = items.reduce((sum: number, item: any) => sum + (item.price * item.qty), 0)
-    
-    const itemList = items.map((item: any, idx: number) => {
-      const prc = item.price // tax-inclusive unit price
-      const qty = item.qty
-      const itemTotal = prc * qty
+    const itemList = items.map((item: any, index: number) => {
+      const { pkgUnitCd, qtyUnitCd } = parseItemCd(item.itemCd)
       
-      // Calculate discount amount for this item (proportional to item's share of total order)
-      let dscAmt = 0
-      let dcRt = 0
-      if (discount && discount.amount > 0 && totalOrderValue > 0) {
-        const itemShare = itemTotal / totalOrderValue
-        dscAmt = Math.round(discount.amount * itemShare)
-        
-        // Calculate discount rate as percentage
-        if (itemTotal > 0) {
-          dcRt = Math.round((dscAmt / itemTotal) * 100)
-        }
-      }
-      
-      // Calculate the discounted amount (this is what the customer actually pays)
-      const discountedItemTotal = itemTotal - dscAmt
-      
-      // IMPORTANT: Calculate tax based on the DISCOUNTED amount, not original
-      // Since the original price is tax-inclusive, we need to extract tax from the discounted amount
-      const splyAmt = Math.round(discountedItemTotal / 1.16) // Supply amount (tax-exclusive)
-      const taxblAmt = splyAmt // Taxable amount is the same as supply amount
-      const taxAmt = discountedItemTotal - splyAmt // Tax amount (16% of discounted amount)
-      
-      taxblAmtB += taxblAmt
-      taxAmtB += taxAmt
-      totAmt += discountedItemTotal
+      // Calculate tax for this item (16% for tax type B)
+      const itemTaxAmount = item.taxTyCd === 'B' ? Math.round(item.total_price * 0.16) : 0
+      const itemTaxableAmount = item.total_price - itemTaxAmount
+
+      taxblAmtB += itemTaxableAmount
+      taxAmtB += itemTaxAmount
+      totalOrderValue += item.total_price
 
       return {
-        itemSeq: idx + 1,
+        itemSeq: index + 1,
         itemCd: item.itemCd,
         itemClsCd: item.itemClsCd,
         itemNm: item.name,
-        pkgUnitCd: 'NT',
+        bcd: null,
+        pkgUnitCd,
         pkg: 1,
-        qtyUnitCd: 'U',
-        qty,
-        prc,
-        splyAmt,
-        taxTyCd: 'B',
-        taxblAmt,
-        taxAmt,
-        dcAmt: dscAmt,
-        dcRt: dcRt,
-        totAmt: discountedItemTotal,
+        qtyUnitCd,
+        qty: item.quantity,
+        itemExprDt: null,
+        prc: item.unit_price,
+        splyAmt: item.total_price,
+        totDcAmt: 0,
+        taxblAmt: itemTaxableAmount,
+        taxTyCd: item.taxTyCd,
+        taxAmt: itemTaxAmount,
+        totAmt: item.total_price
       }
     })
-    // Compose recipe names for modrID, modrNm, regrNm
-    const recipeNames = items.map((item: any) => item.name).join(', ');
-    const recipeNamesShort = recipeNames.slice(0, 20);
 
-    // Log discount information for debugging
-    if (discount && discount.amount > 0) {
-      console.log('KRA Sale with Discount:', {
-        totalDiscount: discount.amount,
-        discountType: discount.type,
-        discountReason: discount.reason,
-        totalOrderValue,
-        itemDiscounts: itemList.map((item: any) => ({
-          itemName: item.itemNm,
-          originalTotal: item.qty * item.prc,
+    const totAmt = totalAmount
+
+    // Get customer info from the first item or use defaults
+    const firstItem = items[0]
+    const custTin = firstItem?.customer_tin || 'A123456789Z'
+    const custNm = firstItem?.customer_name || 'WALK IN CUSTOMER'
+
+    // Determine payment type
+    let pmtTyCd = '01' // Default to cash
+    if (firstItem?.payment_method) {
+      switch (firstItem.payment_method) {
+        case 'cash':
+          pmtTyCd = '01'
+          break
+        case 'card':
+          pmtTyCd = '05'
+          break
+        case 'mobile':
+          pmtTyCd = '06'
+          break
+        default:
+          pmtTyCd = '01'
+      }
+    }
+
+    // Get recipe names for modrId and regrId
+    const recipeNames = items.map((item: any) => item.name).join(', ')
+    const recipeNamesShort = items.map((item: any) => item.name.substring(0, 10)).join(',')
+
+    // Store order in database
+    const { data: storedOrderData, error: orderError } = await supabase
+      .from('sales_invoices')
+      .insert({
+        trdInvcNo: saleId,
+        invcNo,
+        orgInvcNo: invcNo || 0,
+        custTin,
+        custNm,
+        salesTyCd: 'N',
+        rcptTyCd: 'S',
+        pmtTyCd,
+        salesSttsCd: '02',
+        cfmDt,
+        salesDt,
+        totItemCnt,
+        taxblAmtB,
+        taxRtB: 16,
+        taxAmtB,
+        totTaxblAmt: taxblAmtB,
+        totTaxAmt: taxAmtB,
+        prchrAcptcYn: 'N',
+        totAmt,
+        totDcAmt: discount?.amount || 0,
+        totDcRt: discount?.amount && totalOrderValue > 0 ? Math.round((discount.amount / totalOrderValue) * 100) : 0,
+        kra_status: 'pending',
+        kra_response: null,
+        items: items.map((item: any) => ({
+          name: item.name,
+          quantity: item.quantity,
+          unitPrice: item.unit_price,
+          totalPrice: item.total_price,
           discountAmount: item.dcAmt,
           discountRate: item.dcRt,
           finalTotal: item.totAmt
         }))
       })
+      .select()
+      .single()
+
+    if (orderError) {
+      console.error('Error storing order:', orderError)
+      return NextResponse.json({ error: 'Failed to store order' }, { status: 500 })
     }
 
     const payload = {
-      tin: TIN,
-      bhfId: BHF_ID,
-      cmcKey: CMC_KEY,
+      tin: headers.tin,
+      bhfId: headers.bhfId,
+      cmcKey: headers.cmcKey,
       trdInvcNo: saleId,
       invcNo,
       orgInvcNo: invcNo || 0,
@@ -187,7 +245,7 @@ export async function POST(req: NextRequest) {
       salesDt,
       totItemCnt,
       taxblAmtB,
-      taxRtB: 18,
+      taxRtB: 16,
       taxAmtB,
       totTaxblAmt: taxblAmtB,
       totTaxAmt: taxAmtB,
@@ -221,13 +279,12 @@ export async function POST(req: NextRequest) {
       taxRtD: 0,
     }
 
-
     console.log("Payload:", payload)
 
-    // Call KRA API
+    // Call KRA API with dynamic headers
     const kraRes = await fetch('https://etims-api-sbx.kra.go.ke/etims-api/saveTrnsSalesOsdc', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', tin: TIN, bhfId: BHF_ID, cmcKey: CMC_KEY },
+      headers: headers as unknown as Record<string, string>,
       body: JSON.stringify(payload),
     })
     
@@ -238,7 +295,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: kraData.resultMsg || 'KRA sale failed', kraData, invcNo }, { status: 400 })
     }
 
-    // Optionally, store the invoice number and KRA receipt info in your DB here
+    // Update the order with KRA response
+    const { error: updateError } = await supabase
+      .from('sales_invoices')
+      .update({
+        kra_status: 'success',
+        kra_response: kraData,
+        kra_curRcptNo: kraData.data?.curRcptNo || null
+      })
+      .eq('trdInvcNo', saleId)
+
+    if (updateError) {
+      console.error('Error updating order with KRA response:', updateError)
+    }
 
     return NextResponse.json({ success: true, kraData, invcNo })
   } catch (e: any) {

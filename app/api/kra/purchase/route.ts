@@ -1,283 +1,259 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { supabase } from '@/lib/supabase'
-import { kraTransactionService } from '@/lib/kra-transaction-service'
+import { kraPurchaseSubmissionsService } from '@/lib/kra-purchase-submissions-service'
+import { getKRAHeaders } from '@/lib/kra-utils'
 
-const TIN = "P052380018M"
-const BHF_ID = "01"
-const CMC_KEY = "34D646A326104229B0098044E7E6623E9A32CFF4CEDE4701BBC3"
-
-// Generate unique orgInvcNo starting from 1
-async function getNextOrgInvcNo() {
-  const { data, error } = await supabase
-    .from('kra_transactions')
-    .select('kra_invoice_no')
-    .not('kra_invoice_no', 'is', null)
-    .order('kra_invoice_no', { ascending: false })
-    .limit(1)
-  
-  let next = 1
-  if (data && data.length > 0) {
-    const lastInvcNo = data[0].kra_invoice_no
-    if (lastInvcNo) {
-      next = lastInvcNo + 1
-    }
-  }
-  return next
+interface KRASaleItem {
+  itemSeq: number
+  itemCd: string
+  itemClsCd: string
+  itemNm: string
+  bcd: string | null
+  pkgUnitCd: string
+  pkg: number
+  qtyUnitCd: string
+  qty: number
+  prc: number
+  splyAmt: number
+  dcRt: number
+  dcAmt: number
+  taxTyCd: string
+  taxblAmt: number
+  taxAmt: number
+  totAmt: number
 }
 
-// Map unit to KRA unit code
-function mapToKRAUnit(unit: string): string {
-  const KRA_UNIT_MAP: Record<string, string> = {
-    'bag': 'BG', 'box': 'BOX', 'can': 'CA', 'dozen': 'DZ', 'gram': 'GRM', 'g': 'GRM', 
-    'kg': 'KG', 'kilogram': 'KG', 'kilo gramme': 'KG', 'litre': 'L', 'liter': 'L', 'l': 'L', 
-    'milligram': 'MGM', 'mg': 'MGM', 'packet': 'PA', 'set': 'SET', 'piece': 'U', 
-    'pieces': 'U', 'item': 'U', 'number': 'U', 'pcs': 'U', 'u': 'U',
-  }
-  
-  if (!unit) return 'U'
-  const normalized = unit.trim().toLowerCase()
-  return KRA_UNIT_MAP[normalized] || 'U'
-}
-
-// Generate item classification code based on category
-function generateItemClsCd(category: string): string {
-  const CATEGORY_MAP: Record<string, string> = {
-    'meats': '73131600',
-    'drinks': '50200000', 
-    'vegetables': '50400000',
-    'package': '24120000',
-    'dairy': '50130000',
-    'grains': '50130000', // Same as dairy as per your mapping
-    'oil': '50150000',
-    'fruits': '50300000',
-    'canned': '50460000',
-    'nuts': '50100000'
-  }
-  
-  const normalizedCategory = category.toLowerCase().trim()
-  return CATEGORY_MAP[normalizedCategory] || '5059690800' // Default for unknown categories
+interface KRASale {
+  spplrTin: string
+  spplrNm: string
+  spplrBhfId: string
+  spplrInvcNo: number
+  spplrSdcId: string
+  spplrMrcNo: string
+  rcptTyCd: string
+  pmtTyCd: string
+  cfmDt: string
+  salesDt: string
+  stockRlsDt: string | null
+  totItemCnt: number
+  taxblAmtA: number
+  taxblAmtB: number
+  taxblAmtC: number
+  taxblAmtD: number
+  taxblAmtE: number
+  taxRtA: number
+  taxRtB: number
+  taxRtC: number
+  taxRtD: number
+  taxRtE: number
+  taxAmtA: number
+  taxAmtB: number
+  taxAmtC: number
+  taxAmtD: number
+  taxAmtE: number
+  totTaxblAmt: number
+  totTaxAmt: number
+  totAmt: number
+  remark: string | null
+  itemList: KRASaleItem[]
 }
 
 export async function POST(req: NextRequest) {
-  let transactionId: string | undefined
-  
   try {
-    const body = await req.json()
-    const { 
-      items, 
-      supplier, 
-      invoiceNumber, 
-      vatAmount,
-      purchaseDate,
-      supplierOrderId // Optional: for linking to supplier order
-    } = body
-
-    if (!items || !items.length || !supplier || !invoiceNumber) {
+    // Get dynamic KRA headers
+    const { success: headersSuccess, headers, error: headersError } = await getKRAHeaders()
+    
+    if (!headersSuccess || !headers) {
       return NextResponse.json({ 
-        error: 'Missing required fields: items, supplier, or invoiceNumber' 
+        success: false,
+        error: headersError || 'Failed to get KRA credentials. Please initialize your device first.' 
       }, { status: 400 })
     }
 
-    // Generate unique orgInvcNo for this transaction
-    const orgInvcNo = await getNextOrgInvcNo()
-    
-    // Use the exact invoice number from the bulk update component
-    const invcNo = parseInt(invoiceNumber) || orgInvcNo
-    
-    console.log('KRA Purchase Invoice Numbers:', {
-      inputInvoiceNumber: invoiceNumber,
-      parsedInvcNo: invcNo,
-      generatedOrgInvcNo: orgInvcNo,
-      supplierInvoiceNumber: invoiceNumber
+    const body = await req.json()
+    const { purchase } = body
+
+    if (!purchase) {
+      return NextResponse.json({ 
+        success: false, 
+        error: 'Purchase data is required' 
+      }, { status: 400 })
+    }
+
+    const sale: KRASale = purchase
+
+    console.log('Sending purchase to KRA:', {
+      supplier: sale.spplrNm,
+      invoice: sale.spplrInvcNo,
+      totalAmount: sale.totAmt
     })
 
-    const now = new Date()
-    const purchaseDt = purchaseDate || now.toISOString().slice(0, 10).replace(/-/g, '')
-    const cfmDt = now.toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '')
+    // Check if this purchase has already been successfully submitted
+    const existingSubmission = await kraPurchaseSubmissionsService.isSubmissionSuccessful(
+      sale.spplrInvcNo, 
+      sale.spplrTin
+    )
 
-    // Calculate totals
-    const totItemCnt = items.length
-    const totTaxblAmt = items.reduce((sum: number, item: any) => {
-      const qty = item.newQuantity || item.quantity || 0
-      const prc = item.newCost || item.cost_per_unit || 0
-      return sum + (qty * prc)
-    }, 0)
-    
-    const totTaxAmt = vatAmount ? parseFloat(vatAmount) : 0
-    const totAmt = totTaxblAmt + totTaxAmt
+    if (existingSubmission.success && existingSubmission.isSuccessful) {
+      return NextResponse.json({ 
+        success: false, 
+        error: 'This purchase has already been successfully submitted to KRA',
+        alreadySubmitted: true
+      }, { status: 400 })
+    }
 
-    // Build item list for KRA
-    const itemList = items.map((item: any, index: number) => {
-      const qty = item.newQuantity || item.quantity || 0
-      const prc = item.newCost || item.cost_per_unit || 0
-      const splyAmt = qty * prc
-      const taxAmt = totTaxAmt > 0 ? (splyAmt / totTaxblAmt) * totTaxAmt : 0
-      
-      return {
-        itemSeq: index + 1,
-        itemCd: item.itemCd || item.ingredient?.itemCd || 'UNKNOWN',
-        itemClsCd: item.itemClsCd || item.ingredient?.itemClsCd || generateItemClsCd(item.category || item.ingredient?.category),
-        itemNm: item.name || item.ingredient?.name,
-        bcd: undefined,
-        spplrItemClsCd: undefined,
-        spplrItemCd: undefined,
-        spplrItemNm: undefined,
-        pkgUnitCd: 'NT',
-        pkg: 0,
-        qtyUnitCd: mapToKRAUnit(item.unit || item.ingredient?.unit),
-        qty,
-        prc,
-        splyAmt,
-        dcRt: 0,
-        dcAmt: 0,
-        taxblAmt: splyAmt,
-        taxTyCd: 'B',
-        taxAmt,
-        totAmt: splyAmt,
-        itemExprDt: undefined
+    // Create submission record before sending to KRA
+    const createResult = await kraPurchaseSubmissionsService.createSubmission({
+      spplr_invc_no: sale.spplrInvcNo,
+      spplr_tin: sale.spplrTin,
+      spplr_nm: sale.spplrNm,
+      total_amount: sale.totAmt,
+      tax_amount: sale.totTaxAmt,
+      payment_type: sale.pmtTyCd,
+      receipt_type: sale.rcptTyCd
+    })
+
+    if (!createResult.success) {
+      return NextResponse.json({ 
+        success: false, 
+        error: 'Failed to create submission record' 
+      }, { status: 500 })
+    }
+
+    const formatDateForKRA = (dateString: string): string => {
+      const date = new Date(dateString)
+      const year = date.getFullYear()
+      const month = String(date.getMonth() + 1).padStart(2, '0')
+      const day = String(date.getDate()).padStart(2, '0')
+      return `${year}${month}${day}`
+    }
+
+    const mapPaymentTypeToKRA = (pmtTyCd: string): string => {
+      const paymentTypeMap: Record<string, string> = {
+        '01': '01', // Cash
+        '02': '02', // Credit
+        '03': '03', // Cash/Credit
+        '04': '04', // Bank Check
+        '05': '05', // Debit&Credit card
+        '06': '06', // Mobile Money
+        '07': '07'  // Other
       }
-    })
+      return paymentTypeMap[pmtTyCd] || '01'
+    }
 
-    // Build KRA purchase transaction payload
-    const purchasePayload = {
-      tin: TIN,
-      bhfId: BHF_ID,
-      invcNo, // Use the exact invoice number from bulk update
-      orgInvcNo, // Unique incrementing number for each transaction
-      spplrTin: supplier.tax_id || undefined,
-      spplrBhfId: undefined,
-      spplrNm: supplier.name,
-      spplrInvcNo: invoiceNumber, // Supplier's invoice number
+    // Prepare KRA purchase payload with correct structure
+    const kraPayload = {
+      tin: headers.tin,
+      bhfId: headers.bhfId,
+      invcNo: sale.spplrInvcNo, // Use supplier invoice number
+      orgInvcNo: sale.spplrInvcNo, // Use supplier invoice number as org invoice
+      spplrTin: sale.spplrTin,
+      spplrBhfId: sale.spplrBhfId,
+      spplrNm: sale.spplrNm,
+      spplrInvcNo: sale.spplrInvcNo,
       regTyCd: 'M', // Manual
       pchsTyCd: 'N', // Normal purchase
       rcptTyCd: 'P', // Purchase receipt
-      pmtTyCd: '01', // Cash
+      pmtTyCd: mapPaymentTypeToKRA(sale.pmtTyCd), // Dynamic payment type
       pchsSttsCd: '02', // Confirmed
-      cfmDt,
-      pchsDt: purchaseDt,
-      wrhsDt: '',
+      cfmDt: formatDateForKRA(sale.cfmDt),
+      pchsDt: sale.salesDt,
+      wrhsDt: sale.stockRlsDt ? formatDateForKRA(sale.stockRlsDt) : '',
       cnclReqDt: undefined,
       cnclDt: undefined,
       rfdDt: undefined,
-      totItemCnt,
-      taxblAmtA: 0,
-      taxblAmtB: totTaxblAmt,
-      taxblAmtC: 0,
-      taxblAmtD: 0,
-      taxblAmtE: 0,
-      taxRtA: 0,
-      taxRtB: 16, // Default VAT rate
-      taxRtC: 0,
-      taxRtD: 0,
-      taxRtE: 0,
-      taxAmtA: 0,
-      taxAmtB: totTaxAmt,
-      taxAmtC: 0,
-      taxAmtD: 0,
-      taxAmtE: 0,
-      totTaxblAmt,
-      totTaxAmt,
-      totAmt,
-      remark: undefined,
+      totItemCnt: sale.totItemCnt,
+      taxblAmtA: sale.taxblAmtA,
+      taxblAmtB: sale.taxblAmtB,
+      taxblAmtC: sale.taxblAmtC,
+      taxblAmtD: sale.taxblAmtD,
+      taxblAmtE: sale.taxblAmtE,
+      taxRtA: sale.taxRtA,
+      taxRtB: sale.taxRtB,
+      taxRtC: sale.taxRtC,
+      taxRtD: sale.taxRtD,
+      taxRtE: sale.taxRtE,
+      taxAmtA: sale.taxAmtA,
+      taxAmtB: sale.taxAmtB,
+      taxAmtC: sale.taxAmtC,
+      taxAmtD: sale.taxAmtD,
+      taxAmtE: sale.taxAmtE,
+      totTaxblAmt: sale.totTaxblAmt,
+      totTaxAmt: sale.totTaxAmt,
+      totAmt: sale.totAmt,
+      remark: sale.remark || undefined,
       regrNm: 'Restaurant POS',
       regrId: 'Restaurant POS',
       modrNm: 'Restaurant POS',
       modrId: 'Restaurant POS',
-      itemList
+      itemList: sale.itemList.map(item => ({
+        itemSeq: item.itemSeq,
+        itemCd: item.itemCd,
+        itemClsCd: item.itemClsCd,
+        itemNm: item.itemNm,
+        bcd: item.bcd || undefined,
+        spplrItemClsCd: undefined,
+        spplrItemCd: undefined,
+        spplrItemNm: undefined,
+        pkgUnitCd: item.pkgUnitCd,
+        pkg: item.pkg,
+        qtyUnitCd: item.qtyUnitCd,
+        qty: item.qty,
+        prc: item.prc,
+        splyAmt: item.splyAmt,
+        dcRt: item.dcRt,
+        dcAmt: item.dcAmt,
+        taxblAmt: item.taxblAmt,
+        taxTyCd: item.taxTyCd,
+        taxAmt: item.taxAmt,
+        totAmt: item.totAmt,
+        itemExprDt: undefined
+      }))
     }
 
-    console.log('KRA Purchase Payload:', JSON.stringify(purchasePayload, null, 2))
-    console.log('Key fields for debugging:', {
-      invcNo: purchasePayload.invcNo,
-      orgInvcNo: purchasePayload.orgInvcNo,
-      spplrInvcNo: purchasePayload.spplrInvcNo,
-      supplierName: purchasePayload.spplrNm,
-      totalAmount: purchasePayload.totAmt,
-      itemCount: purchasePayload.totItemCnt
-    })
+    console.log('KRA Purchase API Payload:', JSON.stringify(kraPayload, null, 2))
 
-    // Create transaction record before API call
-    const transactionResult = await kraTransactionService.create({
-      transaction_type: 'purchase',
-      kra_invoice_no: orgInvcNo, // Store the unique orgInvcNo
-      supplier_id: supplier.id,
-      supplier_order_id: supplierOrderId,
-      items_data: items,
-      total_amount: totAmt,
-      vat_amount: totTaxAmt,
-      status: 'pending'
-    })
-
-    if (transactionResult.error) {
-      console.error('Failed to create transaction record:', transactionResult.error)
-    } else {
-      transactionId = transactionResult.data?.id
-    }
-
-    // Call KRA API
+    // Call KRA purchase API with dynamic headers
     const kraRes = await fetch('https://etims-api-sbx.kra.go.ke/etims-api/insertTrnsPurchase', {
       method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json', 
-        tin: TIN, 
-        bhfId: BHF_ID, 
-        cmcKey: CMC_KEY 
-      },
-      body: JSON.stringify(purchasePayload),
+      headers: headers as unknown as Record<string, string>,
+      body: JSON.stringify(kraPayload),
     })
     
     const kraData = await kraRes.json()
-    console.log('KRA Purchase Response:', kraData)
+    console.log('KRA Purchase API Response:', kraData)
 
-    // Update transaction record with result
-    if (transactionId) {
-      if (kraData.resultCd !== '000') {
-        await kraTransactionService.updateError(
-          transactionId,
-          kraData.resultMsg || 'KRA purchase failed',
-          kraData
-        )
-      } else {
-        await kraTransactionService.updateStatus(
-          transactionId,
-          'success',
-          kraData.resultCd,
-          kraData.resultMsg,
-          kraData
-        )
-      }
-    }
+    // Update submission record with KRA response
+    const status = kraData.resultCd === '000' ? 'success' : 'failed'
+    const errorMessage = kraData.resultCd !== '000' ? kraData.resultMsg : undefined
+    
+    await kraPurchaseSubmissionsService.updateSubmissionWithKRAResponse(
+      sale.spplrInvcNo,
+      sale.spplrTin,
+      kraData,
+      status,
+      errorMessage
+    )
 
-    if (kraData.resultCd !== '000') {
+    // Return response based on KRA result
+    if (kraData.resultCd === '000') {
       return NextResponse.json({ 
+        success: true, 
+        message: 'Purchase sent to KRA successfully',
+        kraResponse: kraData
+      })
+      } else {
+      return NextResponse.json({ 
+        success: false, 
         error: kraData.resultMsg || 'KRA purchase failed', 
-        kraData,
-        invcNo,
-        orgInvcNo 
+        kraResponse: kraData
       }, { status: 400 })
     }
 
-    return NextResponse.json({ 
-      success: true, 
-      kraData, 
-      invcNo,
-      orgInvcNo,
-      transactionId 
-    })
   } catch (error: any) {
     console.error('KRA Purchase Error:', error)
-    
-    // Update transaction record with error if we have an ID
-    if (transactionId) {
-      await kraTransactionService.updateError(
-        transactionId,
-        error.message || 'Internal error',
-        { stack: error.stack }
-      )
-    }
-    
     return NextResponse.json({ 
-      error: error.message || 'Internal error' 
+      success: false, 
+      error: error.message || 'Internal error during purchase submission' 
     }, { status: 500 })
   }
 } 

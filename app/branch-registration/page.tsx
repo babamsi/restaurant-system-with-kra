@@ -5,28 +5,31 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useToast } from "@/hooks/use-toast"
-import { Building2, Loader2, CheckCircle, AlertCircle } from "lucide-react"
+import { Building2, Loader2, CheckCircle, AlertCircle, Smartphone, Database } from "lucide-react"
 import ProtectedRoute from '@/components/ui/ProtectedRoute'
 
-interface BranchRegistrationForm {
+interface RegistrationForm {
   tin: string
   bhfId: string
   dvcSrlNo: string
+  registrationType: 'device_init' | 'branch_reg'
 }
 
 export default function BranchRegistrationPage() {
   const { toast } = useToast()
   const [loading, setLoading] = useState(false)
   const [success, setSuccess] = useState(false)
-  const [formData, setFormData] = useState<BranchRegistrationForm>({
+  const [formData, setFormData] = useState<RegistrationForm>({
     tin: '',
     bhfId: '',
-    dvcSrlNo: ''
+    dvcSrlNo: '',
+    registrationType: 'branch_reg'
   })
 
   // Handle input changes
-  const handleInputChange = (field: keyof BranchRegistrationForm, value: string) => {
+  const handleInputChange = (field: keyof RegistrationForm, value: string) => {
     setFormData(prev => ({
       ...prev,
       [field]: value
@@ -105,38 +108,40 @@ export default function BranchRegistrationPage() {
 
     setLoading(true)
     try {
-      console.log('Submitting branch registration:', formData)
+      console.log('Submitting registration:', formData)
 
-      const response = await fetch('/api/kra/register-branch', {
+      const response = await fetch('/api/kra/register-device-branch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           tin: formData.tin.trim(),
           bhfId: formData.bhfId.trim(),
-          dvcSrlNo: formData.dvcSrlNo.trim()
+          dvcSrlNo: formData.dvcSrlNo.trim(),
+          registrationType: formData.registrationType
         })
       })
 
       const data = await response.json()
+      console.log('Registration Response:', data)
 
-      if (data.success) {
+      if (data.resultCd === "000") {
         setSuccess(true)
         toast({
-          title: "Branch Registration Successful",
-          description: "Your branch has been successfully registered with KRA",
+          title: "Registration Successful",
+          description: `Your ${formData.registrationType === 'device_init' ? 'device has been initialized' : 'branch has been registered'} with KRA successfully`,
         })
       } else {
         toast({
           title: "Registration Failed",
-          description: data.error || "Failed to register branch with KRA",
+          description: data.resultMsg || "Failed to register with KRA",
           variant: "destructive"
         })
       }
     } catch (error: any) {
-      console.error('Error registering branch:', error)
+      console.error('Error during registration:', error)
       toast({
         title: "Error",
-        description: error.message || "An error occurred during branch registration",
+        description: error.message || "An error occurred during registration",
         variant: "destructive"
       })
     } finally {
@@ -149,9 +154,20 @@ export default function BranchRegistrationPage() {
     setFormData({
       tin: '',
       bhfId: '',
-      dvcSrlNo: ''
+      dvcSrlNo: '',
+      registrationType: 'branch_reg'
     })
     setSuccess(false)
+  }
+
+  const getRegistrationTypeLabel = () => {
+    return formData.registrationType === 'device_init' ? 'Device Initialization' : 'Branch Registration'
+  }
+
+  const getRegistrationTypeDescription = () => {
+    return formData.registrationType === 'device_init' 
+      ? 'Initialize your eTIMS device with KRA'
+      : 'Register your business branch with KRA eTIMS'
   }
 
   return (
@@ -162,14 +178,18 @@ export default function BranchRegistrationPage() {
           <div className="text-center mb-8">
             <div className="flex justify-center mb-4">
               <div className="p-3 bg-primary/10 rounded-full">
-                <Building2 className="h-8 w-8 text-primary" />
+                {formData.registrationType === 'device_init' ? (
+                  <Smartphone className="h-8 w-8 text-primary" />
+                ) : (
+                  <Building2 className="h-8 w-8 text-primary" />
+                )}
               </div>
             </div>
             <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
-              Branch Registration
+              {getRegistrationTypeLabel()}
             </h1>
             <p className="text-gray-600 dark:text-gray-400">
-              Register your business branch with KRA eTIMS
+              {getRegistrationTypeDescription()}
             </p>
           </div>
 
@@ -184,10 +204,10 @@ export default function BranchRegistrationPage() {
                   Registration Successful!
                 </h3>
                 <p className="text-green-700 dark:text-green-300 mb-6">
-                  Your branch has been successfully registered with KRA eTIMS. You can now proceed with your business operations.
+                  Your {formData.registrationType === 'device_init' ? 'device has been initialized' : 'branch has been registered'} with KRA eTIMS successfully. You can now proceed with your business operations.
                 </p>
                 <Button onClick={handleReset} variant="outline" className="w-full">
-                  Register Another Branch
+                  Register Another
                 </Button>
               </CardContent>
             </Card>
@@ -196,11 +216,45 @@ export default function BranchRegistrationPage() {
             <Card className="shadow-xl border-0">
               <CardHeader className="pb-4">
                 <CardTitle className="text-xl text-center">
-                  Enter Branch Details
+                  Enter Registration Details
                 </CardTitle>
               </CardHeader>
               <CardContent>
                 <form onSubmit={handleSubmit} className="space-y-6">
+                  {/* Registration Type */}
+                  <div className="space-y-2">
+                    <Label htmlFor="registrationType" className="text-sm font-medium">
+                      Registration Type *
+                    </Label>
+                    <Select
+                      value={formData.registrationType}
+                      onValueChange={(value: 'device_init' | 'branch_reg') => 
+                        handleInputChange('registrationType', value)
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select registration type" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="device_init">
+                          <div className="flex items-center gap-2">
+                            <Smartphone className="h-4 w-4" />
+                            Device Initialization
+                          </div>
+                        </SelectItem>
+                        <SelectItem value="branch_reg">
+                          <div className="flex items-center gap-2">
+                            <Building2 className="h-4 w-4" />
+                            Branch Registration
+                          </div>
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      Choose whether to initialize a device or register a branch
+                    </p>
+                  </div>
+
                   {/* PIN Number */}
                   <div className="space-y-2">
                     <Label htmlFor="tin" className="text-sm font-medium">
@@ -270,10 +324,10 @@ export default function BranchRegistrationPage() {
                     {loading ? (
                       <>
                         <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                        Registering Branch...
+                        {formData.registrationType === 'device_init' ? 'Initializing Device...' : 'Registering Branch...'}
                       </>
                     ) : (
-                      'Register Branch'
+                      formData.registrationType === 'device_init' ? 'Initialize Device' : 'Register Branch'
                     )}
                   </Button>
                 </form>
@@ -289,6 +343,7 @@ export default function BranchRegistrationPage() {
                         <li>• Branch ID is your KRA Business Hub Facility ID</li>
                         <li>• Device Serial Number is unique to your eTIMS device</li>
                         <li>• All fields are required for successful registration</li>
+                        <li>• Registration details will be stored in the database</li>
                       </ul>
                     </div>
                   </div>

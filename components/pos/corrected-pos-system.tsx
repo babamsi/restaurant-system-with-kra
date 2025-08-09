@@ -24,6 +24,7 @@ import {
   Pencil,
   XCircle,
   RefreshCw,
+  RotateCcw,
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { useCompletePOSStore, useCompletePOSStore as usePOSStore } from "@/stores/complete-pos-store"
@@ -54,6 +55,11 @@ interface Recipe {
   category?: string
   components: RecipeComponent[]
   available: boolean
+  recipeType?: string
+  selectedInventoryItem?: any
+  itemCd?: string
+  itemClsCd?: string
+  taxTyCd?: string
 }
 
 interface RecipeComponent {
@@ -528,7 +534,10 @@ export function CorrectedPOSSystem() {
       inventory_deduction: undefined,
       menu_item_id: item.menu_item_id,
       total_price: item.total_price,
-      total_nutrition: { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0 }
+      total_nutrition: { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0 },
+      itemCd: item.itemCd,
+      itemClsCd: item.itemClsCd,
+      taxTyCd: item.taxTyCd,
     }))
     setExistingOrderItems(cartItems)
     setShowTakeAwayDialog(false)
@@ -578,6 +587,13 @@ export function CorrectedPOSSystem() {
     unit: "portion",
     inventory_deduction: undefined,
     restaurant: recipe.restaurant,
+    // Add KRA information for inventory-based recipes
+    recipeType: recipe.recipeType || "complex",
+    selectedInventoryItem: recipe.selectedInventoryItem,
+    // Use KRA codes directly from recipes table (for inventory-based recipes)
+    itemCd: recipe.itemCd,
+    itemClsCd: recipe.itemClsCd,
+    taxTyCd: recipe.taxTyCd,
   }))
 
   const filteredRecipes = recipesAsMenuItems.filter(recipe => {
@@ -670,7 +686,11 @@ export function CorrectedPOSSystem() {
         unit_price: item.unit_price,
         total_price: item.total_price,
         portion_size: item.portionSize,
-        customization_notes: item.customization
+        customization_notes: item.customization,
+        // Include KRA information for proper tax handling
+        itemCd: item.itemCd,
+        itemClsCd: item.itemClsCd,
+        taxTyCd: item.taxTyCd,
       }))
       
       const subtotal = calcCartTotal()
@@ -836,7 +856,10 @@ export function CorrectedPOSSystem() {
         inventory_deduction: undefined,
         menu_item_id: item.menu_item_id,
         total_price: item.total_price,
-        total_nutrition: { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0 }
+        total_nutrition: { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0 },
+        itemCd: item.itemCd,
+        itemClsCd: item.itemClsCd,
+        taxTyCd: item.taxTyCd,
       }))
       
       setExistingOrderItems(cartItems)
@@ -912,7 +935,10 @@ export function CorrectedPOSSystem() {
       inventory_deduction: undefined,
       menu_item_id: item.menu_item_id,
       total_price: item.total_price,
-      total_nutrition: { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0 }
+      total_nutrition: { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0 },
+      itemCd: item.itemCd,
+      itemClsCd: item.itemClsCd,
+      taxTyCd: item.taxTyCd,
     }))
     
     setExistingOrderItems(cartItems)
@@ -1055,18 +1081,20 @@ export function CorrectedPOSSystem() {
         qty: item.quantity,
         itemCd: item.itemCd, // KRA item code from recipes table
         itemClsCd: item.itemClsCd, // from recipes table
+        taxTyCd: item.taxTyCd, // Dynamic tax type code from recipe
       }))
-      // Ensure all items have itemCd and itemClsCd
+      // Ensure all items have itemCd, itemClsCd, and taxTyCd
       for (let i = 0; i < items.length; i++) {
-        if (!items[i].itemCd || !items[i].itemClsCd) {
+        if (!items[i].itemCd || !items[i].itemClsCd || !items[i].taxTyCd) {
           const { data: recipe, error } = await supabase
             .from('recipes')
-            .select('itemCd, itemClsCd')
+            .select('itemCd, itemClsCd, taxTyCd')
             .eq('id', items[i].id)
             .single();
           if (recipe) {
             items[i].itemCd = recipe.itemCd;
             items[i].itemClsCd = recipe.itemClsCd;
+            items[i].taxTyCd = recipe.taxTyCd || 'B'; // Default to 'B' if not specified
           }
         }
       }
@@ -1183,18 +1211,23 @@ export function CorrectedPOSSystem() {
         // Generate and download KRA receipt
         try {
           const receiptItems = order.items.map((item: any) => {
-            // Determine tax type based on item category or default to 16% VAT
+            // Use dynamic taxTyCd from the recipe, fallback to category-based logic
             let taxType: 'A-EX' | 'B' | 'C' | 'D' | 'E' = 'B' // Default to 16% VAT
             
-            // You can customize this logic based on your item categories
-            if (item.category?.toLowerCase().includes('exempt') || item.category?.toLowerCase().includes('basic')) {
-              taxType = 'A-EX' // Exempt
-            } else if (item.category?.toLowerCase().includes('zero') || item.category?.toLowerCase().includes('export')) {
-              taxType = 'C' // Zero rated
-            } else if (item.category?.toLowerCase().includes('non-vat') || item.category?.toLowerCase().includes('service')) {
-              taxType = 'D' // Non-VAT
-            } else if (item.category?.toLowerCase().includes('8%')) {
-              taxType = 'E' // 8% VAT
+            // First try to get taxTyCd from the item (from recipe)
+            if (item.taxTyCd) {
+              taxType = item.taxTyCd as 'A-EX' | 'B' | 'C' | 'D' | 'E';
+            } else {
+              // Fallback to category-based logic if taxTyCd is not available
+              if (item.category?.toLowerCase().includes('exempt') || item.category?.toLowerCase().includes('basic')) {
+                taxType = 'A-EX' // Exempt
+              } else if (item.category?.toLowerCase().includes('zero') || item.category?.toLowerCase().includes('export')) {
+                taxType = 'C' // Zero rated
+              } else if (item.category?.toLowerCase().includes('non-vat') || item.category?.toLowerCase().includes('service')) {
+                taxType = 'D' // Non-VAT
+              } else if (item.category?.toLowerCase().includes('8%')) {
+                taxType = 'E' // 8% VAT
+              }
             }
             
             const itemTotal = item.unit_price * item.quantity
@@ -2020,6 +2053,58 @@ export function CorrectedPOSSystem() {
     setDiscountType('percentage')
   }
 
+  // Add state for refund functionality
+  const [refundingOrder, setRefundingOrder] = useState<string | null>(null)
+  const [showRefundDialog, setShowRefundDialog] = useState<null | { orderId: string; order: any }>(null)
+  const [refundReason, setRefundReason] = useState('Customer request')
+
+  // Handle refund functionality
+  const handleRefundOrder = async () => {
+    if (!showRefundDialog) return
+    
+    const { orderId, order } = showRefundDialog
+    setRefundingOrder(orderId)
+    
+    try {
+      const response = await fetch('/api/kra/refund', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId,
+          refundReason
+        })
+      })
+
+      const result = await response.json()
+
+      if (!result.success) {
+        throw new Error(result.error || 'Refund failed')
+      }
+
+      toast({
+        title: 'Refund Successful',
+        description: `Refund of Ksh ${result.refundAmount.toFixed(2)} processed and sent to KRA`,
+        duration: 5000,
+      })
+
+      // Reload order history to show updated status
+      await loadOrderHistory()
+      setShowRefundDialog(null)
+      setRefundReason('Customer request')
+
+    } catch (error: any) {
+      console.error('Refund error:', error)
+      toast({
+        title: 'Refund Failed',
+        description: error.message || 'Failed to process refund',
+        variant: 'destructive',
+        duration: 5000,
+      })
+    } finally {
+      setRefundingOrder(null)
+    }
+  }
+
   return (
     <div className="h-screen flex flex-col bg-background overflow-hidden">
       <div className="flex-shrink-0 border-b border-border bg-card/50 backdrop-blur-sm">
@@ -2720,7 +2805,7 @@ export function CorrectedPOSSystem() {
                         Table {order.table_number} • {new Date(order.created_at).toLocaleString()}
                       </p>
                       <p className="text-sm text-muted-foreground flex items-center gap-2">
-                        Status: <Badge variant={order.status === "paid" ? "default" : "secondary"} className="ml-1">{order.status}</Badge>
+                        Status: <Badge variant={order.status === "paid" ? "default" : order.status === "refunded" ? "destructive" : "secondary"} className="ml-1">{order.status}</Badge>
                         {order.payment_method && (
                           <span className="ml-2 text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded font-semibold">
                             {(() => {
@@ -2736,14 +2821,26 @@ export function CorrectedPOSSystem() {
                         )}
                       </p>
                     </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handlePrintReceipt(order)}
-                    >
-                      <FileText className="h-4 w-4 mr-1" />
-                      Print Receipt
-                    </Button>
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handlePrintReceipt(order)}
+                      >
+                        <FileText className="h-4 w-4 mr-1" />
+                        Print Receipt
+                      </Button>
+                      {order.status === "paid" && (
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => setShowRefundDialog({ orderId: order.id, order })}
+                        >
+                          <RotateCcw className="h-4 w-4 mr-1" />
+                          Refund
+                        </Button>
+                      )}
+                    </div>
                   </div>
                   
                   <div className="space-y-2 mb-3">
@@ -3392,6 +3489,76 @@ export function CorrectedPOSSystem() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      </div>
+
+      {/* Refund Confirmation Dialog */}
+      <Dialog open={!!showRefundDialog} onOpenChange={(open) => !open && setShowRefundDialog(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Confirm Refund</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            {showRefundDialog && (
+              <>
+                <div className="p-4 bg-muted rounded-lg">
+                  <h4 className="font-semibold mb-2">Order Details</h4>
+                  <p className="text-sm text-muted-foreground">Order #{showRefundDialog.order.id.slice(-6)}</p>
+                  <p className="text-sm text-muted-foreground">Table {showRefundDialog.order.table_number}</p>
+                  <p className="text-sm text-muted-foreground">
+                    Total: Ksh {calcOrderTotal(showRefundDialog.order.items).toFixed(2)}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Payment: {formatPaymentMethod(showRefundDialog.order.payment_method)}
+                  </p>
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="refund-reason">Refund Reason</Label>
+                  <Input
+                    id="refund-reason"
+                    value={refundReason}
+                    onChange={(e) => setRefundReason(e.target.value)}
+                    placeholder="e.g., Customer request, Wrong order, etc."
+                  />
+                </div>
+                
+                <div className="p-4 bg-amber-50 dark:bg-amber-950/20 rounded-lg border border-amber-200 dark:border-amber-800">
+                  <div className="flex items-start gap-2">
+                    <div className="w-2 h-2 bg-amber-500 rounded-full mt-2 flex-shrink-0"></div>
+                    <div className="text-sm text-amber-800 dark:text-amber-200">
+                      <p className="font-medium mb-1">Important Notice</p>
+                      <p className="text-xs">
+                        This refund will be processed through KRA eTIMS system. The refund will be sent to KRA with negative values and rcptTyCd: "R" for refund. This action cannot be undone.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowRefundDialog(null)} disabled={!!refundingOrder}>
+              Cancel
+            </Button>
+            <Button 
+              variant="destructive" 
+              onClick={handleRefundOrder}
+              disabled={!!refundingOrder || !refundReason.trim()}
+            >
+              {refundingOrder ? (
+                <span className="flex items-center justify-center">
+                  <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></span>
+                  Processing...
+                </span>
+              ) : (
+                <>
+                  <RotateCcw className="h-4 w-4 mr-2" />
+                  Confirm Refund
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
   )
 }

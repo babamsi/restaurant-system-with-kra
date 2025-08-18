@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
       }, { status: 500 })
     }
 
-    console.log('orders', orders)   
+    // console.log('orders', orders)   
 
     // Transform orders to match the frontend interface
     const transformedOrders = orders?.map(order => ({

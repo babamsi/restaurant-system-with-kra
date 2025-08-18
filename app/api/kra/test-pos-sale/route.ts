@@ -296,7 +296,7 @@ export async function POST(req: NextRequest) {
       headers: headers as unknown as Record<string, string>,
       body: JSON.stringify(kraPayload),
     })
-    
+    console.log('headers', headers)
     const kraData = await kraRes.json()
     console.log('KRA Test POS Sale Response:', kraData)
 

@@ -12,26 +12,31 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  // Bootstrap: allow creating the first user when none exist
+  const { count, error: countError } = await supabase.from('users').select('id', { count: 'exact', head: true });
+  const isBootstrap = !countError && (count === 0 || count === null);
+
+  let user: any = null;
   const token = req.cookies.get('session')?.value;
-  if (!token) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-  let user;
-  try {
-    user = jwt.verify(token, JWT_SECRET);
-  } catch {
-    return NextResponse.json({ error: 'Invalid session' }, { status: 401 });
-  }
-  // Type guard for JwtPayload
-  if (typeof user !== 'object' || !user || !('role' in user)) {
-    return NextResponse.json({ error: 'Invalid session payload' }, { status: 401 });
-  }
-  if (!(user.role === 'owner' || user.role === 'manager')) {
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  if (!isBootstrap) {
+    if (!token) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+    try {
+      user = jwt.verify(token, JWT_SECRET);
+    } catch {
+      return NextResponse.json({ error: 'Invalid session' }, { status: 401 });
+    }
+    if (typeof user !== 'object' || !user || !('role' in user)) {
+      return NextResponse.json({ error: 'Invalid session payload' }, { status: 401 });
+    }
+    if (!(user.role === 'owner' || user.role === 'manager')) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
   }
   
   const { name, role, passcode, sendToKRA, branchUserData } = await req.json();
   
   // Handle branch user creation for KRA
-  if (sendToKRA && branchUserData) {
+  if (!isBootstrap && sendToKRA && branchUserData) {
     try {
       // Get dynamic KRA headers
       const { success: headersSuccess, headers, error: headersError } = await getKRAHeaders()
@@ -119,7 +124,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Missing fields' }, { status: 400 });
   }
   const passcode_hash = await bcrypt.hash(passcode, 10);
-  const { data, error } = await supabase.from('users').insert([{ name, role, passcode_hash }]).select('id, name, role, active').single();
+  const { data, error } = await supabase.from('users').insert([{ name, role, passcode_hash, active: true }]).select('id, name, role, active').single();
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
   return NextResponse.json({ user: data });
 } 

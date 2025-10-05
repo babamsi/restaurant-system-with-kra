@@ -7,43 +7,45 @@ import { cn } from "@/lib/utils"
 import { BarChart3, ChefHat, Home, Package, ShoppingCart, Users, ClipboardList, Store, Menu, X, FileText, BadgeAlert, Receipt, Globe, Building2, Database, Calculator, Bell, Shield, TrendingUp } from "lucide-react"
 import { ModeToggleSimple } from "@/components/mode-toggle"
 import { Button } from "@/components/ui/button"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { LogOut, User as UserIcon } from "lucide-react"
+import { useUserSession } from "@/context/UserSessionContext"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
 import { useSidebarState } from "@/hooks/use-responsive"
 import { MobileMenuTrigger } from "@/components/mobile-menu-trigger"
 
 const navigation = [
+  // KRA-compatible core
   { name: "Dashboard", href: "/dashboard", icon: Home },
-  { name: "Inventory", href: "/inventory", icon: Package },
-  { name: "Kitchen", href: "/kitchen", icon: ChefHat },
-  { name: "Recipes", href: "/recipes", icon: Menu },
-  { name: "Point of Sale", href: "/pos", icon: ShoppingCart },
-  { name: "Orders", href: "/orders", icon: ClipboardList },
-  // { name: "Customer Portal", href: "/customer-portal", icon: Store },
   { name: "Customers", href: "/customers", icon: Users },
   { name: "Suppliers", href: "/suppliers", icon: Users },
-  { name: "Reports", href: "/reports", icon: BarChart3 },
-  { name: "System Logs", href: "/kitchen/logs", icon: FileText },
-  { name: "KRA Failed", href: "/kra-failed-sales", icon: BadgeAlert},
-  { name: "KRA Sales", href: "/kra/purchases", icon: Receipt},
+  { name: "Inventory (KRA Items)", href: "/inventory", icon: Package },
+
+  // KRA operations
+  { name: "KRA Purchases", href: "/kra/purchases", icon: Receipt},
   { name: "KRA Imported Items", href: "/kra/imported-items", icon: Globe},
-  { name: "KRA Data Management", href: "/kra-data", icon: Database},
-  { name: "KRA Test Items", href: "/kra-test-items", icon: Package},
-  { name: "KRA Test Recipes", href: "/kra-test-recipes", icon: Menu},
+  { name: "KRA Data", href: "/kra-data", icon: Database},
   { name: "KRA Branches", href: "/kra-branches", icon: Database},
-  { name: "KRA Test POS", href: "/kra-test-pos", icon: Calculator},
   { name: "Branch Registration", href: "/branch-registration", icon: Building2},
   { name: "Branch Users", href: "/branch-users", icon: Users},
   { name: "Branch Insurance", href: "/branch-insurance", icon: Shield},
   { name: "Stock Movement", href: "/stock-movement", icon: TrendingUp},
-  { name: "KRA Notices", href: "/kra-notices", icon: Bell}
-  // { name: "Test Responsive", href: "/test-responsive", icon: FileText },
+  { name: "KRA Notices", href: "/kra-notices", icon: Bell},
+  { name: "KRA Failed", href: "/kra-failed-sales", icon: BadgeAlert},
+
+  // Optional reports strictly for KRA auditing
+  { name: "Reports", href: "/reports", icon: BarChart3 },
+
+  // System
+  { name: "System Logs", href: "/kitchen/logs", icon: FileText }
 ]
 
 export function Sidebar() {
   const pathname = usePathname()
   const [isOpen, setIsOpen] = useState(false)
   const { collapsed, setCollapsed, isMobile, isTablet, isDesktop } = useSidebarState()
+  const { user, logout } = useUserSession()
 
   // Close mobile menu when route changes
   useEffect(() => {
@@ -116,17 +118,34 @@ export function Sidebar() {
 
       {/* Footer */}
       <div className="p-2 border-t border-border">
-        <div className={cn("flex items-center gap-3 p-3 rounded-lg bg-muted/50", collapsed ? "justify-center" : "")}>
-          <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
-            <span className="text-xs font-medium text-primary">AD</span>
-          </div>
-          {!collapsed && (
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-foreground truncate">Admin User</p>
-              <p className="text-xs text-muted-foreground truncate">admin@cafeteria.com</p>
-            </div>
-          )}
-        </div>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              className={cn("w-full flex items-center gap-3 p-3 rounded-lg bg-muted/50 hover:bg-muted transition", collapsed ? "justify-center" : "justify-start")}
+              title="Account menu"
+            >
+              <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
+                <UserIcon className="h-4 w-4 text-primary" />
+              </div>
+              {!collapsed && (
+                <div className="flex-1 min-w-0 text-left">
+                  <p className="text-sm font-medium text-foreground truncate">{user?.name || "Signed Out"}</p>
+                  <p className="text-xs text-muted-foreground truncate">{user ? user.role : "Guest"}</p>
+                </div>
+              )}
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent side="top" align={collapsed ? "center" : "start"} className="w-56">
+            <DropdownMenuLabel>Account</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={(e) => { e.preventDefault(); window.location.href = "/users" }}>Manage Users</DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={async (e) => { e.preventDefault(); await logout(); window.location.href = "/login" }} className="text-red-600">
+              <LogOut className="h-4 w-4" />
+              <span>Logout</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </div>
   )

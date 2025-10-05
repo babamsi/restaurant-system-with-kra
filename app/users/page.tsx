@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useUserSession } from '@/context/UserSessionContext';
 import UserForm from '@/components/UserForm';
-import ProtectedRoute from '@/components/ui/ProtectedRoute';
+// Auth temporarily disabled here to allow first-user bootstrap
 
 export default function UsersPage() {
   const [users, setUsers] = useState<any[]>([]);
@@ -51,42 +51,40 @@ export default function UsersPage() {
   };
 
   return (
-    <ProtectedRoute allowedRoles={['owner', 'manager']}>
-      <div className="max-w-2xl mx-auto py-10 px-4">
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-2xl font-bold">User Management</h2>
-          <button className="px-4 py-2 rounded bg-primary text-white font-semibold" onClick={() => { setEditing(null); setShowForm(true); }}>Add User</button>
-        </div>
-        {showForm && (
-          <div className="mb-8">
-            <UserForm user={editing} onSave={handleSave} onCancel={() => { setShowForm(false); setEditing(null); }} />
-            {error && <div className="text-red-600 text-center mt-2">{error}</div>}
-          </div>
-        )}
-        <table className="w-full border rounded shadow text-sm">
-          <thead>
-            <tr className="bg-muted">
-              <th className="p-2 text-left">Name</th>
-              <th className="p-2 text-left">Role</th>
-              <th className="p-2 text-left">Active</th>
-              <th className="p-2 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map(u => (
-              <tr key={u.id} className={!u.active ? 'opacity-50' : ''}>
-                <td className="p-2">{u.name}</td>
-                <td className="p-2 capitalize">{u.role}</td>
-                <td className="p-2">{u.active ? 'Yes' : 'No'}</td>
-                <td className="p-2 text-right flex gap-2 justify-end">
-                  <button className="text-xs underline" onClick={() => { setEditing(u); setShowForm(true); }}>Edit</button>
-                  {u.active && <button className="text-xs underline text-red-600" onClick={() => handleDelete(u)}>Disable</button>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <div className="max-w-2xl mx-auto py-10 px-4">
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-2xl font-bold">User Management</h2>
+        <button className="px-4 py-2 rounded bg-primary text-white font-semibold" onClick={() => { setEditing(null); setShowForm(true); }}>Add User</button>
       </div>
-    </ProtectedRoute>
+      {showForm && (
+        <div className="mb-8">
+          <UserForm user={editing} onSave={handleSave} onCancel={() => { setShowForm(false); setEditing(null); }} />
+          {error && <div className="text-red-600 text-center mt-2">{error}</div>}
+        </div>
+      )}
+      <table className="w-full border rounded shadow text-sm">
+        <thead>
+          <tr className="bg-muted">
+            <th className="p-2 text-left">Name</th>
+            <th className="p-2 text-left">Role</th>
+            <th className="p-2 text-left">Active</th>
+            <th className="p-2 text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {users.map(u => (
+            <tr key={u.id} className={!u.active ? 'opacity-50' : ''}>
+              <td className="p-2">{u.name}</td>
+              <td className="p-2 capitalize">{u.role}</td>
+              <td className="p-2">{u.active ? 'Yes' : 'No'}</td>
+              <td className="p-2 text-right flex gap-2 justify-end">
+                <button className="text-xs underline" onClick={() => { setEditing(u); setShowForm(true); }}>Edit</button>
+                {u.active && <button className="text-xs underline text-red-600" onClick={() => handleDelete(u)}>Disable</button>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 } 

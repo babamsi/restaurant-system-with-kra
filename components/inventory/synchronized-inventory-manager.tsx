@@ -1327,9 +1327,51 @@ export function SynchronizedInventoryManager() {
                             <div className="text-muted-foreground">Code: {ingredient.itemCd}</div>
                           </div>
                         ) : (
-                          <Badge variant="outline" className="text-amber-500 border-amber-500">
-                            Not Registered
-                          </Badge>
+                          <div className="flex items-center gap-2">
+                            <Badge variant="outline" className="text-amber-500 border-amber-500">Not Registered</Badge>
+                            <Button
+                              size="xs"
+                              variant="secondary"
+                              onClick={async () => {
+                                try {
+                                  const res = await fetch('/api/kra/register-item', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                      ingredientId: ingredient.id,
+                                      name: ingredient.name,
+                                      category: ingredient.category,
+                                      unit: ingredient.unit,
+                                      cost_per_unit: ingredient.cost_per_unit,
+                                      description: ingredient.description || ''
+                                    })
+                                  })
+                                  const data = await res.json()
+                                  if (res.ok && data.success) {
+                                    toast({
+                                      title: 'Registered with KRA',
+                                      description: `${ingredient.name} registered successfully.`
+                                    })
+                                    await loadIngredients()
+                                  } else {
+                                    toast({
+                                      title: 'KRA Registration Failed',
+                                      description: data.error || 'Failed to register with KRA',
+                                      variant: 'destructive'
+                                    })
+                                  }
+                                } catch (e: any) {
+                                  toast({
+                                    title: 'KRA Registration Error',
+                                    description: e?.message || 'Failed to register with KRA',
+                                    variant: 'destructive'
+                                  })
+                                }
+                              }}
+                            >
+                              Register with KRA
+                            </Button>
+                          </div>
                         )}
                       </TableCell>
                       <TableCell>

@@ -28,6 +28,9 @@ interface KitchenStorageItem {
   reference_weight_per_bunch?: number;
   reference_weight_unit?: string;
   last_updated?: string;
+  open_container_remaining?: number;
+  open_container_unit?: string;
+  used_liters?: number;
 }
 
 interface ImportIngredientsDialogProps {
@@ -131,9 +134,22 @@ export const ImportIngredientsDialog: React.FC<ImportIngredientsDialogProps> = (
             unit: syncedIngredient.unit,
             last_updated: new Date().toISOString()
           }
+          
+          // Handle bunch ingredients with reference weight
           if (syncedIngredient.unit === 'bunch' && existingItem?.reference_weight_per_bunch) {
             storageItem.reference_weight_per_bunch = existingItem.reference_weight_per_bunch;
             storageItem.reference_weight_unit = existingItem.reference_weight_unit || 'g';
+          }
+          
+          // Initialize new columns if they don't exist
+          if (existingItem) {
+            storageItem.open_container_remaining = existingItem.open_container_remaining || null;
+            storageItem.open_container_unit = existingItem.open_container_unit || null;
+            storageItem.used_liters = existingItem.used_liters || null;
+          } else {
+            storageItem.open_container_remaining = null;
+            storageItem.open_container_unit = null;
+            storageItem.used_liters = null;
           }
           await upsertKitchenStorage(storageItem)
           setKitchenStorage(prevStorage => {
@@ -154,21 +170,33 @@ export const ImportIngredientsDialog: React.FC<ImportIngredientsDialogProps> = (
             .from('ingredients')
             .update({ current_stock: Number(syncedIngredient.current_stock) - ingredient.requiredQuantity })
             .eq('id', ingredient.ingredientId)
-          await insertSystemLog({ type: "storage", action: "Import", details: `${ingredient.requiredQuantity} ${ingredient.unit} of ${syncedIngredient.name}`, status: "success" })
+          
+          // Log the import (don't let this fail the main operation)
+          try {
+            await insertSystemLog({ 
+              type: "storage", 
+              action: "Import", 
+              details: `Imported ${ingredient.requiredQuantity} ${ingredient.unit} of ${syncedIngredient.name}`, 
+              status: "success" 
+            })
+          } catch (logError) {
+            console.warn('Failed to log import:', logError)
+          }
         }
       }
       setSelectedIngredients([])
       onOpenChange(false)
       toast({
-        title: "Ingredients Imported",
+        title: "Ingredients Imported Successfully",
         description: "Selected ingredients have been imported to kitchen storage.",
       })
       if (onImportSuccess) onImportSuccess();
       await fetchIngredients(); // Ensure inventoryIngredientsList is updated
     } catch (error) {
+      console.error('Import error:', error)
       toast({
         title: "Import Failed",
-        description: "An error occurred while importing ingredients. Please try again.",
+        description: error instanceof Error ? error.message : "An error occurred while importing ingredients. Please try again.",
         variant: "destructive"
       })
     } finally {
@@ -201,6 +229,17 @@ export const ImportIngredientsDialog: React.FC<ImportIngredientsDialogProps> = (
         reference_weight_unit: referenceWeightUnit,
         last_updated: new Date().toISOString()
       }
+      
+      // Initialize new columns if they don't exist
+      if (existingItem) {
+        storageItem.open_container_remaining = existingItem.open_container_remaining || null;
+        storageItem.open_container_unit = existingItem.open_container_unit || null;
+        storageItem.used_liters = existingItem.used_liters || null;
+      } else {
+        storageItem.open_container_remaining = null;
+        storageItem.open_container_unit = null;
+        storageItem.used_liters = null;
+      }
       await upsertKitchenStorage(storageItem)
       setKitchenStorage(prevStorage => {
         const index = prevStorage.findIndex(item => item.ingredient_id === referenceWeightIngredient.id.toString())
@@ -232,7 +271,18 @@ export const ImportIngredientsDialog: React.FC<ImportIngredientsDialogProps> = (
       setPendingImportIngredient(null)
       // After closing, re-trigger handleImportIngredients to check for other bunches or import
       setResumeImportAfterDialog(true);
-      await insertSystemLog({ type: "storage", action: "Import", details: `Imported ${pendingImportIngredient.requiredQuantity} ${pendingImportIngredient.unit} of ${referenceWeightIngredient.name} (conversion set)`, status: "success" })
+      
+      // Log the import (don't let this fail the main operation)
+      try {
+        await insertSystemLog({ 
+          type: "storage", 
+          action: "Import", 
+          details: `Imported ${pendingImportIngredient.requiredQuantity} ${pendingImportIngredient.unit} of ${referenceWeightIngredient.name} (conversion set)`, 
+          status: "success" 
+        })
+      } catch (logError) {
+        console.warn('Failed to log import:', logError)
+      }
     } finally {
       setIsSavingReferenceWeight(false);
     }

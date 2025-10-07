@@ -679,16 +679,12 @@ const handleReferenceWeightSubmit = async () => {
 
   // ✅ DEBUG: Log when Kitchen component receives new data
   useEffect(() => {
-    console.log("🍳 KITCHEN: Received", ingredients.length, "ingredients from Zustand")
-    console.log(
-      "🍳 KITCHEN: Ingredients list:",
-      ingredients.map((i) => ({ id: i.id, name: i.name })),
-    )
+    // Intentionally left blank after removing debug logs
   }, [ingredients]) // ✅ CRITICAL: ingredients as dependency
 
   // ✅ DEBUG: Log lastUpdated changes
   useEffect(() => {
-    console.log("🍳 KITCHEN: Last updated timestamp:", lastUpdated)
+    // console.log("🍳 KITCHEN: Last updated timestamp:", lastUpdated)
   }, [lastUpdated])
 
   useEffect(() => {
@@ -986,7 +982,7 @@ const handleReferenceWeightSubmit = async () => {
       } catch (err) {
         toast({
           title: "Error loading kitchen data",
-          description: String(err),
+          description: err instanceof Error ? err.message : JSON.stringify(err),
           variant: "destructive",
         })
       }
@@ -1001,7 +997,7 @@ const handleReferenceWeightSubmit = async () => {
         fetchBatches(),
         fetchWastageEvents(),
       ]);
-      setKitchenStorage(storageData || []);
+      setKitchenStorage(Array.isArray(storageData) ? storageData : []);
       setWastageEvents(wastageData || []);
       if (batchData) {
         useKitchenStore.setState({ batches: batchData });
@@ -1009,7 +1005,7 @@ const handleReferenceWeightSubmit = async () => {
     } catch (err) {
       toast({
         title: "Error refreshing data",
-        description: String(err),
+        description: err instanceof Error ? err.message : JSON.stringify(err),
         variant: "destructive",
       });
     }
@@ -2086,7 +2082,9 @@ const handleReferenceWeightSubmit = async () => {
   }
 
   // Add function to initialize predefined batches
+  const ENABLE_PREDEFINED_PRESETS = false
   const initializePredefinedBatches = () => {
+    if (!ENABLE_PREDEFINED_PRESETS) return
     const initialized = localStorage.getItem('predefinedBatchesInitialized')
     if (!initialized) {
       predefinedBatches.forEach(batch => {

@@ -23,6 +23,7 @@ const navigation = [
   { name: "Customers", href: "/customers", icon: Users },
   { name: "Suppliers", href: "/suppliers", icon: Users },
   { name: "Inventory (KRA Items)", href: "/inventory", icon: Package },
+  { name: "Kitchen", href: "/kitchen", icon: ChefHat },
 
   // KRA operations
   { name: "KRA Purchases", href: "/kra/purchases", icon: Receipt},

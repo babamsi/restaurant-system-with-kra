@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
+import { BulkInventoryUpdate } from '@/components/inventory/bulk-inventory-update'
+import { SupplierReceiptsList } from '@/components/inventory/supplier-receipts-list'
 import { Database, Loader2, Upload } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { useKRAClassifications } from "@/hooks/use-kra-classifications"
@@ -276,6 +278,12 @@ export default function KRATestItemsPage() {
         items={testItems} 
         classificationsCount={classifications.length} 
       />
+
+      {/* Inventory-like extra sections */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <BulkInventoryUpdate onInventoryUpdated={loadTestItems} />
+        <SupplierReceiptsList />
+      </div>
 
       {/* Test Items Table */}
       <TestItemsTable

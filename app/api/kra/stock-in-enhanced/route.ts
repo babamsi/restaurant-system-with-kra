@@ -251,8 +251,8 @@ export async function POST(req: NextRequest) {
       regTyCd: 'M', // Manual
         custTin: null,
         custNm: null,
-        custBhfId: null,
-        sarTyCd: dynamicSarTyCd, // Use dynamic sarTyCd
+        custBhfId: headers.bhfId,
+        sarTyCd: sarTyCd, // Use dynamic sarTyCd
       ocrnDt,
         totItemCnt: items.length,
       totTaxblAmt,

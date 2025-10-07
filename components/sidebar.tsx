@@ -10,6 +10,8 @@ import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { LogOut, User as UserIcon } from "lucide-react"
 import { useUserSession } from "@/context/UserSessionContext"
+import { Badge } from "@/components/ui/badge"
+import { getKRAHeaders } from "@/lib/kra-utils"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
 import { useSidebarState } from "@/hooks/use-responsive"
@@ -25,6 +27,8 @@ const navigation = [
   // KRA operations
   { name: "KRA Purchases", href: "/kra/purchases", icon: Receipt},
   { name: "KRA Imported Items", href: "/kra/imported-items", icon: Globe},
+  { name: "KRA Products", href: "/kra/products", icon: Package},
+  { name: "KRA Customer Lookup", href: "/kra/customers", icon: Users},
   { name: "KRA Data", href: "/kra-data", icon: Database},
   { name: "KRA Branches", href: "/kra-branches", icon: Database},
   { name: "Branch Registration", href: "/branch-registration", icon: Building2},
@@ -46,6 +50,30 @@ export function Sidebar() {
   const [isOpen, setIsOpen] = useState(false)
   const { collapsed, setCollapsed, isMobile, isTablet, isDesktop } = useSidebarState()
   const { user, logout } = useUserSession()
+  const [kraInfo, setKraInfo] = useState<{ tin?: string; bhfId?: string } | null>(null)
+  const [kraReady, setKraReady] = useState<boolean>(false)
+
+  useEffect(() => {
+    let mounted = true
+    ;(async () => {
+      try {
+        const { success, headers } = await getKRAHeaders()
+        if (!mounted) return
+        if (success && headers) {
+          setKraInfo({ tin: headers.tin, bhfId: headers.bhfId })
+          setKraReady(true)
+        } else {
+          setKraInfo(null)
+          setKraReady(false)
+        }
+      } catch {
+        if (!mounted) return
+        setKraInfo(null)
+        setKraReady(false)
+      }
+    })()
+    return () => { mounted = false }
+  }, [])
 
   // Close mobile menu when route changes
   useEffect(() => {
@@ -78,6 +106,25 @@ export function Sidebar() {
         </div>
       </div>
 
+      {/* KRA Status */}
+      <div className="p-2 border-b border-border">
+        <div className={cn("flex items-center gap-2 px-3 py-2", collapsed ? "justify-center" : "justify-between")}> 
+          <div className="flex items-center gap-2">
+            <div className={cn("h-2 w-2 rounded-full", kraReady ? "bg-emerald-500" : "bg-amber-500")}></div>
+            {!collapsed && (
+              <span className="text-xs text-muted-foreground">
+                {kraReady && kraInfo?.tin && kraInfo?.bhfId ? `PIN ${kraInfo.tin} • Branch ${kraInfo.bhfId}` : "KRA not configured"}
+              </span>
+            )}
+          </div>
+          {!collapsed && !kraReady && (
+            <Link href="/branch-registration">
+              <Badge variant="outline">Configure</Badge>
+            </Link>
+          )}
+        </div>
+      </div>
+
       {/* Navigation */}
       <nav className="flex-1 p-2 space-y-1 overflow-y-auto">
         {navigation.map((item) => {
@@ -97,7 +144,14 @@ export function Sidebar() {
               )}
             >
               <item.icon className="h-5 w-5 flex-shrink-0" />
-              {!collapsed && <span>{item.name}</span>}
+              {!collapsed && (
+                <span className="flex items-center gap-2">
+                  {item.name}
+                  {item.href === "/branch-registration" && !kraReady && (
+                    <span title="KRA not configured" className="inline-block h-2 w-2 rounded-full bg-amber-500"></span>
+                  )}
+                </span>
+              )}
             </Link>
           )
 

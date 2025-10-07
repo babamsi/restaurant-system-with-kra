@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useToast } from "@/hooks/use-toast"
-import { Building2, Loader2, CheckCircle, AlertCircle, Smartphone, Database } from "lucide-react"
+import { Building2, Loader2, CheckCircle, AlertCircle, Smartphone, Database, KeyRound } from "lucide-react"
 import ProtectedRoute from '@/components/ui/ProtectedRoute'
 
 interface RegistrationForm {
@@ -15,6 +15,12 @@ interface RegistrationForm {
   bhfId: string
   dvcSrlNo: string
   registrationType: 'device_init' | 'branch_reg'
+}
+
+interface ManualCredentialsForm {
+  tin: string
+  bhfId: string
+  cmcKey: string
 }
 
 export default function BranchRegistrationPage() {
@@ -27,6 +33,8 @@ export default function BranchRegistrationPage() {
     dvcSrlNo: '',
     registrationType: 'branch_reg'
   })
+  const [manualOpen, setManualOpen] = useState(false)
+  const [manual, setManual] = useState<ManualCredentialsForm>({ tin: '', bhfId: '', cmcKey: '' })
 
   // Handle input changes
   const handleInputChange = (field: keyof RegistrationForm, value: string) => {
@@ -144,6 +152,32 @@ export default function BranchRegistrationPage() {
         description: error.message || "An error occurred during registration",
         variant: "destructive"
       })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Save manual credentials without initialization
+  const handleSaveManual = async () => {
+    if (!manual.tin.trim() || !manual.bhfId.trim() || !manual.cmcKey.trim()) {
+      toast({ title: 'Missing fields', description: 'PIN, Branch and CMC Key are required', variant: 'destructive' })
+      return
+    }
+    try {
+      setLoading(true)
+      const res = await fetch('/api/kra/save-device-credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tin: manual.tin.trim(), bhfId: manual.bhfId.trim(), cmcKey: manual.cmcKey.trim() })
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to save credentials')
+      }
+      toast({ title: 'Credentials Saved', description: 'Device credentials saved for this environment.' })
+      setManualOpen(false)
+    } catch (e: any) {
+      toast({ title: 'Error', description: e?.message || 'Failed to save credentials', variant: 'destructive' })
     } finally {
       setLoading(false)
     }
@@ -331,6 +365,47 @@ export default function BranchRegistrationPage() {
                     )}
                   </Button>
                 </form>
+
+                {/* Manual Credentials Divider */}
+                <div className="my-6 flex items-center gap-3">
+                  <div className="h-px flex-1 bg-border"></div>
+                  <span className="text-xs text-muted-foreground">or</span>
+                  <div className="h-px flex-1 bg-border"></div>
+                </div>
+
+                {/* Manual Credentials Form (no initialization) */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-sm">
+                      <KeyRound className="h-4 w-4 text-primary" />
+                      <span>Use existing device credentials</span>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={() => setManualOpen((v) => !v)}>
+                      {manualOpen ? 'Hide' : 'Enter PIN/Branch/CMC Key'}
+                    </Button>
+                  </div>
+                  {manualOpen && (
+                    <div className="grid gap-3">
+                      <div className="grid gap-2">
+                        <Label>PIN Number</Label>
+                        <Input value={manual.tin} onChange={(e) => setManual((p) => ({ ...p, tin: e.target.value.toUpperCase() }))} placeholder="e.g., P052380018M" />
+                      </div>
+                      <div className="grid gap-2">
+                        <Label>Branch ID</Label>
+                        <Input value={manual.bhfId} onChange={(e) => setManual((p) => ({ ...p, bhfId: e.target.value }))} placeholder="e.g., 01" />
+                      </div>
+                      <div className="grid gap-2">
+                        <Label>CMC Key</Label>
+                        <Input value={manual.cmcKey} onChange={(e) => setManual((p) => ({ ...p, cmcKey: e.target.value }))} placeholder="your CMC Key" />
+                      </div>
+                      <div className="flex justify-end">
+                        <Button onClick={handleSaveManual} disabled={loading} className="h-10">
+                          Save Credentials
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
 
                 {/* Information Section */}
                 <div className="mt-6 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">

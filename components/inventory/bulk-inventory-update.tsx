@@ -54,9 +54,18 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
     setLoading(true)
     const result = await inventoryService.getIngredients()
     if (result.success) {
-      setIngredients(result.data)
-      setUpdateItems(result.data.map((ingredient: BaseIngredient) => ({
-        ingredient,
+      // Normalize fields from DB (snake_case) to UI types (camelCase)
+      const normalized = (result.data as any[]).map((row) => ({
+        ...row,
+        available_quantity: row.available_quantity ?? row.current_stock ?? 0,
+        itemCd: row.itemCd ?? row.item_cd,
+        itemClsCd: row.itemClsCd ?? row.item_cls_cd,
+        taxTyCd: row.taxTyCd ?? row.tax_ty_cd,
+      }))
+
+      setIngredients(normalized)
+      setUpdateItems(normalized.map((ingredient: BaseIngredient) => ({
+        ingredient: ingredient as BaseIngredient,
         selected: false
       })))
     } else {
@@ -256,28 +265,7 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
     })
   }
 
-  // Helper functions for KRA integration
-  async function registerIngredientWithKRA(ingredient: BaseIngredient, newCost?: number) {
-    console.log(`Registering ingredient with KRA: ${ingredient.name} (ID: ${ingredient.id})`)
-    
-    const res = await fetch('/api/kra/register-item', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ingredientId: ingredient.id,
-        name: ingredient.name,
-        category: ingredient.category,
-        unit: ingredient.unit,
-        cost_per_unit: newCost !== undefined ? newCost : ingredient.cost_per_unit,
-        description: ingredient.description || ''
-      }),
-    })
-    
-    const data = await res.json()
-    console.log(`KRA registration response for ${ingredient.name}:`, data)
-    
-    return data
-  }
+  // NOTE: Bulk update no longer registers items. It only performs stock-in for already-registered items.
 
   // Send purchase transaction to KRA
   async function sendPurchaseToKRA(items: BulkUpdateItem[], supplier: any, invoiceNumber: string, vatAmount: string, supplierOrderId?: string) {
@@ -311,15 +299,16 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
 
   // Send stock-in transaction to KRA
   async function sendStockInToKRA(items: BulkUpdateItem[], receiptCode: string, vatAmount: string, supplierOrderId?: string) {
+    // Build items in snake_case to match API route expectations
     const stockItems = items.map(item => ({
-      ...item,
-      itemCd: item.ingredient.itemCd,
-      itemClsCd: item.ingredient.itemClsCd,
+      item_cd: item.ingredient.itemCd,
+      item_cls_cd: item.ingredient.itemClsCd,
       name: item.ingredient.name,
       category: item.ingredient.category,
       unit: item.ingredient.unit,
       cost_per_unit: item.newCost ?? item.ingredient.cost_per_unit,
-      quantity: item.newQuantity ?? 0
+      quantity: item.newQuantity ?? 0,
+      tax_ty_cd: item.ingredient.taxTyCd || 'B'
     }))
 
     const res = await fetch('/api/kra/stock-in-enhanced', {
@@ -364,44 +353,16 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
         return
       }
 
-      // Step 1: Register items with KRA if needed
-      for (const item of itemsToUpdate) {
-        if (!item.ingredient.itemCd || !item.ingredient.itemClsCd) {
-          console.log(`Registering ${item.ingredient.name} with KRA...`)
-          const kraRes = await registerIngredientWithKRA(item.ingredient, item.newCost)
-          
-          if (!kraRes.success) {
-            console.error(`KRA registration failed for ${item.ingredient.name}:`, kraRes.error)
-            toast({ 
-              title: "KRA Registration Error", 
-              description: kraRes.error || "Failed to register ingredient with KRA", 
-              variant: "destructive" 
-            })
-            setIsProcessing(false)
-            return
-          }
-          
-          console.log(`KRA registration successful for ${item.ingredient.name}:`, kraRes)
-          
-          // Update the ingredient with KRA codes
-          await inventoryService.updateIngredient(item.ingredient.id, {
-            itemCd: kraRes.itemCd,
-            itemClsCd: kraRes.itemClsCd,
-            taxTyCd: kraRes.taxTyCd,
-            kra_status: 'ok',
-          })
-          
-          // Update the local ingredient object with the new codes
-          item.ingredient.itemCd = kraRes.itemCd
-          item.ingredient.itemClsCd = kraRes.itemClsCd
-          item.ingredient.taxTyCd = kraRes.taxTyCd
-          
-          console.log(`Updated ingredient ${item.ingredient.name} with KRA codes:`, {
-            itemCd: kraRes.itemCd,
-            itemClsCd: kraRes.itemClsCd,
-            taxTyCd: kraRes.taxTyCd
-          })
-        }
+      // Step 1: Determine which items are already registered with KRA
+      const kraEligibleItems = itemsToUpdate.filter(item => !!item.ingredient.itemCd && !!item.ingredient.itemClsCd)
+      const kraIneligibleItems = itemsToUpdate.filter(item => !item.ingredient.itemCd || !item.ingredient.itemClsCd)
+
+      if (kraIneligibleItems.length > 0) {
+        const skippedNames = kraIneligibleItems.map(i => i.ingredient.name).join(', ')
+        toast({
+          title: 'Some items skipped for KRA',
+          description: `Skipped: ${skippedNames}. These items are not registered with KRA.`,
+        })
       }
 
       // Step 2: Create supplier order first to get the ID for KRA tracking
@@ -456,8 +417,10 @@ export function BulkInventoryUpdate({ onInventoryUpdated }: BulkInventoryUpdateP
       }
       */
 
-      // Step 4: Send stock-in transaction to KRA
-      const kraStockInRes = await sendStockInToKRA(itemsToUpdate, invoiceNumber, vatAmount, supplierOrderId)
+      // Step 4: Send stock-in transaction to KRA for registered items only
+      const kraStockInRes = kraEligibleItems.length > 0
+        ? await sendStockInToKRA(kraEligibleItems, invoiceNumber, vatAmount, supplierOrderId)
+        : { success: true }
       if (!kraStockInRes.success) {
         toast({ 
           title: 'KRA Stock-In Error', 

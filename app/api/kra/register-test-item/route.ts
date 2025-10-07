@@ -160,7 +160,7 @@ function mapToKRAUnit(unit: string): string {
 async function getNextItemCd(unitCode: string): Promise<string> {
   try {
     const { data, error } = await supabase
-      .from('kra_test_items')
+      .from('ingredients')
       .select('item_cd')
       .like('item_cd', `KE2NT${unitCode}%`)
       .order('item_cd', { ascending: false })
@@ -273,7 +273,7 @@ export async function POST(req: NextRequest) {
     if (kraData.resultCd === '000') {
       // Find the test item by name and category to update it
       const { data: testItems, error: findError } = await supabase
-        .from('kra_test_items')
+        .from('ingredients')
         .select('id')
         .eq('name', name)
         .eq('category', category)
@@ -291,7 +291,7 @@ export async function POST(req: NextRequest) {
 
       if (testItems && testItems.length > 0) {
         const { error: updateError } = await supabase
-          .from('kra_test_items')
+          .from('ingredients')
           .update({ 
             item_cd: itemCd,
             item_cls_cd: finalItemClsCd,

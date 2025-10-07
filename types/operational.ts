@@ -123,6 +123,7 @@ export interface BaseIngredient {
   image?: string,
   itemCd?: string,
   itemClsCd?: string,
+  taxTyCd?: string,
   kra_status?: string,
   nutrition?: NutritionInfo
   supplier_id: string // Reference to supplier

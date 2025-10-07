@@ -45,9 +45,8 @@ export const kraTestItemsService = {
   async getTestItems(): Promise<{ success: boolean; data?: TestKRAItem[]; error?: string }> {
     try {
       const { data, error } = await supabase
-        .from('kra_test_items')
+        .from('ingredients')
         .select('*')
-        .eq('is_active', true)
         .order('created_at', { ascending: false })
 
       if (error) {
@@ -66,7 +65,7 @@ export const kraTestItemsService = {
   async createTestItem(itemData: CreateTestItemData): Promise<{ success: boolean; data?: TestKRAItem; error?: string }> {
     try {
       const { data, error } = await supabase
-        .from('kra_test_items')
+        .from('ingredients')
         .insert([{
           name: itemData.name,
           description: itemData.description || null,
@@ -97,7 +96,7 @@ export const kraTestItemsService = {
   async updateTestItem(id: string, updateData: UpdateTestItemData): Promise<{ success: boolean; data?: TestKRAItem; error?: string }> {
     try {
       const { data, error } = await supabase
-        .from('kra_test_items')
+        .from('ingredients')
         .update(updateData)
         .eq('id', id)
         .select()
@@ -119,7 +118,7 @@ export const kraTestItemsService = {
   async updateKRAItemCode(id: string, itemCd: string): Promise<{ success: boolean; error?: string }> {
     try {
       const { error } = await supabase
-        .from('kra_test_items')
+        .from('ingredients')
         .update({ item_cd: itemCd })
         .eq('id', id)
 
@@ -135,12 +134,12 @@ export const kraTestItemsService = {
     }
   },
 
-  // Delete a test item (soft delete)
+  // Delete a test item (hard delete)
   async deleteTestItem(id: string): Promise<{ success: boolean; error?: string }> {
     try {
       const { error } = await supabase
-        .from('kra_test_items')
-        .update({ is_active: false })
+        .from('ingredients')
+        .delete()
         .eq('id', id)
 
       if (error) {

@@ -1067,8 +1067,8 @@ export const supplierOrdersService = {
         order_id: order.id,
         ingredient_id: item.ingredient_id,
         quantity: item.quantity,
-        cost_per_unit: item.cost_per_unit,
-        total_cost: item.total_cost
+        cost_per_unit: item.cost_per_unit
+        // total_cost is a generated column in DB
       }));
       const { error: itemsError } = await supabase
         .from('supplier_order_items')

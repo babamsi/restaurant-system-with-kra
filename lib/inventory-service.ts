@@ -54,7 +54,8 @@ export const inventoryService = {
       let query = supabase
         .from('ingredients')
         .select('*')
-        .eq('is_active', true);
+        // Include rows where is_active is true OR not set (null) for backward compatibility
+        .or('is_active.is.null,is_active.eq.true');
 
       // Apply filters
       if (filters?.category) {

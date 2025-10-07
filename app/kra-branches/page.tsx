@@ -21,7 +21,9 @@ import {
   MapPin,
   Phone,
   Mail,
-  Home
+  Home,
+  LogOut,
+  ArrowRightCircle
 } from "lucide-react"
 import ProtectedRoute from '@/components/ui/ProtectedRoute'
 import { kraRegistrationsService, KRARegistration } from '@/lib/kra-registrations-service'
@@ -33,6 +35,8 @@ export default function KRARegistrationsPage() {
   const [loading, setLoading] = useState(true)
   const [activeRegistration, setActiveRegistration] = useState<KRARegistration | null>(null)
   const [showBranches, setShowBranches] = useState(false)
+  const [switching, setSwitching] = useState<string | null>(null)
+  const [loggingOut, setLoggingOut] = useState(false)
 
   // KRA branches hook
   const { branches, loading: loadingBranches, loadBranches, error: branchesError } = useKRABranches()
@@ -183,6 +187,27 @@ export default function KRARegistrationsPage() {
             </p>
           </div>
           <div className="flex gap-2">
+            <Button 
+              variant="destructive"
+              onClick={async () => {
+                try {
+                  setLoggingOut(true)
+                  const res = await fetch('/api/kra/logout-credentials', { method: 'POST' })
+                  const data = await res.json()
+                  if (!res.ok) throw new Error(data.error || 'Logout failed')
+                  toast({ title: 'KRA Logged Out', description: 'Device credentials cleared for this environment.' })
+                  await loadRegistrations()
+                } catch (e: any) {
+                  toast({ title: 'Error', description: e?.message || 'Failed to logout KRA', variant: 'destructive' })
+                } finally {
+                  setLoggingOut(false)
+                }
+              }}
+              disabled={loggingOut}
+            >
+              {loggingOut ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <LogOut className="h-4 w-4 mr-2" />}
+              Logout KRA
+            </Button>
             <Button 
               variant="outline" 
               onClick={() => {
@@ -349,6 +374,40 @@ export default function KRARegistrationsPage() {
                                 onClick={() => copyToClipboard(branch.bhfId, 'Branch ID')}
                               >
                                 <Copy className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                onClick={async () => {
+                                  try {
+                                    setSwitching(branch.bhfId)
+                                    const res = await fetch('/api/kra/set-active-branch', {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ tin: branch.tin, bhfId: branch.bhfId })
+                                    })
+                                    const data = await res.json()
+                                    if (!res.ok) throw new Error(data.error || 'Failed to switch branch')
+                                    toast({ title: 'Branch Switched', description: `Active KRA set to Branch ${branch.bhfId}` })
+                                    await loadRegistrations()
+                                  } catch (e: any) {
+                                    toast({ title: 'Error', description: e?.message || 'Failed to switch branch', variant: 'destructive' })
+                                  } finally {
+                                    setSwitching(null)
+                                  }
+                                }}
+                                disabled={switching === branch.bhfId}
+                              >
+                                {switching === branch.bhfId ? (
+                                  <>
+                                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                                    Switching...
+                                  </>
+                                ) : (
+                                  <>
+                                    <ArrowRightCircle className="h-4 w-4 mr-2" />
+                                    Make Active
+                                  </>
+                                )}
                               </Button>
                             </div>
                           </TableCell>

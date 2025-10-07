@@ -33,6 +33,7 @@ import { ReceiptList } from "./receipt-list"
 import { BulkInventoryUpdate } from "./bulk-inventory-update"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { inventoryService } from "@/lib/inventory-service"
+import { useKRAClassifications } from "@/hooks/use-kra-classifications"
 import { SupplierSelector } from "@/components/suppliers/supplier-selector"
 
 // Database ingredient type
@@ -169,6 +170,9 @@ export function SynchronizedInventoryManager() {
   // State for KRA registration
   const [isRegisteringWithKRA, setIsRegisteringWithKRA] = useState(false)
   const [isSyncingWithKRA, setIsSyncingWithKRA] = useState(false)
+  const { classifications } = useKRAClassifications()
+  const [selectedItemClsCd, setSelectedItemClsCd] = useState<string>("")
+  const [selectedTaxTyCd, setSelectedTaxTyCd] = useState<string>("")
 
   // Get suppliers for the selected category
   const categorySuppliers = allSuppliers.filter(supplier => supplier.status === 'active')
@@ -277,7 +281,9 @@ export function SynchronizedInventoryManager() {
               category: newIngredient.category,
               unit: newIngredient.unit,
               cost_per_unit: newIngredient.cost_per_unit || 0,
-              description: newIngredient.description || ''
+              description: newIngredient.description || '',
+              itemClsCd: selectedItemClsCd || undefined,
+              taxTyCd: selectedTaxTyCd || undefined
             })
           })
 
@@ -382,6 +388,38 @@ export function SynchronizedInventoryManager() {
           title: "Stock Updated",
           description: `${ingredient?.name} stock ${type === "add" ? "increased" : "decreased"} by ${quantity} ${ingredient?.unit}.`,
         })
+        // If we increased stock and the item is registered with KRA, send stock-in to KRA like test-items flow
+        if (type === "add" && ingredient && ingredient.itemCd && ingredient.itemClsCd && quantity > 0) {
+          try {
+            const res = await fetch('/api/kra/stock-in-enhanced', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                items: [{
+                  itemCd: ingredient.itemCd,
+                  itemClsCd: ingredient.itemClsCd,
+                  name: ingredient.name,
+                  category: ingredient.category,
+                  unit: ingredient.unit,
+                  cost_per_unit: ingredient.cost_per_unit,
+                  quantity: quantity,
+                  ingredient
+                }],
+                sarTyCd: '01', // Manual stock-in (non-purchase)
+                receiptCode: `ADJ${Date.now()}`,
+                vatAmount: '0',
+                stockDate: new Date().toISOString().slice(0, 10).replace(/-/g, ''),
+                supplierOrderId: null
+              })
+            })
+            const kra = await res.json()
+            if (!kra.success) {
+              toast({ title: 'KRA Stock-In Error', description: kra.error || 'Failed to sync with KRA', variant: 'destructive' })
+            }
+          } catch (e: any) {
+            toast({ title: 'KRA Sync Error', description: e?.message || 'Failed to sync with KRA', variant: 'destructive' })
+          }
+        }
         await loadIngredients()
       } else {
         toast({
@@ -1019,9 +1057,10 @@ export function SynchronizedInventoryManager() {
               </DialogHeader>
 
               <Tabs defaultValue="basic" className="w-full">
-                <TabsList className="grid w-full grid-cols-2">
+                <TabsList className="grid w-full grid-cols-3">
                   <TabsTrigger value="basic">Basic Information</TabsTrigger>
                   <TabsTrigger value="stock">Stock & Pricing</TabsTrigger>
+                  <TabsTrigger value="kra">KRA Codes</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="basic" className="space-y-4">
@@ -1233,6 +1272,43 @@ export function SynchronizedInventoryManager() {
                     />
                   </div>
                 </TabsContent>
+
+                <TabsContent value="kra" className="space-y-4">
+                  <div className="grid grid-cols-1 gap-4">
+                    <div>
+                      <Label>Item Classification</Label>
+                      <Select value={selectedItemClsCd} onValueChange={setSelectedItemClsCd}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select classification" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {classifications.map((c) => (
+                            <SelectItem key={c.itemClsCd} value={c.itemClsCd}>
+                              {c.itemClsCd} - {c.itemClsNm}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground mt-1">Optional: override auto classification</p>
+                    </div>
+                    <div>
+                      <Label>Tax Type</Label>
+                      <Select value={selectedTaxTyCd} onValueChange={setSelectedTaxTyCd}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select tax type" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="A">A</SelectItem>
+                          <SelectItem value="B">B</SelectItem>
+                          <SelectItem value="C">C</SelectItem>
+                          <SelectItem value="D">D</SelectItem>
+                          <SelectItem value="E">E</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground mt-1">Optional: override auto tax type</p>
+                    </div>
+                  </div>
+                </TabsContent>
               </Tabs>
 
               <div className="grid gap-2">
@@ -1330,7 +1406,6 @@ export function SynchronizedInventoryManager() {
                           <div className="flex items-center gap-2">
                             <Badge variant="outline" className="text-amber-500 border-amber-500">Not Registered</Badge>
                             <Button
-                              size="xs"
                               variant="secondary"
                               onClick={async () => {
                                 try {

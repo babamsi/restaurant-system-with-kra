@@ -332,7 +332,7 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json()
-    const { ingredientId, name, category, unit, cost_per_unit, description } = body
+    const { ingredientId, name, category, unit, cost_per_unit, description, itemClsCd: overrideItemClsCd, taxTyCd: overrideTaxTyCd } = body
 
     console.log(`=== KRA Item Registration Request ===`)
     console.log(`Ingredient ID: ${ingredientId}`)
@@ -357,10 +357,10 @@ export async function POST(req: NextRequest) {
 
     console.log(`Registering ingredient: ${name} (ID: ${ingredientId}) with unit: ${unit}`)
 
-    // Generate KRA codes using the working approach
+    // Generate KRA codes using the working approach (allow override from UI if provided)
     const itemCd = await getNextItemCd(unit)
-    const itemClsCd = generateItemClsCd(category)
-    const taxTyCd = generateTaxTyCd(itemClsCd)
+    const itemClsCd = overrideItemClsCd || generateItemClsCd(category)
+    const taxTyCd = overrideTaxTyCd || generateTaxTyCd(itemClsCd)
 
     console.log(`Generated codes - itemCd: ${itemCd}, itemClsCd: ${itemClsCd}, taxTyCd: ${taxTyCd}`)
 
@@ -368,7 +368,7 @@ export async function POST(req: NextRequest) {
     const safeName = name.length > 20 ? name.slice(0, 20) : name
 
     // Prepare KRA payload using the working format
-    const kraPayload = {
+      const kraPayload = {
       tin: headers.tin,
       bhfId: headers.bhfId,
       itemCd,

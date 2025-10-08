@@ -158,6 +158,35 @@ export function SalesDetailsDialog({ open, onOpenChange, sale, onKRASubmission }
     }
   }
 
+  // Format to YYYYMMDD and YYYYMMDDHHmmss
+  const formatYMD = (src: string) => {
+    try {
+      // If already in YYYYMMDD
+      if (/^\d{8}$/.test(src)) return src
+      const d = new Date(src)
+      const y = d.getFullYear()
+      const m = String(d.getMonth() + 1).padStart(2, '0')
+      const day = String(d.getDate()).padStart(2, '0')
+      return `${y}${m}${day}`
+    } catch {
+      return src
+    }
+  }
+  const formatYMDHMS = (src: string) => {
+    try {
+      const d = new Date(src)
+      const y = d.getFullYear()
+      const m = String(d.getMonth() + 1).padStart(2, '0')
+      const day = String(d.getDate()).padStart(2, '0')
+      const hh = String(d.getHours()).padStart(2, '0')
+      const mm = String(d.getMinutes()).padStart(2, '0')
+      const ss = String(d.getSeconds()).padStart(2, '0')
+      return `${y}${m}${day}${hh}${mm}${ss}`
+    } catch {
+      return src
+    }
+  }
+
   // Handle sending purchase to KRA
   const handleSendPurchase = async () => {
     if (isAlreadySubmitted) {
@@ -171,10 +200,97 @@ export function SalesDetailsDialog({ open, onOpenChange, sale, onKRASubmission }
 
     setSendingPurchase(true)
     try {
+      // Build dynamic payload from sale data
+      const totItemCnt = sale.totItemCnt ?? (sale.itemList?.length || 0)
+      const sum = sale.itemList?.reduce((acc, it) => {
+        return {
+          taxblAmtA: acc.taxblAmtA + (it.taxTyCd === 'A' ? it.taxblAmt : 0),
+          taxblAmtB: acc.taxblAmtB + (it.taxTyCd === 'B' ? it.taxblAmt : 0),
+          taxblAmtC: acc.taxblAmtC + (it.taxTyCd === 'C' ? it.taxblAmt : 0),
+          taxblAmtD: acc.taxblAmtD + (it.taxTyCd === 'D' ? it.taxblAmt : 0),
+          taxblAmtE: acc.taxblAmtE + (it.taxTyCd === 'E' ? it.taxblAmt : 0),
+          taxAmtA: acc.taxAmtA + (it.taxTyCd === 'A' ? it.taxAmt : 0),
+          taxAmtB: acc.taxAmtB + (it.taxTyCd === 'B' ? it.taxAmt : 0),
+          taxAmtC: acc.taxAmtC + (it.taxTyCd === 'C' ? it.taxAmt : 0),
+          taxAmtD: acc.taxAmtD + (it.taxTyCd === 'D' ? it.taxAmt : 0),
+          taxAmtE: acc.taxAmtE + (it.taxTyCd === 'E' ? it.taxAmt : 0),
+          totTaxblAmt: acc.totTaxblAmt + (it.taxblAmt || 0),
+          totTaxAmt: acc.totTaxAmt + (it.taxAmt || 0),
+          totAmt: acc.totAmt + (it.totAmt || 0),
+        }
+      }, { taxblAmtA: 0, taxblAmtB: 0, taxblAmtC: 0, taxblAmtD: 0, taxblAmtE: 0, taxAmtA: 0, taxAmtB: 0, taxAmtC: 0, taxAmtD: 0, taxAmtE: 0, totTaxblAmt: 0, totTaxAmt: 0, totAmt: 0 }) || { taxblAmtA: sale.taxblAmtA||0, taxblAmtB: sale.taxblAmtB||0, taxblAmtC: sale.taxblAmtC||0, taxblAmtD: sale.taxblAmtD||0, taxblAmtE: sale.taxblAmtE||0, taxAmtA: sale.taxAmtA||0, taxAmtB: sale.taxAmtB||0, taxAmtC: sale.taxAmtC||0, taxAmtD: sale.taxAmtD||0, taxAmtE: sale.taxAmtE||0, totTaxblAmt: sale.totTaxblAmt||0, totTaxAmt: (sale as any).totTaxAmt||0, totAmt: sale.totAmt||0 }
+
+      const payload = {
+        invcNo: sale.spplrInvcNo,
+        orgInvcNo: 0,
+        spplrTin: sale.spplrTin || null,
+        spplrBhfId: sale.spplrBhfId || null,
+        spplrNm: sale.spplrNm || null,
+        spplrInvcNo: sale.spplrInvcNo || null,
+        regTyCd: 'M',
+        pchsTyCd: 'N',
+        rcptTyCd: 'P',
+        pmtTyCd: sale.pmtTyCd || '01',
+        pchsSttsCd: '02',
+        cfmDt: formatYMDHMS(sale.cfmDt),
+        pchsDt: formatYMD(sale.salesDt),
+        wrhsDt: '',
+        cnclReqDt: '',
+        cnclDt: '',
+        rfdDt: '',
+        totItemCnt,
+        taxblAmtA: sum.taxblAmtA,
+        taxblAmtB: sum.taxblAmtB,
+        taxblAmtC: sum.taxblAmtC,
+        taxblAmtD: sum.taxblAmtD,
+        taxblAmtE: sum.taxblAmtE,
+        taxRtA: sale.taxRtA || 0,
+        taxRtB: sale.taxRtB || 0,
+        taxRtC: sale.taxRtC || 0,
+        taxRtD: sale.taxRtD || 0,
+        taxRtE: sale.taxRtE || 0,
+        taxAmtA: sum.taxAmtA,
+        taxAmtB: sum.taxAmtB,
+        taxAmtC: sum.taxAmtC,
+        taxAmtD: sum.taxAmtD,
+        taxAmtE: sum.taxAmtE,
+        totTaxblAmt: sum.totTaxblAmt,
+        totTaxAmt: sum.totTaxAmt,
+        totAmt: sum.totAmt,
+        remark: sale.remark || null,
+        regrNm: 'Admin',
+        regrId: 'Admin',
+        modrNm: 'Admin',
+        modrId: 'Admin',
+        itemList: (sale.itemList || []).map((it) => ({
+          itemSeq: it.itemSeq,
+          itemCd: it.itemCd,
+          itemClsCd: it.itemClsCd,
+          itemNm: it.itemNm,
+          bcd: it.bcd || '',
+          spplrItemClsCd: null,
+          spplrItemCd: null,
+          spplrItemNm: null,
+          pkgUnitCd: it.pkgUnitCd,
+          pkg: it.pkg,
+          qtyUnitCd: it.qtyUnitCd,
+          qty: it.qty,
+          prc: it.prc,
+          splyAmt: it.splyAmt,
+          dcRt: it.dcRt,
+          dcAmt: it.dcAmt,
+          taxblAmt: it.taxblAmt,
+          taxTyCd: it.taxTyCd,
+          taxAmt: it.taxAmt,
+          totAmt: it.totAmt,
+          itemExprDt: null,
+        }))
+      }
+
       const response = await fetch('/api/kra/send-purchase', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ purchaseData: sale })
+        body: JSON.stringify({ purchaseData: payload })
       })
 
       const data = await response.json()

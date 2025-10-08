@@ -24,6 +24,7 @@ const navigation = [
   { name: "Suppliers", href: "/suppliers", icon: Users },
   { name: "Inventory (KRA Items)", href: "/inventory", icon: Package },
   { name: "Kitchen", href: "/kitchen", icon: ChefHat },
+  { name: "Recipes", href: "/recipes", icon: ClipboardList },
 
   // KRA operations
   { name: "KRA Purchases", href: "/kra/purchases", icon: Receipt},

@@ -149,6 +149,14 @@ export default function RecipesPage() {
         ...recipe,
         components: resolvedComponents,
         available: true, // You can add logic to check stock here
+        // Include KRA status fields
+        itemCd: recipe.itemCd,
+        itemClsCd: recipe.itemClsCd,
+        taxTyCd: recipe.taxTyCd,
+        kra_status: recipe.kra_status,
+        kra_error: recipe.kra_error,
+        kra_composition_status: recipe.kra_composition_status,
+        kra_composition_no: recipe.kra_composition_no,
       };
     }));
     setRecipes(allRecipes);
@@ -167,11 +175,12 @@ export default function RecipesPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          id: recipe.id,
+          recipeId: recipe.id,
           name: recipe.name,
           price: recipe.price,
           description: recipe.description,
-          itemCd: recipe.itemCd || undefined,
+          category: recipe.category || 'Main Dishes', // Default category for recipes
+          unit: 'U', // Default unit for recipes
         }),
       })
       const data = await res.json()
@@ -501,13 +510,42 @@ export default function RecipesPage() {
           await supabase.from("recipe_components").insert(componentsToInsert);
           
           // Register with KRA for complex recipes
-          await handleRegisterKRA({
-            id: newRecipe.id,
-            name: newRecipe.name,
-            price: newRecipe.price,
-            description: newRecipe.description,
-            itemCd: newRecipe.itemCd,
-          })
+          try {
+            const registerRes = await fetch('/api/kra/register-item', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                recipeId: newRecipe.id,
+                name: newRecipe.name,
+                price: newRecipe.price,
+                description: newRecipe.description,
+                category: newRecipe.category || 'Main Dishes', // Default category for recipes
+                unit: 'U', // Default unit for recipes
+              }),
+            })
+            const registerData = await registerRes.json()
+            
+            if (registerData.success) {
+              toast({ 
+                title: 'Recipe Created & Registered with KRA', 
+                description: `Recipe "${newRecipe.name}" created and registered with KRA. Item Code: ${registerData.itemCd}`,
+                variant: 'default'
+              })
+            } else {
+              toast({ 
+                title: 'Recipe Created (KRA Registration Failed)', 
+                description: `Recipe "${newRecipe.name}" created successfully, but KRA registration failed: ${registerData.error}`,
+                variant: 'destructive'
+              })
+            }
+          } catch (kraError: any) {
+            console.error('KRA registration error:', kraError)
+            toast({ 
+              title: 'Recipe Created (KRA Error)', 
+              description: `Recipe "${newRecipe.name}" created successfully, but KRA registration failed.`,
+              variant: 'destructive'
+            })
+          }
         } else if (data.recipeType === "inventory") {
           // For inventory-based recipes, no KRA registration needed
           toast({

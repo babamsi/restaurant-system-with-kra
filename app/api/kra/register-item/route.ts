@@ -60,68 +60,73 @@ function padNumber(num: number, size: number) {
   return s
 }
 
-async function getNextItemCd(unit: string) {
+async function getNextItemCd(unit: string, isRecipe: boolean = false) {
   // Map unit to KRA unit code for the item code
   const unitCode = mapToKRAUnit(unit)
   
-  console.log(`Getting next item code for unit: "${unit}" → unitCode: "${unitCode}"`)
+  // Use different prefixes for recipes vs ingredients
+  // Recipes: KE2NTU1****** (U1 prefix)
+  // Ingredients: KE2NTU0****** (U0 prefix) or other unit codes
+  const prefix = isRecipe ? 'KE2NTU1' : `KE2NT${unitCode}`
   
-  // Find the highest itemCd for this specific unit type
+  console.log(`Getting next item code for ${isRecipe ? 'recipe' : 'ingredient'} with unit: "${unit}" → unitCode: "${unitCode}", prefix: "${prefix}"`)
+  
+  // Find the highest itemCd for this specific prefix pattern
   let maxNum = 0
   
-  // Check ingredients table for existing item codes with this unit pattern
+  // Check ingredients table for existing item codes with this prefix pattern
   const { data: ingData } = await supabase
     .from('ingredients')
     .select('itemCd')
     .not('itemCd', 'is', null)
-    .like('itemCd', `KE2NT${unitCode}%`)
+    .like('itemCd', `${prefix}%`)
     .order('itemCd', { ascending: false })
     .limit(20) // Get more results to ensure we find the highest
 
   if (ingData && ingData.length > 0) {
-    console.log(`Found ${ingData.length} existing ingredients with unit code ${unitCode}:`, ingData.map(item => item.itemCd))
+    console.log(`Found ${ingData.length} existing ingredients with prefix ${prefix}:`, ingData.map(item => item.itemCd))
     
-    // Find the highest number in the pattern KE2NT + unitCode + 7 digits
-    const pattern = new RegExp(`KE2NT${unitCode}(\\d{7})`)
+    // Find the highest number in the pattern prefix + 7 digits
+    const pattern = new RegExp(`${prefix}(\\d{7})`)
     ingData.forEach(item => {
       const match = item.itemCd.match(pattern)
       if (match) {
         const num = parseInt(match[1], 10)
         maxNum = Math.max(maxNum, num)
-        console.log(`Found existing code: ${item.itemCd}, extracted number: ${num}, current max: ${maxNum}`)
+        console.log(`Found existing ingredient code: ${item.itemCd}, extracted number: ${num}, current max: ${maxNum}`)
       }
     })
   }
 
-  // Check recipes table for existing item codes with this unit pattern
+  // Check recipes table for existing item codes with this prefix pattern
   const { data: recData } = await supabase
     .from('recipes')
     .select('itemCd')
     .not('itemCd', 'is', null)
-    .like('itemCd', `KE2NT${unitCode}%`)
+    .like('itemCd', `${prefix}%`)
     .order('itemCd', { ascending: false })
     .limit(20) // Get more results to ensure we find the highest
 
   if (recData && recData.length > 0) {
-    console.log(`Found ${recData.length} existing recipes with unit code ${unitCode}:`, recData.map(item => item.itemCd))
+    console.log(`Found ${recData.length} existing recipes with prefix ${prefix}:`, recData.map(item => item.itemCd))
     
-    // Find the highest number in the pattern KE2NT + unitCode + 7 digits
-    const pattern = new RegExp(`KE2NT${unitCode}(\\d{7})`)
+    // Find the highest number in the pattern prefix + 7 digits
+    const pattern = new RegExp(`${prefix}(\\d{7})`)
     recData.forEach(item => {
       const match = item.itemCd.match(pattern)
-    if (match) {
+      if (match) {
         const num = parseInt(match[1], 10)
         maxNum = Math.max(maxNum, num)
-        console.log(`Found existing code: ${item.itemCd}, extracted number: ${num}, current max: ${maxNum}`)
+        console.log(`Found existing recipe code: ${item.itemCd}, extracted number: ${num}, current max: ${maxNum}`)
       }
     })
   }
 
   // Generate next item code with incremented number
   const nextNum = maxNum + 1
-  const itemCd = `KE2NT${unitCode}${padNumber(nextNum, 7)}`
+  const itemCd = `${prefix}${padNumber(nextNum, 7)}`
   
-  console.log(`Generated item code: ${itemCd} for unit: ${unit} (unitCode: ${unitCode}, maxNum: ${maxNum}, nextNum: ${nextNum})`)
+  console.log(`Generated item code: ${itemCd} for ${isRecipe ? 'recipe' : 'ingredient'} with unit: ${unit} (unitCode: ${unitCode}, prefix: ${prefix}, maxNum: ${maxNum}, nextNum: ${nextNum})`)
   
   return itemCd
 }
@@ -332,33 +337,54 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json()
-    const { ingredientId, name, category, unit, cost_per_unit, description, itemClsCd: overrideItemClsCd, taxTyCd: overrideTaxTyCd } = body
+    const { 
+      ingredientId, 
+      recipeId, 
+      name, 
+      category, 
+      unit, 
+      cost_per_unit, 
+      price,
+      description, 
+      itemClsCd: overrideItemClsCd, 
+      taxTyCd: overrideTaxTyCd 
+    } = body
 
     console.log(`=== KRA Item Registration Request ===`)
     console.log(`Ingredient ID: ${ingredientId}`)
+    console.log(`Recipe ID: ${recipeId}`)
     console.log(`Name: ${name}`)
     console.log(`Category: ${category}`)
     console.log(`Unit: "${unit}"`)
     console.log(`Cost per unit: ${cost_per_unit}`)
+    console.log(`Price: ${price}`)
     console.log(`Description: ${description}`)
 
-    if (!ingredientId || !name || !category || !unit) {
+    // Determine if this is a recipe or ingredient registration
+    const isRecipe = !!recipeId
+    const itemId = isRecipe ? recipeId : ingredientId
+    const tableName = isRecipe ? 'recipes' : 'ingredients'
+
+    if (!itemId || !name || !category) {
       return NextResponse.json({ 
-        error: 'Missing required fields: ingredientId, name, category, unit' 
+        error: `Missing required fields: ${isRecipe ? 'recipeId' : 'ingredientId'}, name, category` 
       }, { status: 400 })
     }
+
+    // For recipes, use default unit 'U' if not provided
+    const finalUnit = isRecipe ? (unit || 'U') : unit
 
     // Validate unit code
-    if (!KRA_UNIT_CODES[unit as keyof typeof KRA_UNIT_CODES]) {
+    if (!KRA_UNIT_CODES[finalUnit as keyof typeof KRA_UNIT_CODES]) {
       return NextResponse.json({ 
-        error: `Invalid unit code: ${unit}. Please select a valid KRA unit code.` 
+        error: `Invalid unit code: ${finalUnit}. Please select a valid KRA unit code.` 
       }, { status: 400 })
     }
 
-    console.log(`Registering ingredient: ${name} (ID: ${ingredientId}) with unit: ${unit}`)
+    console.log(`Registering ${isRecipe ? 'recipe' : 'ingredient'}: ${name} (ID: ${itemId}) with unit: ${finalUnit}`)
 
     // Generate KRA codes using the working approach (allow override from UI if provided)
-    const itemCd = await getNextItemCd(unit)
+    const itemCd = await getNextItemCd(finalUnit, isRecipe)
     const itemClsCd = overrideItemClsCd || generateItemClsCd(category)
     const taxTyCd = overrideTaxTyCd || generateTaxTyCd(itemClsCd)
 
@@ -366,6 +392,9 @@ export async function POST(req: NextRequest) {
 
     // Truncate modrId/regrId to 20 chars
     const safeName = name.length > 20 ? name.slice(0, 20) : name
+
+    // Use price for recipes, cost_per_unit for ingredients
+    const itemPrice = isRecipe ? (price || 0) : cost_per_unit
 
     // Prepare KRA payload using the working format
       const kraPayload = {
@@ -377,9 +406,9 @@ export async function POST(req: NextRequest) {
       itemNm: name,
       orgnNatCd: ORGN_NAT_CD,
       pkgUnitCd: PKG_UNIT_CD,
-      qtyUnitCd: mapToKRAUnit(unit),
+      qtyUnitCd: mapToKRAUnit(finalUnit),
       taxTyCd: taxTyCd, // Use generated tax type code
-      dftPrc: cost_per_unit,
+      dftPrc: itemPrice,
       isrcAplcbYn: "N",
       useYn: "Y",
       regrId: safeName,
@@ -401,13 +430,13 @@ export async function POST(req: NextRequest) {
     console.log("KRA Item Registration Response:", kraData)
 
     if (kraData.resultCd !== "000") {
-      console.log(`KRA registration failed for ingredient ${ingredientId}:`, kraData.resultMsg)
+      console.log(`KRA registration failed for ${isRecipe ? 'recipe' : 'ingredient'} ${itemId}:`, kraData.resultMsg)
       
-      // Update ingredient with KRA error but still save the generated codes
-      console.log(`Updating ingredient ${ingredientId} with error status but saving codes: itemCd=${itemCd}, itemClsCd=${itemClsCd}, taxTyCd=${taxTyCd}`)
+      // Update item with KRA error but still save the generated codes
+      console.log(`Updating ${isRecipe ? 'recipe' : 'ingredient'} ${itemId} with error status but saving codes: itemCd=${itemCd}, itemClsCd=${itemClsCd}, taxTyCd=${taxTyCd}`)
       
       const { data: updateData, error: updateError } = await supabase
-        .from('ingredients')
+        .from(tableName)
         .update({
           itemCd: itemCd,
           itemClsCd: itemClsCd,
@@ -416,7 +445,7 @@ export async function POST(req: NextRequest) {
           kra_error: kraData.resultMsg || 'KRA registration failed',
           updated_at: new Date().toISOString()
         })
-        .eq('id', ingredientId)
+        .eq('id', itemId)
         .select()
 
       if (updateError) {
@@ -430,7 +459,7 @@ export async function POST(req: NextRequest) {
         }, { status: 500 })
       }
 
-      console.log(`Updated ingredient ${ingredientId} with error status. Updated rows:`, updateData)
+      console.log(`Updated ${isRecipe ? 'recipe' : 'ingredient'} ${itemId} with error status. Updated rows:`, updateData)
 
       return NextResponse.json({ 
         error: kraData.resultMsg || 'KRA registration failed', 
@@ -441,13 +470,13 @@ export async function POST(req: NextRequest) {
       }, { status: 400 })
     }
 
-    console.log(`KRA registration successful for ingredient ${ingredientId}`)
+    console.log(`KRA registration successful for ${isRecipe ? 'recipe' : 'ingredient'} ${itemId}`)
 
-    // KRA registration successful - update ingredient with KRA codes
-    console.log(`Updating ingredient ${ingredientId} with codes: itemCd=${itemCd}, itemClsCd=${itemClsCd}, taxTyCd=${taxTyCd}`)
+    // KRA registration successful - update item with KRA codes
+    console.log(`Updating ${isRecipe ? 'recipe' : 'ingredient'} ${itemId} with codes: itemCd=${itemCd}, itemClsCd=${itemClsCd}, taxTyCd=${taxTyCd}`)
     
     const { data: updateData, error: updateError } = await supabase
-      .from('ingredients')
+      .from(tableName)
       .update({
         itemCd: itemCd,
         itemClsCd: itemClsCd,
@@ -456,7 +485,7 @@ export async function POST(req: NextRequest) {
         kra_error: null,
         updated_at: new Date().toISOString()
       })
-      .eq('id', ingredientId)
+      .eq('id', itemId)
       .select()
 
     if (updateError) {
@@ -470,7 +499,7 @@ export async function POST(req: NextRequest) {
       }, { status: 500 })
     }
 
-    console.log(`Successfully updated ingredient ${ingredientId} with KRA codes. Updated rows:`, updateData)
+    console.log(`Successfully updated ${isRecipe ? 'recipe' : 'ingredient'} ${itemId} with KRA codes. Updated rows:`, updateData)
 
     return NextResponse.json({ 
       success: true, 
@@ -478,7 +507,7 @@ export async function POST(req: NextRequest) {
       itemCd,
       itemClsCd,
       taxTyCd,
-      message: 'Ingredient successfully registered with KRA'
+      message: `${isRecipe ? 'Recipe' : 'Ingredient'} successfully registered with KRA`
     })
 
   } catch (error: any) {

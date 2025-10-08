@@ -34,12 +34,19 @@ export async function POST(req: NextRequest) {
     const kraData = await kraRes.json()
     console.log("KRA Imported Items Response:", kraData)
 
+    if (kraData.resultCd !== '000') {
+      return NextResponse.json({
+        success: false,
+        error: kraData.resultMsg || 'Failed to fetch imported items from KRA',
+        kraData
+      }, { status: 400 })
+    }
+
     return NextResponse.json({
+      success: true,
       resultCd: kraData.resultCd,
       resultMsg: kraData.resultMsg,
-      data: {
-        itemList: kraData.data?.itemList || []
-      }
+      items: kraData.data?.itemList || []
     })
 
   } catch (error: any) {

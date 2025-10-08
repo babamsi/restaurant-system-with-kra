@@ -44,9 +44,12 @@ export async function POST(req: NextRequest) {
       }, { status: 400 })
     }
 
+    // KRA sometimes returns saleList (sales) or purchaseList; normalize to sales
+    const list = kraData.data?.saleList || kraData.data?.purchaseList || []
+
     return NextResponse.json({ 
       success: true, 
-      sales: kraData.data?.purchaseList || [],
+      sales: list,
       message: 'Purchases fetched from KRA successfully'
     })
 

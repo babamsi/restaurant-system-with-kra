@@ -15,56 +15,30 @@ import { Calendar as CalendarComponent } from "@/components/ui/calendar"
 import { cn } from "@/lib/utils"
 import ProtectedRoute from '@/components/ui/ProtectedRoute'
 import { ImportedItemDetailsDialog } from "@/components/kra/imported-item-details-dialog"
+import { supabase } from '@/lib/supabase'
+import { useKRAClassifications } from '@/hooks/use-kra-classifications'
 
 interface KRAImportedItem {
-  itemCd: string
-  itemClsCd: string
+  taskCd: string
+  dclDe: string
+  itemSeq: number
+  dclNo: string
+  hsCd: string
   itemNm: string
-  bcd: string | null
-  pkgUnitCd: string
+  imptItemsttsCd: string
+  orgnNatCd: string
+  exptNatCd: string
   pkg: number
-  qtyUnitCd: string
+  pkgUnitCd: string | null
   qty: number
-  prc: number
-  splyAmt: number
-  dcRt: number
-  dcAmt: number
-  taxTyCd: string
-  taxblAmt: number
-  taxAmt: number
-  totAmt: number
-  importDt: string
-  importInvcNo: string
-  importSpplrNm: string
-  importSpplrTin: string
-  importSpplrBhfId: string
-  importSpplrSdcId: string
-  importSpplrMrcNo: string
-  importRcptTyCd: string
-  importPmtTyCd: string
-  importCfmDt: string
-  importSalesDt: string
-  importStockRlsDt: string | null
-  importTotItemCnt: number
-  importTaxblAmtA: number
-  importTaxblAmtB: number
-  importTaxblAmtC: number
-  importTaxblAmtD: number
-  importTaxblAmtE: number
-  importTaxRtA: number
-  importTaxRtB: number
-  importTaxRtC: number
-  importTaxRtD: number
-  importTaxRtE: number
-  importTaxAmtA: number
-  importTaxAmtB: number
-  importTaxAmtC: number
-  importTaxAmtD: number
-  importTaxAmtE: number
-  importTotTaxblAmt: number
-  importTotTaxAmt: number
-  importTotAmt: number
-  importRemark: string | null
+  qtyUnitCd: string
+  totWt: number
+  netWt: number
+  spplrNm: string
+  agntNm: string
+  invcFcurAmt: number
+  invcFcurCd: string
+  invcFcurExcrt: number
 }
 
 export default function KRAImportedItemsPage() {
@@ -77,6 +51,16 @@ export default function KRAImportedItemsPage() {
   const [selectedItem, setSelectedItem] = useState<KRAImportedItem | null>(null)
   const [showDetails, setShowDetails] = useState(false)
   const [sendingItems, setSendingItems] = useState<Set<string>>(new Set())
+  const { classifications } = useKRAClassifications()
+
+  // Convert dialog state
+  const [isConvertOpen, setIsConvertOpen] = useState(false)
+  const [convertItem, setConvertItem] = useState<KRAImportedItem | null>(null)
+  const [selectedCls, setSelectedCls] = useState<string>("")
+  const [generatedCode, setGeneratedCode] = useState<string>("")
+  const [remark, setRemark] = useState<string>("")
+  const [isGenerating, setIsGenerating] = useState(false)
+  const [isConverting, setIsConverting] = useState(false)
 
   // Format date for KRA API (YYYYMMDDHHMMSS)
   const formatDateForKRA = (date: Date): string => {
@@ -84,6 +68,104 @@ export default function KRAImportedItemsPage() {
     const month = String(date.getMonth() + 1).padStart(2, '0')
     const day = String(date.getDate()).padStart(2, '0')
     return `${year}${month}${day}000000`
+  }
+
+  // Parse declaration date to YYYYMMDD
+  const normalizeDclDe = (raw: string): string => {
+    const digits = (raw || '').replace(/[^0-9]/g, '')
+    if (digits.length === 8) {
+      const dd = digits.slice(0, 2)
+      const mm = digits.slice(2, 4)
+      const yyyy = digits.slice(4)
+      // if looks like DDMMYYYY, convert
+      if (parseInt(dd) <= 31 && parseInt(mm) <= 12) {
+        return `${yyyy}${mm}${dd}`
+      }
+      return digits
+    }
+    // Fallback to today
+    const d = new Date()
+    return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
+  }
+
+  // Generate next item code by scanning DB (defaults to unit code U)
+  const getNextItemCd = async (unitCode: string = 'U'): Promise<string> => {
+    try {
+      const { data, error } = await supabase
+        .from('ingredients')
+        .select('item_cd')
+        .like('item_cd', `KE2NT${unitCode}%`)
+        .order('item_cd', { ascending: false })
+        .limit(25)
+      if (error) throw error
+      let max = 0 as number
+      (data || []).forEach((row: any) => {
+        const code = (row as any).item_cd as string | null
+        if (code) {
+          const m = code.match(new RegExp(`KE2NT${unitCode}(\\d{7})`))
+          if (m) {
+            const n = Number.parseInt(m[1], 10)
+            if (!Number.isNaN(n)) max = Math.max(max, n)
+          }
+        }
+      })
+      const next = (max + 1).toString().padStart(7, '0')
+      return `KE2NT${unitCode}${next}`
+    } catch (e) {
+      return `KE2NTU0000001`
+    }
+  }
+
+  const openConvertDialog = async (item: KRAImportedItem) => {
+    setConvertItem(item)
+    setIsConvertOpen(true)
+    setRemark(`Converted from import ${item.dclNo}`)
+    setIsGenerating(true)
+    try {
+      // Best-effort unit code guess: use qtyUnitCd if single letter, else default to U
+      const unitCode = (item.qtyUnitCd && item.qtyUnitCd.length === 1) ? item.qtyUnitCd : 'U'
+      const code = await getNextItemCd(unitCode)
+      setGeneratedCode(code)
+    } finally {
+      setIsGenerating(false)
+    }
+  }
+
+  const submitConvert = async () => {
+    if (!convertItem || !selectedCls || !generatedCode) {
+      toast({ title: 'Missing data', description: 'Select classification and ensure code is generated.' , variant: 'destructive'})
+      return
+    }
+    setIsConverting(true)
+    try {
+      const payload = {
+        taskCd: convertItem.taskCd,
+        dclDe: normalizeDclDe(convertItem.dclDe),
+        itemSeq: convertItem.itemSeq,
+        hsCd: convertItem.hsCd,
+        itemClsCd: selectedCls,
+        itemCd: generatedCode,
+        imptItemSttsCd: convertItem.imptItemsttsCd,
+        remark: remark || `Converted from import ${convertItem.dclNo}`,
+        modrNm: 'Admin',
+        modrId: 'Admin'
+      }
+      const res = await fetch('/api/kra/update-import-item', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      const data = await res.json()
+      if (!res.ok || data.resultCd && data.resultCd !== '000' || data.success === false) {
+        throw new Error(data.error || data.resultMsg || 'Failed to update import item')
+      }
+      toast({ title: 'Converted', description: `Item ${convertItem.itemNm} converted successfully.` })
+      setIsConvertOpen(false)
+    } catch (e: any) {
+      toast({ title: 'Error', description: e.message || 'Failed to convert item', variant: 'destructive' })
+    } finally {
+      setIsConverting(false)
+    }
   }
 
   // Fetch KRA imported items
@@ -122,75 +204,20 @@ export default function KRAImportedItemsPage() {
 
   // Send imported item to KRA
   const sendItemToKRA = async (item: KRAImportedItem) => {
-    if (sendingItems.has(item.itemCd)) return
-
-    setSendingItems(prev => new Set([...prev, item.itemCd]))
-    
-    try {
-      // Format date for KRA (YYYYMMDD)
-      const importDate = new Date(item.importDt)
-      const dclDe = importDate.getFullYear().toString() + 
-                   String(importDate.getMonth() + 1).padStart(2, '0') + 
-                   String(importDate.getDate()).padStart(2, '0')
-
-      const payload = {
-        taskCd: item.importInvcNo || "2231943",
-        dclDe: dclDe,
-        itemSeq: 1,
-        hsCd: item.itemClsCd || "1231531231",
-        itemClsCd: item.itemClsCd,
-        itemCd: item.itemCd,
-        imptItemSttsCd: "1",
-        remark: item.importRemark || `Imported item: ${item.itemNm}`,
-        modrNm: "TestVSCU",
-        modrId: "11999"
-      }
-
-      console.log('Sending imported item to KRA:', payload)
-
-      const response = await fetch('/api/kra/update-import-item', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      })
-
-      const data = await response.json()
-
-      if (!data.success) {
-        throw new Error(data.error || 'Failed to send imported item to KRA')
-      }
-
-      toast({
-        title: "Success",
-        description: `Imported item "${item.itemNm}" successfully sent to KRA`,
-      })
-
-    } catch (error: any) {
-      console.error('Error sending imported item to KRA:', error)
-      toast({
-        title: "Error",
-        description: error.message || "Failed to send imported item to KRA",
-        variant: "destructive",
-      })
-    } finally {
-      setSendingItems(prev => {
-        const newSet = new Set(prev)
-        newSet.delete(item.itemCd)
-        return newSet
-      })
-    }
+    // Placeholder: adjust to your update-import flow if needed
+    toast({ title: "Coming soon", description: "Send to KRA not configured for this data shape yet." })
   }
 
   // Filter items based on search and payment type
   const filteredItems = importedItems.filter(item => {
-    const matchesSearch = item.itemNm.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         item.itemCd.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         item.importInvcNo.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         item.importSpplrNm.toLowerCase().includes(searchTerm.toLowerCase())
-    const matchesPaymentType = filterPaymentType === "all" || item.importPmtTyCd === filterPaymentType
-    return matchesSearch && matchesPaymentType
+    const term = searchTerm.toLowerCase()
+    const matchesSearch =
+      item.itemNm?.toLowerCase().includes(term) ||
+      item.dclNo?.toLowerCase().includes(term) ||
+      item.hsCd?.toLowerCase().includes(term) ||
+      item.spplrNm?.toLowerCase().includes(term) ||
+      item.agntNm?.toLowerCase().includes(term)
+    return matchesSearch
   })
 
   // Load items on component mount
@@ -371,99 +398,52 @@ export default function KRAImportedItemsPage() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Item Code</TableHead>
+                      <TableHead>Declaration No</TableHead>
+                      <TableHead>HS Code</TableHead>
                       <TableHead>Item Name</TableHead>
-                      <TableHead>Import Invoice</TableHead>
+                      <TableHead>Qty</TableHead>
+                      <TableHead>Packages</TableHead>
+                      <TableHead>Net/Gross Wt</TableHead>
                       <TableHead>Supplier</TableHead>
-                      <TableHead>Import Date</TableHead>
-                      <TableHead>Quantity</TableHead>
-                      <TableHead>Unit Price</TableHead>
-                      <TableHead>Total Amount</TableHead>
-                      <TableHead>Tax Amount</TableHead>
-                      <TableHead>Payment Type</TableHead>
-                      <TableHead>Tax Type</TableHead>
-                      <TableHead>Actions</TableHead>
+                      <TableHead>Agent</TableHead>
+                      <TableHead>Invoice</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Origin/Export</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {filteredItems.map((item, index) => (
-                      <TableRow key={`${item.itemCd}-${index}`}>
-                        <TableCell className="font-medium">
-                          <div className="space-y-1">
-                            <div>{item.itemCd}</div>
-                            <div className="text-sm text-muted-foreground">{item.itemClsCd}</div>
-                          </div>
-                        </TableCell>
-                        <TableCell className="font-medium">{item.itemNm}</TableCell>
-                        <TableCell>
-                          <div className="space-y-1">
-                            <div className="font-medium">{item.importInvcNo}</div>
-                            <div className="text-sm text-muted-foreground">
-                              SDC: {item.importSpplrSdcId}
-                            </div>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="space-y-1">
-                            <div className="font-medium">{item.importSpplrNm}</div>
-                            <div className="text-sm text-muted-foreground">
-                              TIN: {item.importSpplrTin}
-                            </div>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="space-y-1">
-                            <div>{formatDate(item.importCfmDt)}</div>
-                            <div className="text-sm text-muted-foreground">
-                              Import: {item.importDt}
-                            </div>
-                          </div>
-                        </TableCell>
+                      <TableRow key={`${item.dclNo}-${item.itemSeq}-${index}`}>
+                        <TableCell className="font-medium whitespace-nowrap">{item.dclNo}</TableCell>
+                        <TableCell className="whitespace-nowrap">{item.hsCd}</TableCell>
+                        <TableCell className="max-w-[320px] truncate" title={item.itemNm}>{item.itemNm}</TableCell>
                         <TableCell>
                           <div className="space-y-1">
                             <div>{item.qty} {item.qtyUnitCd}</div>
-                            <div className="text-sm text-muted-foreground">
-                              {item.pkg} {item.pkgUnitCd}
-                            </div>
                           </div>
                         </TableCell>
-                        <TableCell>{formatCurrency(item.prc)}</TableCell>
-                        <TableCell className="font-medium">{formatCurrency(item.totAmt)}</TableCell>
-                        <TableCell>{formatCurrency(item.taxAmt)}</TableCell>
+                        <TableCell>{item.pkg} {item.pkgUnitCd || ''}</TableCell>
                         <TableCell>
-                          {getPaymentTypeBadge(item.importPmtTyCd)}
-                        </TableCell>
-                        <TableCell>
-                          {getTaxTypeBadge(item.taxTyCd)}
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex gap-2">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => handleViewDetails(item)}
-                            >
-                              View
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => sendItemToKRA(item)}
-                              disabled={sendingItems.has(item.itemCd)}
-                            >
-                              {sendingItems.has(item.itemCd) ? (
-                                <>
-                                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                                  Sending...
-                                </>
-                              ) : (
-                                <>
-                                  <Send className="h-3 w-3 mr-1" />
-                                  Send to KRA
-                                </>
-                              )}
-                            </Button>
+                          <div className="space-y-1">
+                            <div>Net: {item.netWt}</div>
+                            <div className="text-sm text-muted-foreground">Gross: {item.totWt}</div>
                           </div>
+                        </TableCell>
+                        <TableCell className="max-w-[260px] truncate" title={item.spplrNm}>{item.spplrNm}</TableCell>
+                        <TableCell className="max-w-[220px] truncate" title={item.agntNm}>{item.agntNm}</TableCell>
+                        <TableCell>
+                          <div className="space-y-1">
+                            <div className="font-medium">{new Intl.NumberFormat('en-US', { style: 'currency', currency: item.invcFcurCd || 'USD' }).format(item.invcFcurAmt)}</div>
+                            <div className="text-sm text-muted-foreground">FX: {item.invcFcurExcrt}</div>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="outline">{item.imptItemsttsCd}</Badge>
+                        </TableCell>
+                        <TableCell>{item.orgnNatCd}/{item.exptNatCd}</TableCell>
+                        <TableCell className="text-right whitespace-nowrap">
+                          <Button size="sm" variant="outline" onClick={() => openConvertDialog(item)}>Convert</Button>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -474,11 +454,49 @@ export default function KRAImportedItemsPage() {
           </CardContent>
         </Card>
       </div>
-      <ImportedItemDetailsDialog
-        item={selectedItem}
-        open={showDetails}
-        onOpenChange={setShowDetails}
-      />
+      {/* Convert Dialog */}
+      {isConvertOpen && convertItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-background w-full max-w-lg rounded-md shadow-lg p-5">
+            <div className="text-lg font-semibold mb-2">Convert Imported Item</div>
+            <div className="text-sm text-muted-foreground mb-4">{convertItem.itemNm}</div>
+
+            <div className="grid gap-3">
+              <div>
+                <label className="text-sm font-medium">Item Classification (itemClsCd)</label>
+                <select
+                  value={selectedCls}
+                  onChange={(e) => setSelectedCls(e.target.value)}
+                  className="w-full px-3 py-2 border border-input rounded-md bg-background mt-1"
+                >
+                  <option value="">Select classification…</option>
+                  {classifications?.map((c: any) => (
+                    <option key={c.itemClsCd} value={c.itemClsCd}>{c.itemClsCd} - {c.itemClsNm}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-sm font-medium">Generated Item Code (itemCd)</label>
+                <div className="flex gap-2 mt-1">
+                  <Input value={generatedCode} onChange={(e) => setGeneratedCode(e.target.value)} />
+                  <Button variant="outline" onClick={() => openConvertDialog(convertItem!)} disabled={isGenerating}>{isGenerating ? 'Generating…' : 'Regenerate'}</Button>
+                </div>
+              </div>
+              <div>
+                <label className="text-sm font-medium">Remark</label>
+                <Input value={remark} onChange={(e) => setRemark(e.target.value)} placeholder="Optional remark" className="mt-1" />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 mt-5">
+              <Button variant="outline" onClick={() => setIsConvertOpen(false)}>Cancel</Button>
+              <Button onClick={submitConvert} disabled={isConverting || !selectedCls || !generatedCode}>
+                {isConverting ? 'Converting…' : 'Convert & Send'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </ProtectedRoute>
   )
 } 

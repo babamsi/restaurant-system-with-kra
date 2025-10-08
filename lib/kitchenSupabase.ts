@@ -14,7 +14,7 @@ export async function fetchKitchenStorage() {
 export async function upsertKitchenStorage(item: Partial<Database['public']['Tables']['kitchen_storage']['Insert']>) {
   const { data, error } = await supabase
     .from('kitchen_storage')
-    .upsert(item, { onConflict: 'id' })
+    .upsert(item, { onConflict: 'ingredient_id' })
     .select()
   if (error) throw error
   return data

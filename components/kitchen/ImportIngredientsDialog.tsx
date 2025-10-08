@@ -18,6 +18,13 @@ interface Ingredient {
   unit: string;
   threshold?: number;
   current_stock?: number;
+  // Optional KRA fields from DB
+  item_cd?: string;
+  itemClsCd?: string; // sometimes camelCase in client
+  item_cls_cd?: string;
+  taxTyCd?: string; // sometimes camelCase in client
+  tax_ty_cd?: string;
+  cost_per_unit?: number;
 }
 
 interface KitchenStorageItem {
@@ -78,6 +85,55 @@ export const ImportIngredientsDialog: React.FC<ImportIngredientsDialogProps> = (
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showReferenceWeightDialog]);
 
+  // Send stock-in to KRA for a batch of imported ingredients
+  const sendKRAStockInBatch = async (batchItems: Array<{ ingredient: Ingredient, quantity: number }>) => {
+    // Map to API simple items format and filter only KRA-eligible items
+    const items = batchItems.map(({ ingredient, quantity }) => {
+      const item_cd = (ingredient as any).item_cd || (ingredient as any).itemCd || undefined
+      const item_cls_cd = (ingredient as any).item_cls_cd || (ingredient as any).itemClsCd || undefined
+      const tax_ty_cd = (ingredient as any).tax_ty_cd || (ingredient as any).taxTyCd || 'B'
+      const cost_per_unit = (ingredient as any).cost_per_unit ?? 0
+      if (!item_cd || !item_cls_cd) return null
+      return {
+        id: ingredient.id,
+        name: ingredient.name,
+        unit: ingredient.unit,
+        item_cd,
+        item_cls_cd,
+        tax_ty_cd,
+        cost_per_unit,
+        quantity,
+      }
+    }).filter(Boolean)
+
+    if (!items.length) return
+
+    const payload = {
+      sarTyCd: '14',
+      items,
+    }
+    console.log('KRA stock-in batch payload before sending (simple format):', payload)
+
+    try {
+      const response = await fetch('/api/kra/stock-in-enhanced', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (!response.ok) {
+        const text = await response.text().catch(() => '')
+        throw new Error(text || `KRA stock-in failed with status ${response.status}`)
+      }
+    } catch (err) {
+      console.warn('KRA stock-in (kitchen import batch) failed:', err)
+      toast({
+        title: "KRA Sync Warning",
+        description: err instanceof Error ? err.message : 'Failed to send batch stock-in to KRA for imported items.',
+        variant: "destructive",
+      })
+    }
+  }
+
   // Handle import
   const handleImportIngredients = async () => {
     if (selectedIngredients.length === 0) {
@@ -123,6 +179,7 @@ export const ImportIngredientsDialog: React.FC<ImportIngredientsDialogProps> = (
     }
     setIsImporting(true)
     try {
+      const kraBatch: Array<{ ingredient: Ingredient, quantity: number }> = []
       for (const ingredient of selectedIngredients) {
         const syncedIngredient = inventoryIngredientsList.find(i => i.id.toString() === ingredient.ingredientId)
         if (syncedIngredient) {
@@ -171,6 +228,9 @@ export const ImportIngredientsDialog: React.FC<ImportIngredientsDialogProps> = (
             .update({ current_stock: Number(syncedIngredient.current_stock) - ingredient.requiredQuantity })
             .eq('id', ingredient.ingredientId)
           
+          // Add to KRA batch
+          kraBatch.push({ ingredient: syncedIngredient as Ingredient, quantity: ingredient.requiredQuantity })
+
           // Log the import (don't let this fail the main operation)
           try {
             await insertSystemLog({ 
@@ -184,6 +244,11 @@ export const ImportIngredientsDialog: React.FC<ImportIngredientsDialogProps> = (
           }
         }
       }
+      // Send one KRA call for the entire batch
+      if (kraBatch.length) {
+        await sendKRAStockInBatch(kraBatch)
+      }
+
       setSelectedIngredients([])
       onOpenChange(false)
       toast({
@@ -261,6 +326,14 @@ export const ImportIngredientsDialog: React.FC<ImportIngredientsDialogProps> = (
           .from('ingredients')
           .update({ current_stock: Number(syncedIngredient.current_stock) - pendingImportIngredient.requiredQuantity })
           .eq('id', referenceWeightIngredient.id)
+      }
+      // Also inform KRA for this single item import (batched path with just one item)
+      try {
+        await sendKRAStockInBatch([
+          { ingredient: referenceWeightIngredient as Ingredient, quantity: pendingImportIngredient.requiredQuantity }
+        ])
+      } catch (e) {
+        // already handled
       }
       // Remove this ingredient from selectedIngredients and check if any other bunches need conversion
       setSelectedIngredients(prev => prev.filter(i => i.ingredientId !== referenceWeightIngredient.id.toString()))

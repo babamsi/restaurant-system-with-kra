@@ -155,10 +155,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Recipe not found' }, { status: 404 })
     }
 
-    // Get recipe components
+    // Get recipe components (no joins; fetch ingredient data separately)
     const { data: components, error: componentsError } = await supabase
       .from('recipe_components')
-      .select('*, ingredient:ingredients(*), batch:batches(*)')
+      .select('*')
       .eq('recipe_id', recipeId)
 
     if (componentsError) {
@@ -169,65 +169,78 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Recipe has no components' }, { status: 400 })
     }
 
-    // Generate item composition data
-    const compositionList = components.map((component, index) => {
-      const itemData = component.component_type === 'ingredient' 
-        ? component.ingredient 
-        : component.batch
-
-      return {
-        itemSeq: index + 1,
-        itemCd: itemData?.itemCd || 'KE2NTU0000001',
-        itemClsCd: itemData?.itemClsCd || '5059690800',
-        itemNm: itemData?.name || 'Unknown',
-        qty: component.quantity,
-        unit: component.unit || itemData?.unit || 'U'
-      }
-    })
-
-    const now = new Date()
-    const cfmDt = formatDateTime(now)
-
-    const payload = {
-      tin: headers.tin,
-      bhfId: headers.bhfId,
-      cmcKey: headers.cmcKey,
-      itemCd: recipe.itemCd || 'KE2NTU0000001',
-      itemClsCd: recipe.itemClsCd || '5059690800',
-      itemNm: recipe.name,
-      compositionList,
-      regrId: 'Recipe Manager',
-      regrNm: 'Recipe Manager',
-      modrId: 'Recipe Manager',
-      modrNm: 'Recipe Manager',
-      cfmDt
-    }
-
-    console.log("Item Composition Payload:", payload)
-
-    // Call KRA API with dynamic headers
-        const kraRes = await fetch('https://etims-api-sbx.kra.go.ke/etims-api/saveItemComposition', {
-          method: 'POST',
-      headers: headers as unknown as Record<string, string>,
-      body: JSON.stringify(payload),
-        })
-        
-        const kraData = await kraRes.json()
-    console.log("KRA Item Composition Response:", kraData)
-
-        if (kraData.resultCd !== '000') {
+    // Enforce: only ingredient components are allowed for composition
+    const hasBatch = (components || []).some((c: any) => c.component_type === 'batch')
+    if (hasBatch) {
       return NextResponse.json({ 
-        error: kraData.resultMsg || 'KRA item composition failed', 
-        kraData 
+        error: 'Item composition can only be registered for ingredient components. Remove batch components and try again.' 
       }, { status: 400 })
     }
 
-    // Update recipe with KRA response
+    // Ensure recipe is registered
+    if (!recipe.itemCd) {
+      return NextResponse.json({ error: 'Recipe must be registered with KRA first.' }, { status: 400 })
+    }
+
+    // Fetch all ingredients used and ensure they are registered
+    const ingredientComponents = (components || []).filter((c: any) => c.component_type === 'ingredient')
+    const ingredientIds = ingredientComponents.map((c: any) => c.component_id)
+    if (ingredientIds.length === 0) {
+      return NextResponse.json({ error: 'No ingredient components found' }, { status: 400 })
+    }
+    const { data: ingredientRows, error: ingError } = await supabase
+      .from('ingredients')
+      .select('id, name, item_cd, item_cls_cd')
+      .in('id', ingredientIds)
+    if (ingError) {
+      return NextResponse.json({ error: 'Failed to fetch ingredient data' }, { status: 500 })
+    }
+    const idToIngredient: Record<string, { id: string; name?: string; itemCd?: string | null }> = {}
+    for (const row of ingredientRows || []) {
+      idToIngredient[row.id] = { id: row.id, name: (row as any).name, itemCd: (row as any).itemCd ?? (row as any).item_cd ?? null }
+    }
+    const unregistered = ingredientComponents.filter((c: any) => !idToIngredient[c.component_id]?.itemCd)
+    if (unregistered.length > 0) {
+      const names = unregistered.map((c: any) => idToIngredient[c.component_id]?.name || c.component_id).join(', ')
+      return NextResponse.json({ 
+        error: `All ingredients must be registered with KRA before sending composition. Unregistered: ${names}` 
+      }, { status: 400 })
+    }
+
+    // Send one KRA composition request per ingredient component
+    const results: any[] = []
+    for (const component of components || []) {
+      if (component.component_type !== 'ingredient') continue
+      const ingredient = idToIngredient[component.component_id]
+      const payload = {
+        itemCd: recipe.itemCd,               // recipe item code
+        cpstItemCd: ingredient.itemCd, // ingredient item code
+        cpstQty: component.quantity,
+        regrId: 'Admin',
+        regrNm: 'Admin'
+      }
+      console.log('Item Composition Payload:', payload)
+      const kraRes = await fetch('https://etims-api-sbx.kra.go.ke/etims-api/saveItemComposition', {
+        method: 'POST',
+        headers: headers as unknown as Record<string, string>,
+        body: JSON.stringify(payload),
+      })
+      const kraData = await kraRes.json()
+      console.log('KRA Item Composition Response:', kraData)
+      results.push({ componentId: component.component_id, success: kraData.resultCd === '000', kraData })
+      if (kraData.resultCd !== '000') {
+        return NextResponse.json({ 
+          error: kraData.resultMsg || 'KRA item composition failed', 
+          results 
+        }, { status: 400 })
+      }
+    }
+
+    // Update recipe to reflect composition sent
     const { error: updateError } = await supabase
       .from('recipes')
       .update({
         kra_composition_status: 'success',
-        kra_composition_response: kraData,
         updated_at: new Date().toISOString()
       })
       .eq('id', recipeId)
@@ -236,11 +249,7 @@ export async function POST(req: NextRequest) {
       console.error('Error updating recipe with KRA response:', updateError)
     }
 
-      return NextResponse.json({ 
-        success: true, 
-      kraData,
-      message: 'Item composition sent to KRA successfully'
-    })
+    return NextResponse.json({ success: true, results })
 
   } catch (error: any) {
     console.error('KRA Item Composition Error:', error)

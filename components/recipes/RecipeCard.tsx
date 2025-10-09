@@ -18,6 +18,7 @@ export interface RecipeCardProps {
   description?: string;
   restaurant?: string;
   price?: number;
+  image_url?: string | null;
   components: RecipeComponent[];
   available: boolean;
   onDelete?: (id: string) => void;
@@ -37,6 +38,7 @@ export const RecipeCard: React.FC<RecipeCardProps> = ({
   description, 
   restaurant, 
   price, 
+  image_url,
   components, 
   available, 
   onDelete, 
@@ -66,7 +68,8 @@ export const RecipeCard: React.FC<RecipeCardProps> = ({
   }
 
   let compositionBadge = null;
-  if (kra_composition_status === 'ok') {
+  // Treat both 'ok' and 'success' as completed composition depending on stored value
+  if (kra_composition_status === 'ok' || kra_composition_status === 'success') {
     compositionBadge = <Badge variant="secondary" className="bg-blue-100 text-blue-800">Composition #{kra_composition_no}</Badge>;
   } else if (kra_composition_status === 'partial_success') {
     compositionBadge = <Badge variant="secondary" className="bg-orange-100 text-orange-800">Partial Composition #{kra_composition_no}</Badge>;
@@ -81,6 +84,9 @@ export const RecipeCard: React.FC<RecipeCardProps> = ({
       }`}
       onClick={handleCardClick}
     >
+      {image_url && (
+        <img src={image_url} alt={name} className="w-full h-40 object-cover rounded-t" />
+      )}
       <CardHeader className="flex flex-col gap-1">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 w-full">
           <div className="flex items-center gap-2 min-w-0 flex-1 flex-wrap">
@@ -134,7 +140,7 @@ export const RecipeCard: React.FC<RecipeCardProps> = ({
           <div className="flex items-center gap-2 mt-2">
             {!itemCd ? (
               <span className="text-xs text-orange-600">⚠️ Register recipe with KRA first</span>
-            ) : kra_composition_status !== 'ok' && kra_composition_status !== 'partial_success' ? (
+            ) : (kra_composition_status !== 'ok' && kra_composition_status !== 'success' && kra_composition_status !== 'partial_success') ? (
               <Button 
                 size="sm" 
                 variant="outline" 
@@ -143,7 +149,7 @@ export const RecipeCard: React.FC<RecipeCardProps> = ({
               >
                 Send Item Composition
               </Button>
-            ) : kra_composition_status === 'ok' ? (
+            ) : (kra_composition_status === 'ok' || kra_composition_status === 'success') ? (
               <span className="text-xs text-green-600">✓ Composition sent to KRA</span>
             ) : (
               <span className="text-xs text-orange-600">⚠️ Partial composition success</span>

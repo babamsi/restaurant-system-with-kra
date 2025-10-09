@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { CheckCircle, Package } from "lucide-react";
+import { ImageUpload } from '@/components/recipes/ImageUpload'
 
 interface ComponentOption {
   id: string;
@@ -61,6 +62,8 @@ export const RecipeForm: React.FC<RecipeFormProps> = ({
     selectedInventoryItem: null as InventoryIngredient | null, // For direct inventory sales
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [imageFile, setImageFile] = useState<File | null>(null)
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null)
 
   useEffect(() => {
     if (open) {
@@ -81,6 +84,7 @@ export const RecipeForm: React.FC<RecipeFormProps> = ({
           recipeType: recipe.recipeType || "complex",
           selectedInventoryItem: recipe.selectedInventoryItem || null,
         });
+        setImagePreviewUrl(recipe.image_url || null)
       } else {
         setFormData({
           name: "",
@@ -92,6 +96,8 @@ export const RecipeForm: React.FC<RecipeFormProps> = ({
           recipeType: "complex",
           selectedInventoryItem: null,
         });
+        setImageFile(null)
+        setImagePreviewUrl(null)
       }
     }
   }, [open, editMode, recipe]);
@@ -137,6 +143,8 @@ export const RecipeForm: React.FC<RecipeFormProps> = ({
       ...formData,
       price: formData.price ? parseFloat(formData.price) : null,
       id: editMode ? recipe?.id : undefined,
+      imageFile,
+      currentImageUrl: imagePreviewUrl || undefined,
     };
     Promise.resolve(onSubmit(submitData)).finally(() => {
       setIsSubmitting(false);
@@ -150,17 +158,18 @@ export const RecipeForm: React.FC<RecipeFormProps> = ({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl w-full">
+      <DialogContent className="max-w-2xl w-full max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{editMode ? "Edit Recipe" : "Add New Recipe"}</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit}>
-          <Tabs defaultValue="type" className="w-full">
+          <Tabs defaultValue={editMode ? "details" : "type"} className="w-full">
             <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="type">Recipe Type</TabsTrigger>
+              {!editMode && <TabsTrigger value="type">Recipe Type</TabsTrigger>}
               <TabsTrigger value="details">Recipe Details</TabsTrigger>
             </TabsList>
 
+            {!editMode && (
             <TabsContent value="type" className="space-y-4">
               <div className="space-y-4">
                 <div>
@@ -239,9 +248,15 @@ export const RecipeForm: React.FC<RecipeFormProps> = ({
                 )}
               </div>
             </TabsContent>
+            )}
 
             <TabsContent value="details" className="space-y-4">
               <div className="space-y-4">
+                {/* Image upload moved to top */}
+                <ImageUpload
+                  value={imagePreviewUrl || ''}
+                  onChange={(url) => setImagePreviewUrl(url)}
+                />
                 <div>
                   <Label>Name</Label>
                   <Input value={formData.name} onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))} placeholder="Recipe name" />

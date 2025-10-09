@@ -24,7 +24,8 @@ import {
   Pencil,
   XCircle,
   RefreshCw,
-  RotateCcw,
+  Smartphone,
+  Loader2,
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { useCompletePOSStore, useCompletePOSStore as usePOSStore } from "@/stores/complete-pos-store"
@@ -34,8 +35,8 @@ import { supabase } from "@/lib/supabase"
 import { tableOrdersService } from "@/lib/database"
 import Image from "next/image"
 import { QRCode } from "@/components/ui/qr-code"
-import { generateAndDownloadReceipt, type ReceiptRequest } from '@/lib/receipt-utils'
 import { Label } from "@/components/ui/label"
+import { io } from "socket.io-client"
 
 interface TableState {
   id: number
@@ -55,11 +56,7 @@ interface Recipe {
   category?: string
   components: RecipeComponent[]
   available: boolean
-  recipeType?: string
-  selectedInventoryItem?: any
-  itemCd?: string
-  itemClsCd?: string
-  taxTyCd?: string
+  image_url?: string
 }
 
 interface RecipeComponent {
@@ -141,6 +138,13 @@ export function CorrectedPOSSystem() {
   const [cancellingOrder, setCancellingOrder] = useState(false)
   const [transferringOrder, setTransferringOrder] = useState(false)
 
+  // M-Pesa Payment State
+  const [mpesaStatus, setMpesaStatus] = useState<'idle' | 'processing' | 'success' | 'failed'>('idle')
+  const [checkoutRequestId, setCheckoutRequestId] = useState<string>('')
+  const [transactionId, setTransactionId] = useState<string>('')
+  const [mpesaPhoneNumber, setMpesaPhoneNumber] = useState('')
+  const [mpesaProcessing, setMpesaProcessing] = useState(false)
+
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [sessionLoading, setSessionLoading] = useState(true)
   const [showSessionDialog, setShowSessionDialog] = useState(false)
@@ -164,8 +168,6 @@ export function CorrectedPOSSystem() {
   const [replacingExistingItem, setReplacingExistingItem] = useState<null | { item: CartItem; index: number }>(null)
   const [replaceSelectedMenuItem, setReplaceSelectedMenuItem] = useState<ExtendedMenuItem | null>(null)
 
-  // KRA eTIMS: Print/display KRA receipt info
-  const [kraReceipt, setKraReceipt] = useState<any>(null)
 
   // Discount System State
   const [showDiscountDialog, setShowDiscountDialog] = useState(false)
@@ -181,8 +183,8 @@ export function CorrectedPOSSystem() {
   const [bogoItems, setBogoItems] = useState<{ itemId: string; originalPrice: number; discountedPrice: number }[]>([])
 
   // Add these helpers inside the component, after your useState hooks:
-  const TAX_RATE = 0.16;
-  const TAX_FACTOR = TAX_RATE / (1 + TAX_RATE);
+  const TAX_RATE = 0; // No additional tax - prices already include tax
+  const TAX_FACTOR = 0; // No tax factor needed
 
   // Utility functions for database storage (convert to/from integers for int2 column)
   const convertToInt = (amount: number): number => {
@@ -351,12 +353,6 @@ export function CorrectedPOSSystem() {
     if (!appliedDiscount) return 0
     const subtotal = calcCartSubtotal()
     return calculateDiscountAmount(subtotal, appliedDiscount.type, appliedDiscount.value)
-  }
-
-  function getDiscountedOrderTotal(items: any[]): number {
-    const discountedSubtotal = getDiscountedOrderSubtotal(items);
-    const discountedTax = getDiscountedOrderTax(items);
-    return discountedSubtotal + discountedTax;
   }
 
   useEffect(() => {
@@ -534,10 +530,7 @@ export function CorrectedPOSSystem() {
       inventory_deduction: undefined,
       menu_item_id: item.menu_item_id,
       total_price: item.total_price,
-      total_nutrition: { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0 },
-      itemCd: item.itemCd,
-      itemClsCd: item.itemClsCd,
-      taxTyCd: item.taxTyCd,
+      total_nutrition: { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0 }
     }))
     setExistingOrderItems(cartItems)
     setShowTakeAwayDialog(false)
@@ -563,7 +556,7 @@ export function CorrectedPOSSystem() {
           *,
           items:table_order_items(*)
         `)
-        .in('status', ['completed', 'paid'])
+        .eq('status', 'paid')
         .order('created_at', { ascending: false })
         .limit(50) // Limit to last 50 orders for performance
       
@@ -582,18 +575,12 @@ export function CorrectedPOSSystem() {
     category: recipe.category || "Uncategorized",
     available_quantity: recipe.available ? 999 : 0,
     description: recipe.description || "",
+    image: recipe.image_url || undefined,
     type: "recipe" as const,
     nutrition: { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0 },
     unit: "portion",
     inventory_deduction: undefined,
     restaurant: recipe.restaurant,
-    // Add KRA information for inventory-based recipes
-    recipeType: recipe.recipeType || "complex",
-    selectedInventoryItem: recipe.selectedInventoryItem,
-    // Use KRA codes directly from recipes table (for inventory-based recipes)
-    itemCd: recipe.itemCd,
-    itemClsCd: recipe.itemClsCd,
-    taxTyCd: recipe.taxTyCd,
   }))
 
   const filteredRecipes = recipesAsMenuItems.filter(recipe => {
@@ -686,11 +673,7 @@ export function CorrectedPOSSystem() {
         unit_price: item.unit_price,
         total_price: item.total_price,
         portion_size: item.portionSize,
-        customization_notes: item.customization,
-        // Include KRA information for proper tax handling
-        itemCd: item.itemCd,
-        itemClsCd: item.itemClsCd,
-        taxTyCd: item.taxTyCd,
+        customization_notes: item.customization
       }))
       
       const subtotal = calcCartTotal()
@@ -856,10 +839,7 @@ export function CorrectedPOSSystem() {
         inventory_deduction: undefined,
         menu_item_id: item.menu_item_id,
         total_price: item.total_price,
-        total_nutrition: { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0 },
-        itemCd: item.itemCd,
-        itemClsCd: item.itemClsCd,
-        taxTyCd: item.taxTyCd,
+        total_nutrition: { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0 }
       }))
       
       setExistingOrderItems(cartItems)
@@ -935,10 +915,7 @@ export function CorrectedPOSSystem() {
       inventory_deduction: undefined,
       menu_item_id: item.menu_item_id,
       total_price: item.total_price,
-      total_nutrition: { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0 },
-      itemCd: item.itemCd,
-      itemClsCd: item.itemClsCd,
-      taxTyCd: item.taxTyCd,
+      total_nutrition: { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0 }
     }))
     
     setExistingOrderItems(cartItems)
@@ -990,6 +967,16 @@ export function CorrectedPOSSystem() {
       return
     }
     
+    // Only allow payment for completed orders
+    if (currentOrder.status !== 'completed') {
+      toast({
+        title: "Order Not Ready for Payment",
+        description: `Order status is "${currentOrder.status}". Please complete the order first before proceeding to payment.`,
+        variant: "destructive",
+      })
+      return
+    }
+    
     setShowPayment({ table, orderId: currentOrder.id })
   }
 
@@ -1006,12 +993,34 @@ export function CorrectedPOSSystem() {
     let paymentDetails: any = {}
     setSplitError(null)
     setPaymentLoading(true)
+    
     // Validation
     if (!paymentMethod) {
       setSplitError('Please select a payment method.')
       setPaymentLoading(false)
       return
     }
+    
+    // Handle M-Pesa payment differently
+    if (paymentMethod === 'mpesa') {
+      if (!mpesaPhoneNumber || !validateMpesaPhoneNumber(mpesaPhoneNumber)) {
+        setSplitError('Please enter a valid M-Pesa phone number in format 7xxxxxxxx.')
+        setPaymentLoading(false)
+        return
+      }
+      
+      // Initiate M-Pesa STK push
+      const success = await initiateMpesaPayment(order)
+      if (success) {
+        // Keep the payment dialog open and show processing state
+        setPaymentLoading(false)
+        return
+      } else {
+        setPaymentLoading(false)
+        return
+      }
+    }
+    
     if (paymentMethod === 'cash') {
       const received = parseFloat(cashReceived)
       if (isNaN(received) || received < order.total_amount) {
@@ -1021,14 +1030,7 @@ export function CorrectedPOSSystem() {
       }
       paymentDetails = { received, change: received - order.total_amount }
     }
-    if (paymentMethod === 'mpesa') {
-      // if (!mpesaNumber || mpesaNumber.length < 0) {
-      //   setSplitError('Please enter a valid mobile number.')
-      //   setPaymentLoading(false)
-      //   return
-      // }
-      paymentDetails = { mpesaNumber }
-    }
+    
     if (paymentMethod === 'split') {
       const cash = parseFloat(splitAmounts.cash) || 0
       const mpesa = parseFloat(splitAmounts.mpesa) || 0
@@ -1060,236 +1062,19 @@ export function CorrectedPOSSystem() {
       }
       paymentDetails = splitDetail
     }
+    
     try {
       // 1. Mark order as paid in your DB
+      const paymentMethodString = paymentMethod === 'cash' || paymentMethod === 'split' 
+        ? JSON.stringify(paymentDetails) 
+        : paymentMethod
+      
       const { data, error } = await tableOrdersService.markOrderAsPaid(
         showPayment.orderId,
-        paymentMethod === 'cash' || paymentMethod === 'mpesa' ? paymentDetails : paymentMethod === 'split' ? paymentDetails : paymentMethod
+        paymentMethodString
       )
       if (error) {
         throw new Error(error)
-      }
-      // 2. KRA eTIMS: Transmit sale to KRA
-      // Gather all items (from order.items)
-      // --- KRA CODE PATCH START ---
-      const TAX_RATE = 0.16;
-      const TAX_FACTOR = TAX_RATE / (1 + TAX_RATE); // 0.16 / 1.16
-      let items = order.items.map((item: any): any => ({
-        id: item.menu_item_id,
-        name: item.menu_item_name,
-        price: item.unit_price, // tax-inclusive
-        qty: item.quantity,
-        itemCd: item.itemCd, // KRA item code from recipes table
-        itemClsCd: item.itemClsCd, // from recipes table
-        taxTyCd: item.taxTyCd, // Dynamic tax type code from recipe
-      }))
-      // Ensure all items have itemCd, itemClsCd, and taxTyCd
-      for (let i = 0; i < items.length; i++) {
-        if (!items[i].itemCd || !items[i].itemClsCd || !items[i].taxTyCd) {
-          const { data: recipe, error } = await supabase
-            .from('recipes')
-            .select('itemCd, itemClsCd, taxTyCd')
-            .eq('id', items[i].id)
-            .single();
-          if (recipe) {
-            items[i].itemCd = recipe.itemCd;
-            items[i].itemClsCd = recipe.itemClsCd;
-            items[i].taxTyCd = recipe.taxTyCd || 'B'; // Default to 'B' if not specified
-          }
-        }
-      }
-      if (items.some((i: any) => !i.itemCd)) {
-        console.error('KRA Compliance Error: Items missing itemCd:', items.filter((i: any) => !i.itemCd));
-        toast({ title: 'KRA Compliance Error', description: 'One or more items are not KRA registered. Sale blocked.', variant: 'destructive' });
-        setPaymentLoading(false);
-        // return;
-      }
-      // Calculate tax-inclusive breakdown for each item
-      items = items.map((item: any): any => {
-        const total = item.price * item.qty;
-        const taxAmount = total * TAX_FACTOR;
-        const netAmount = total - taxAmount;
-        return { ...item, total, taxAmount, netAmount };
-      });
-      // Calculate order-level totals
-      const orderTotal = items.reduce((sum: number, item: any) => sum + item.total, 0);
-      const orderTax = items.reduce((sum: number, item: any) => sum + item.taxAmount, 0);
-      const orderNet = items.reduce((sum: number, item: any) => sum + item.netAmount, 0);
-      // --- KRA CODE PATCH END ---
-      // Payment method mapping
-      const kraPaymentMethod = paymentMethod
-      // Customer info (optional, can be extended)
-      const customer = selectedCustomer ? {tin: selectedCustomer.kra_pin, name: selectedCustomer.name} : { tin: '', name: '' }
-      // Call KRA API
-      const kraRes = await fetch('/api/kra/save-sale', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          items,
-          payment: { method: kraPaymentMethod },
-          customer,
-          saleId: order.id,
-          orderTotal,
-          orderTax,
-          orderNet,
-          // Add discount information
-          discount: {
-            amount: getDiscountAmountFromDB(order),
-            type: order.discount_type || null,
-            // reason: order.discount_reason || null
-          }
-        }),
-      })
-      const kraData = await kraRes.json()
-
-      if (!kraData.success) {
-        // Save to sales_invoices with status 'error' and error message, but DO NOT block order completion
-        let fallbackTrdInvcNo = kraData.invcNo
-        if (!fallbackTrdInvcNo) {
-          // Fetch the latest trdInvcNo from sales_invoices
-          const { data: lastInvoice, error: lastInvError } = await supabase
-            .from('sales_invoices')
-            .select('trdInvcNo')
-            .not('trdInvcNo', 'is', null)
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .single()
-          if (lastInvoice && lastInvoice.trdInvcNo) {
-            // Increment, preserving leading zeros
-            const lastNum = parseInt(lastInvoice.trdInvcNo, 10)
-            fallbackTrdInvcNo = (lastNum + 1)
-          } else {
-            fallbackTrdInvcNo = 1
-          }
-        }
-        console.log("fallback", fallbackTrdInvcNo)
-        await supabase.from('sales_invoices').insert({
-          trdInvcNo: fallbackTrdInvcNo,
-          order_id: order.id,
-          payment_method: paymentMethod,
-          total_items: order.items.length,
-          gross_amount: orderTotal,
-          net_amount: orderNet,
-          tax_amount: orderTax,
-          discount_amount: getDiscountAmountFromDB(order) || 0,
-          discount_type: order.discount_type || null,
-          // discount_reason: order.discount_reason || null,
-          kra_status: 'error',
-          kra_error: kraData.error || kraData.kraData?.resultMsg || 'KRA push failed',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        });
-        toast({ title: 'KRA Sale Error', description: kraData.error || 'Failed to transmit sale to KRA. Order completed, but not sent to KRA.', variant: 'warning' })
-        // DO NOT return or block order completion!
-      } else if (kraData.kraData) {
-        // console.log("checking.. KRAData: ", kraData.kra)
-        const { curRcptNo, totRcptNo, intrlData, rcptSign, sdcDateTime } = kraData.kraData.data
-        
-        // Save successful KRA transaction
-        await supabase.from('sales_invoices').insert({
-          trdInvcNo: kraData.invcNo,
-          order_id: order.id,
-          payment_method: paymentMethod,
-          total_items: order.items.length,
-          gross_amount: orderTotal,
-          net_amount: orderNet,
-          tax_amount: orderTax,
-          discount_amount: getDiscountAmountFromDB(order) || 0,
-          discount_type: order.discount_type || null,
-          // discount_reason: order.discount_reason || null,
-          kra_curRcptNo: curRcptNo,
-          kra_totRcptNo: totRcptNo,
-          kra_intrlData: intrlData,
-          kra_rcptSign: rcptSign,
-          kra_sdcDateTime: sdcDateTime,
-          kra_status: 'ok',
-          kra_error: null,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-
-        // Generate and download KRA receipt
-        try {
-          const receiptItems = order.items.map((item: any) => {
-            // Use dynamic taxTyCd from the recipe, fallback to category-based logic
-            let taxType: 'A-EX' | 'B' | 'C' | 'D' | 'E' = 'B' // Default to 16% VAT
-            
-            // First try to get taxTyCd from the item (from recipe)
-            if (item.taxTyCd) {
-              taxType = item.taxTyCd as 'A-EX' | 'B' | 'C' | 'D' | 'E';
-            } else {
-              // Fallback to category-based logic if taxTyCd is not available
-              if (item.category?.toLowerCase().includes('exempt') || item.category?.toLowerCase().includes('basic')) {
-                taxType = 'A-EX' // Exempt
-              } else if (item.category?.toLowerCase().includes('zero') || item.category?.toLowerCase().includes('export')) {
-                taxType = 'C' // Zero rated
-              } else if (item.category?.toLowerCase().includes('non-vat') || item.category?.toLowerCase().includes('service')) {
-                taxType = 'D' // Non-VAT
-              } else if (item.category?.toLowerCase().includes('8%')) {
-                taxType = 'E' // 8% VAT
-              }
-            }
-            
-            const itemTotal = item.unit_price * item.quantity
-            const taxAmount = taxType === 'B' ? itemTotal * 0.16 : 
-                             taxType === 'E' ? itemTotal * 0.08 : 0
-            
-            return {
-              name: item.menu_item_name,
-              unit_price: item.unit_price,
-              quantity: item.quantity,
-              total: itemTotal,
-              tax_rate: taxType === 'B' ? 16 : taxType === 'E' ? 8 : 0,
-              tax_amount: taxAmount,
-              tax_type: taxType
-            }
-          })
-
-          const receiptData: ReceiptRequest = {
-            kraData: {
-              curRcptNo,
-              totRcptNo,
-              intrlData,
-              rcptSign,
-              sdcDateTime,
-              invcNo: kraData.invcNo,
-              trdInvcNo: order.id
-            },
-            items: receiptItems,
-            customer: {
-              name: selectedCustomer?.name || 'Walk-in Customer',
-              pin: selectedCustomer?.kra_pin
-            },
-            payment_method: paymentMethod,
-            total_amount: orderTotal,
-            tax_amount: orderTax,
-            net_amount: orderNet,
-            order_id: order.id,
-            // Add discount information if applicable
-            discount_amount: getDiscountAmountFromDB(order) || 0,
-            discount_percentage: order.discount_type === 'percentage' ? getDiscountAmountFromDB(order) : 0,
-            discount_narration: getDiscountAmountFromDB(order) > 0 ? `${order.discount_type === 'percentage' ? getDiscountAmountFromDB(order) : 'Fixed'} discount` : undefined
-          }
-
-          // Generate and download KRA receipt as PDF
-          await generateAndDownloadReceipt(receiptData)
-          
-          toast({ 
-            title: 'KRA Receipt Generated', 
-            description: 'KRA receipt has been generated and downloaded as PDF successfully.',
-            variant: 'default'
-          })
-
-        } catch (receiptError) {
-          console.error('Error generating KRA receipt:', receiptError)
-          toast({ 
-            title: 'Receipt Generation Error', 
-            description: 'KRA sale successful but receipt generation failed.',
-            variant: 'warning'
-          })
-        }
-
-        setKraReceipt(kraData.kraData)
       }
       setTables(prevTables => prevTables.map(table =>
         table.id === showPayment.table.id
@@ -1318,9 +1103,9 @@ export function CorrectedPOSSystem() {
         .eq('id', showPayment.orderId)
         .single()
       if (latestOrder) {
-        handlePrintReceipt(latestOrder, kraData.kraData)
+        handlePrintReceipt(latestOrder)
       } else {
-        handlePrintReceipt(order, kraData.kraData)
+        handlePrintReceipt(order)
       }
       toast({
         title: "Payment Complete",
@@ -1353,8 +1138,22 @@ export function CorrectedPOSSystem() {
     setExistingOrderItems([])
   }
 
-  // Print receipt with KRA info
-  const handlePrintReceipt = async (order: any, kraData?: any) => {
+  const handleClosePaymentDialog = () => {
+    setShowPaymentMethodDialog(false)
+    setSelectedPaymentMethod(null)
+    setSplitAmounts({ cash: '', mpesa: '', card: '' })
+    setSplitError(null)
+    setCashReceived('')
+    setMpesaNumber('')
+    setMpesaPhoneNumber('')
+    setMpesaStatus('idle')
+    setMpesaProcessing(false)
+    setCheckoutRequestId('')
+    setTransactionId('')
+  }
+
+  // Print receipt
+  const handlePrintReceipt = async (order: any) => {
     // ... existing browser print logic ...
     // --- Thermal Printer Integration ---
     try {
@@ -1374,11 +1173,6 @@ export function CorrectedPOSSystem() {
           date: new Date(order.created_at).toLocaleDateString(),
           time: new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           receiptId: order.id,
-          kraData: kraData || order.kraData || order.kra_status ? {
-            success: order.kra_status === 'ok',
-            error: order.kra_error,
-            kraData: order.kraData
-          } : undefined
         }),
       });
       const result = await res.json();
@@ -1433,6 +1227,163 @@ export function CorrectedPOSSystem() {
 
   function capitalize(str: string) {
     return str.charAt(0).toUpperCase() + str.slice(1);
+  }
+
+  // M-Pesa Utility Functions
+  const validateMpesaPhoneNumber = (phone: string) => {
+    const cleanPhone = phone.replace(/\D/g, '')
+    return /^[17]\d{8}$/.test(cleanPhone)
+  }
+
+  const formatMpesaPhoneNumber = (phone: string) => {
+    const cleanPhone = phone.replace(/\D/g, '')
+    if (cleanPhone.length <= 9) {
+      return cleanPhone
+    }
+    return cleanPhone.substring(0, 9)
+  }
+
+  const initiateMpesaPayment = async (order: any) => {
+    if (!validateMpesaPhoneNumber(mpesaPhoneNumber)) {
+      toast({
+        title: "Invalid Phone Number",
+        description: "Please enter a valid M-Pesa phone number in format 7xxxxxxxx",
+        variant: "destructive",
+      })
+      return false
+    }
+
+    setMpesaProcessing(true)
+    setMpesaStatus("processing")
+
+    try {
+      const response = await fetch('/api/mpesa', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          phoneNumber: mpesaPhoneNumber,
+          amount: Math.round(order.total_amount)
+        })
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        setCheckoutRequestId(data.checkoutRequestId)
+        toast({
+          title: "M-Pesa Payment Initiated",
+          description: "Please check your phone and enter your M-Pesa PIN to complete the payment",
+        })
+        return true
+      } else {
+        throw new Error(data.error || 'Failed to initiate M-Pesa payment')
+      }
+    } catch (error: any) {
+      console.error('M-Pesa payment error:', error)
+      setMpesaStatus("failed")
+      setMpesaProcessing(false)
+      toast({
+        title: "Payment Failed",
+        description: error.message || "Failed to initiate M-Pesa payment",
+        variant: "destructive",
+      })
+      return false
+    }
+  }
+
+  const processMpesaPayment = async (transId: string, order: any) => {
+    try {
+      // Mark order as paid in the database
+      const { data, error } = await tableOrdersService.markOrderAsPaid(
+        order.id,
+        'mpesa'
+      )
+      
+      if (error) {
+        throw new Error(error)
+      }
+
+      // Update table status
+      setTables(prevTables => prevTables.map(table =>
+        table.id === order.table_id
+          ? { ...table, status: "available", orderId: undefined, currentOrder: undefined }
+          : table
+      ))
+      
+      setTableOrders(prev => {
+        const updated = { ...prev }
+        delete updated[order.table_id]
+        return updated
+      })
+      
+      if (selectedTable?.id === order.table_id) {
+        setSelectedTable(null)
+        setEditingOrderId(null)
+        setExistingOrderItems([])
+        clearCart()
+      }
+      
+      await Promise.all([
+        loadTableOrders(),
+        loadOrderHistory()
+      ])
+      
+      // Print receipt
+      const { data: latestOrder } = await supabase
+        .from('table_orders')
+        .select('*, items:table_order_items(*)')
+        .eq('id', order.id)
+        .single()
+      
+      if (latestOrder) {
+        handlePrintReceipt(latestOrder)
+      } else {
+        handlePrintReceipt(order)
+      }
+      
+      toast({
+        title: "M-Pesa Payment Successful!",
+        description: `Payment completed successfully. Transaction ID: ${transId}`,
+        duration: 3000,
+      })
+      
+      // Reset M-Pesa state
+      setMpesaStatus("success")
+      setMpesaProcessing(false)
+      setCheckoutRequestId("")
+      setTransactionId("")
+      setMpesaPhoneNumber("")
+      
+      // Close payment dialogs
+      setShowPayment(null)
+      setShowPaymentMethodDialog(false)
+      setSelectedPaymentMethod(null)
+      
+      return true
+    } catch (error: any) {
+      console.error("Error processing M-Pesa payment:", error)
+      setMpesaStatus("failed")
+      setMpesaProcessing(false)
+      toast({
+        title: "Payment Processing Error",
+        description: error.message || "Failed to process M-Pesa payment",
+        variant: "destructive",
+      })
+      return false
+    }
+  }
+
+  const cancelMpesaPayment = () => {
+    setMpesaStatus("idle")
+    setMpesaProcessing(false)
+    setCheckoutRequestId("")
+    setMpesaPhoneNumber("")
+    toast({
+      title: "Payment Cancelled",
+      description: "M-Pesa payment has been cancelled",
+    })
   }
 
   // Cancel order logic
@@ -1626,6 +1577,69 @@ export function CorrectedPOSSystem() {
       orderChannel.unsubscribe()
     }
   }, [sessionId])
+
+  // M-Pesa WebSocket for payment verification
+  useEffect(() => {
+    if (checkoutRequestId && mpesaStatus === "processing") {
+      const socket = io('https://webhook-alqurashi.onrender.com', {
+        transports: ['websocket', 'polling']
+      });
+
+      socket.on('connect', () => {
+        console.log('Connected to M-Pesa WebSocket server');
+      });
+
+      socket.on('paymentStatus', (data) => {
+        console.log('Received payment status:', data);
+        if (data && data.CheckoutRequestID === checkoutRequestId) {
+          const { ResultCode, ResultDesc, TransID, FirstName, CallbackMetadata } = data;
+          if (ResultCode === 0) {
+            setMpesaStatus('success');
+            console.log('Callback Metadata:', CallbackMetadata);
+            console.log('Customer:', FirstName);
+            setTransactionId(TransID);
+            toast({
+              title: "Payment Received",
+              description: `Got the payment from ${FirstName}`,
+            });
+            setMpesaProcessing(false);
+            
+            // Process the payment
+            const order = showPayment ? (tableOrders[showPayment.table.id] || showPayment.table.currentOrder) : null;
+            if (order) {
+              processMpesaPayment(TransID, order);
+            }
+          } else {
+            setMpesaStatus('failed');
+            setMpesaProcessing(false);
+            toast({
+              title: "Payment Failed",
+              description: ResultDesc || 'M-Pesa payment failed',
+              variant: "destructive",
+            });
+          }
+        }
+      });
+
+      // Add timeout to handle cases where payment doesn't come through
+      const timeout = setTimeout(() => {
+        if (mpesaStatus === "processing") {
+          setMpesaStatus("failed");
+          setMpesaProcessing(false);
+          toast({
+            title: "Payment Timeout",
+            description: "M-Pesa payment timed out. Please try again.",
+            variant: "destructive",
+          });
+        }
+      }, 300000); // 5 minutes timeout
+
+      return () => {
+        clearTimeout(timeout);
+        socket.disconnect();
+      };
+    }
+  }, [checkoutRequestId, mpesaStatus, showPayment, tableOrders]);
 
   // Function to ensure only one session is open at a time
   const ensureSingleSession = async (): Promise<{ success: boolean; sessionId?: string; error?: string }> => {
@@ -1923,7 +1937,6 @@ export function CorrectedPOSSystem() {
   const [customerSearch, setCustomerSearch] = useState("")
   const [customerResults, setCustomerResults] = useState<any[]>([])
   const [newCustomerName, setNewCustomerName] = useState("")
-  const [newCustomerPin, setNewCustomerPin] = useState("")
   const [customerLoading, setCustomerLoading] = useState(false)
 
   // Fetch customers for search
@@ -1932,7 +1945,7 @@ export function CorrectedPOSSystem() {
     const { data, error } = await supabase
       .from('customers')
       .select('*')
-      .or(`name.ilike.%${query}%,kra_pin.ilike.%${query}%`)
+      .ilike('name', `%${query}%`)
       .order('created_at', { ascending: false })
       .limit(10)
     setCustomerResults(data || [])
@@ -1941,14 +1954,14 @@ export function CorrectedPOSSystem() {
 
   // Add new customer
   const handleAddCustomer = async () => {
-    if (!newCustomerName.trim() || !newCustomerPin.trim()) {
-      toast({ title: 'Missing Info', description: 'Name and KRA PIN are required', variant: 'destructive' })
+    if (!newCustomerName.trim()) {
+      toast({ title: 'Missing Info', description: 'Name is required', variant: 'destructive' })
       return
     }
     setCustomerLoading(true)
     const { data, error } = await supabase
       .from('customers')
-      .insert({ name: newCustomerName.trim(), kra_pin: newCustomerPin.trim() })
+      .insert({ name: newCustomerName.trim() })
       .select()
       .single()
     setCustomerLoading(false)
@@ -1960,7 +1973,6 @@ export function CorrectedPOSSystem() {
     setSelectedCustomer(data)
     setShowCustomerDialog(false)
     setNewCustomerName("")
-    setNewCustomerPin("")
     toast({ title: 'Customer Added', description: `Added ${data.name}` })
   }
 
@@ -2053,58 +2065,6 @@ export function CorrectedPOSSystem() {
     setDiscountType('percentage')
   }
 
-  // Add state for refund functionality
-  const [refundingOrder, setRefundingOrder] = useState<string | null>(null)
-  const [showRefundDialog, setShowRefundDialog] = useState<null | { orderId: string; order: any }>(null)
-  const [refundReason, setRefundReason] = useState('Customer request')
-
-  // Handle refund functionality
-  const handleRefundOrder = async () => {
-    if (!showRefundDialog) return
-    
-    const { orderId, order } = showRefundDialog
-    setRefundingOrder(orderId)
-    
-    try {
-      const response = await fetch('/api/kra/refund', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          orderId,
-          refundReason
-        })
-      })
-
-      const result = await response.json()
-
-      if (!result.success) {
-        throw new Error(result.error || 'Refund failed')
-      }
-
-      toast({
-        title: 'Refund Successful',
-        description: `Refund of Ksh ${result.refundAmount.toFixed(2)} processed and sent to KRA`,
-        duration: 5000,
-      })
-
-      // Reload order history to show updated status
-      await loadOrderHistory()
-      setShowRefundDialog(null)
-      setRefundReason('Customer request')
-
-    } catch (error: any) {
-      console.error('Refund error:', error)
-      toast({
-        title: 'Refund Failed',
-        description: error.message || 'Failed to process refund',
-        variant: 'destructive',
-        duration: 5000,
-      })
-    } finally {
-      setRefundingOrder(null)
-    }
-  }
-
   return (
     <div className="h-screen flex flex-col bg-background overflow-hidden">
       <div className="flex-shrink-0 border-b border-border bg-card/50 backdrop-blur-sm">
@@ -2177,9 +2137,17 @@ export function CorrectedPOSSystem() {
                     </div>
                     <div className="text-sm text-muted-foreground mt-1">
                       {table.status === "occupied" ? (
-                        <div className="flex items-center gap-1.5">
-                          <FileText className="h-4 w-4" />
-                          <span>{currentOrder ? `Order #${currentOrder.id.slice(-4)}` : "In Progress..."}</span>
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-1.5">
+                            <FileText className="h-4 w-4" />
+                            <span>{currentOrder ? `Order #${currentOrder.id.slice(-4)}` : "In Progress..."}</span>
+                          </div>
+                          {currentOrder?.customer_name && (
+                            <div className="flex items-center gap-1.5 text-blue-600 dark:text-blue-400">
+                              <Users className="h-3 w-3" />
+                              <span className="text-xs font-medium">{currentOrder.customer_name}</span>
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <div className="flex items-center gap-1.5">
@@ -2195,6 +2163,21 @@ export function CorrectedPOSSystem() {
                       <div className="mt-4">
                         <p className="text-xs text-muted-foreground">Total Due</p>
                         <p className="text-2xl font-bold text-primary">Ksh {currentOrder.total_amount?.toFixed(2) || '0.00'}</p>
+                        
+                        {/* Order Status Badge */}
+                        <div className="mt-2 mb-2">
+                          <Badge 
+                            variant={
+                              currentOrder.status === 'completed' ? 'default' : 
+                              currentOrder.status === 'ready' ? 'secondary' :
+                              currentOrder.status === 'preparing' ? 'outline' : 'secondary'
+                            }
+                            className="text-xs"
+                          >
+                            {currentOrder.status.charAt(0).toUpperCase() + currentOrder.status.slice(1)}
+                          </Badge>
+                        </div>
+                        
                         <Button 
                           size="sm" 
                           className="mt-2 w-full"
@@ -2205,18 +2188,31 @@ export function CorrectedPOSSystem() {
                         >
                           Manage Order
                         </Button>
-                        <Button
-                          size="sm"
-                          className="mt-2 w-full"
-                          variant="secondary"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            handleProceedToPayment(table)
-                          }}
-                        >
-                          <CheckCircle className="h-5 w-5 mr-2" />
-                          Proceed to Payment
-                        </Button>
+                        
+                        {/* Only show payment button for completed orders */}
+                        {currentOrder.status === 'completed' && (
+                          <Button
+                            size="sm"
+                            className="mt-2 w-full"
+                            variant="secondary"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleProceedToPayment(table)
+                            }}
+                          >
+                            <CheckCircle className="h-5 w-5 mr-2" />
+                            Proceed to Payment
+                          </Button>
+                        )}
+                        
+                        {/* Show status message for non-completed orders */}
+                        {currentOrder.status !== 'completed' && (
+                          <div className="mt-2 text-xs text-muted-foreground text-center">
+                            {currentOrder.status === 'ready' ? 'Ready for pickup' :
+                             currentOrder.status === 'preparing' ? 'Being prepared' :
+                             'Order in progress'}
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="mt-4 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -2242,6 +2238,27 @@ export function CorrectedPOSSystem() {
             </Button>
             {showTableOptions && (showTableOptions.status === 'occupied') && (
               <>
+                {/* Show payment option for completed orders */}
+                {(() => {
+                  const currentOrder = tableOrders[showTableOptions.id] || showTableOptions.currentOrder
+                  if (currentOrder && currentOrder.status === 'completed') {
+                    return (
+                      <Button 
+                        size="lg" 
+                        className="w-full" 
+                        variant="default"
+                        onClick={() => {
+                          setShowTableOptions(null)
+                          handleProceedToPayment(showTableOptions)
+                        }}
+                      >
+                        <CheckCircle className="h-5 w-5 mr-2" /> Proceed to Payment
+                      </Button>
+                    )
+                  }
+                  return null
+                })()}
+                
                 <Button size="lg" className="w-full" variant="destructive" onClick={handleCancelOrder} disabled={cancellingOrder}>
                   {cancellingOrder ? (
                     <span className="flex items-center justify-center"><span className="animate-spin rounded-full h-5 w-5 border-b-2 border-destructive mr-2"></span>Cancelling...</span>
@@ -2271,6 +2288,17 @@ export function CorrectedPOSSystem() {
                 
                 return (
                   <>
+                    {/* Customer Information */}
+                    {order.customer_name && (
+                      <div className="flex items-center gap-2 p-3 bg-blue-50 dark:bg-blue-950/20 rounded-lg border border-blue-200 dark:border-blue-800">
+                        <Users className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                        <div className="text-sm">
+                          <span className="font-medium text-blue-800 dark:text-blue-200">Customer:</span>
+                          <span className="ml-1 text-blue-700 dark:text-blue-300">{order.customer_name}</span>
+                        </div>
+                      </div>
+                    )}
+                    
                     <div className="flex justify-between text-lg font-semibold">
                       <span>Order Total:</span>
                       <span>Ksh {order.total_amount?.toFixed(2) || '0.00'}</span>
@@ -2330,6 +2358,18 @@ export function CorrectedPOSSystem() {
                       <p className="text-sm text-muted-foreground">
                         Table {order.table_number} • {new Date(order.created_at).toLocaleString()}
                       </p>
+                      
+                      {/* Customer Information */}
+                      {order.customer_name && (
+                        <div className="flex items-center gap-2 mb-2">
+                          <div className="flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400">
+                            <Users className="h-4 w-4" />
+                            <span className="font-medium">Customer:</span>
+                            <span>{order.customer_name}</span>
+                          </div>
+                        </div>
+                      )}
+                      
                       <p className="text-sm text-muted-foreground">
                         Status: <Badge variant="outline" className="ml-1">{order.status}</Badge>
                       </p>
@@ -2343,6 +2383,25 @@ export function CorrectedPOSSystem() {
                         <FileText className="h-4 w-4 mr-1" />
                         Print Receipt
                       </Button>
+                      
+                      {/* Show payment button for completed orders */}
+                      {order.status === 'completed' && (
+                        <Button
+                          size="sm"
+                          variant="default"
+                          onClick={() => {
+                            setShowPendingOrders(false)
+                            const table = tables.find(t => t.id === order.table_id)
+                            if (table) {
+                              handleProceedToPayment(table)
+                            }
+                          }}
+                        >
+                          <CheckCircle className="h-4 w-4 mr-1" />
+                          Proceed to Payment
+                        </Button>
+                      )}
+                      
                       <Button
                         size="sm"
                         onClick={() => {
@@ -2373,24 +2432,37 @@ export function CorrectedPOSSystem() {
                   </div>
                   
                   <div className="border-t pt-3">
-                    <div className="flex justify-between font-semibold text-lg">
-                      <span>Total:</span>
-                      <span className="text-primary">Ksh {order.total_amount.toFixed(2)}</span>
+                    {/* Original Total (before discount) */}
+                    <div className="flex justify-between text-sm text-muted-foreground mb-2">
+                      <span>Original Total:</span>
+                      <span>Ksh {calcOrderTotal(order.items).toFixed(2)}</span>
                     </div>
-                    <div className="flex justify-between text-xs text-muted-foreground">
-                      <span>Subtotal (before tax):</span>
-                      <span>Ksh {getDiscountedOrderSubtotal(order.items).toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between text-xs text-muted-foreground">
-                      <span>Tax (16% VAT):</span>
-                      <span>Ksh {getDiscountedTax().toFixed(2)}</span>
-                    </div>
+                    
+                    {/* Discount Information */}
                     {getDiscountAmountFromDB(order) > 0 && (
-                      <div className="flex justify-between text-xs text-green-600">
+                      <div className="flex justify-between text-sm text-green-600 mb-2">
                         <span>Discount ({order.discount_type || 'fixed'}):</span>
                         <span>-Ksh {getDiscountAmountFromDB(order).toFixed(2)}</span>
                       </div>
                     )}
+                    
+                    {/* Current Total Due */}
+                    <div className="flex justify-between font-semibold text-lg border-t pt-2">
+                      <span>Total Due:</span>
+                      <span className="text-primary">Ksh {order.total_amount?.toFixed(2) || '0.00'}</span>
+                    </div>
+                    
+                    {/* Breakdown Details */}
+                    <div className="mt-2 space-y-1">
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>Subtotal (before tax):</span>
+                        <span>Ksh {getDiscountedOrderSubtotal(order.items).toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>Tax (included):</span>
+                        <span>Ksh {getDiscountedOrderTax(order.items).toFixed(2)}</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
               ))
@@ -2675,12 +2747,12 @@ export function CorrectedPOSSystem() {
                 </div>
                 <div className="mb-2">
   <Button variant="outline" onClick={() => setShowCustomerDialog(true)} className="w-full">
-    {selectedCustomer ? `Customer: ${selectedCustomer.name} (${selectedCustomer.kra_pin})` : 'Add Customer'}
+    {selectedCustomer ? `Customer: ${selectedCustomer.name}` : 'Add Customer'}
   </Button>
 </div>
 {selectedCustomer && (
   <div className="text-xs text-muted-foreground mb-2">
-    <span className="font-semibold">Customer:</span> {selectedCustomer.name} (<span className="font-mono">{selectedCustomer.kra_pin}</span>)
+    <span className="font-semibold">Customer:</span> {selectedCustomer.name}
   </div>
 )}
                   {/* Discount Section */}
@@ -2785,97 +2857,129 @@ export function CorrectedPOSSystem() {
       </Dialog>
 
       <Dialog open={showHistory} onOpenChange={setShowHistory}>
-        <DialogContent className="max-w-4xl max-h-[80vh]">
+        <DialogContent className="max-w-5xl max-h-[85vh] w-full mx-4">
           <DialogHeader>
-            <DialogTitle>Order History ({orderHistory.length})</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              <History className="h-5 w-5" />
+              Order History ({orderHistory.length})
+            </DialogTitle>
+            <p className="text-sm text-muted-foreground">
+              View all completed and paid orders
+            </p>
           </DialogHeader>
-          <div className="space-y-4 max-h-[60vh] overflow-auto">
+          <div className="space-y-4 max-h-[65vh] overflow-auto">
             {orderHistory.length === 0 ? (
               <div className="text-center py-8 text-muted-foreground">
                 <p className="text-lg">No order history</p>
-                <p className="text-sm">Completed orders will appear here</p>
+                <p className="text-sm">Paid orders will appear here</p>
               </div>
             ) : (
               orderHistory.map((order) => (
-                <div key={order.id} className="border rounded-lg p-4 bg-card">
-                  <div className="flex justify-between items-start mb-3">
-                    <div>
-                      <h3 className="font-semibold text-lg">Order #{order.id.slice(-6)}</h3>
-                      <p className="text-sm text-muted-foreground">
+                <div key={order.id} className="border rounded-lg p-4 bg-card hover:shadow-md transition-shadow">
+                  <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-3 mb-4">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-2">
+                        <h3 className="font-semibold text-lg">Order #{order.id.slice(-6)}</h3>
+                        <Badge variant={order.status === "paid" ? "default" : "secondary"}>
+                          {order.status}
+                        </Badge>
+                      </div>
+                      <p className="text-sm text-muted-foreground mb-2">
                         Table {order.table_number} • {new Date(order.created_at).toLocaleString()}
                       </p>
-                      <p className="text-sm text-muted-foreground flex items-center gap-2">
-                        Status: <Badge variant={order.status === "paid" ? "default" : order.status === "refunded" ? "destructive" : "secondary"} className="ml-1">{order.status}</Badge>
-                        {order.payment_method && (
-                          <span className="ml-2 text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded font-semibold">
-                            {(() => {
-                              let pm = order.payment_method;
-                              if (typeof pm === 'string' && pm.startsWith('{') && pm.endsWith('}')) {
-                                try {
-                                  pm = JSON.parse(pm);
-                                } catch {}
-                              }
-                              return formatPaymentMethod(pm);
-                            })()}
-                          </span>
-                        )}
-                      </p>
+                      
+                      {/* Customer Information */}
+                      {order.customer_name && (
+                        <div className="flex items-center gap-2 mb-2">
+                          <div className="flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400">
+                            <Users className="h-4 w-4" />
+                            <span className="font-medium">Customer:</span>
+                            <span>{order.customer_name}</span>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Payment Method */}
+                      {order.payment_method && (
+                        <div className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded inline-block">
+                          {(() => {
+                            let pm = order.payment_method;
+                            if (typeof pm === 'string' && pm.startsWith('{') && pm.endsWith('}')) {
+                              try {
+                                pm = JSON.parse(pm);
+                              } catch {}
+                            }
+                            return formatPaymentMethod(pm);
+                          })()}
+                        </div>
+                      )}
                     </div>
                     <div className="flex gap-2">
                       <Button
                         size="sm"
                         variant="outline"
                         onClick={() => handlePrintReceipt(order)}
+                        className="flex-1 sm:flex-none"
                       >
                         <FileText className="h-4 w-4 mr-1" />
-                        Print Receipt
+                        Print
                       </Button>
-                      {order.status === "paid" && (
-                        <Button
-                          size="sm"
-                          variant="destructive"
-                          onClick={() => setShowRefundDialog({ orderId: order.id, order })}
-                        >
-                          <RotateCcw className="h-4 w-4 mr-1" />
-                          Refund
-                        </Button>
-                      )}
                     </div>
                   </div>
                   
-                  <div className="space-y-2 mb-3">
-                    {order.items?.map((item: any) => (
-                      <div key={item.id} className="flex justify-between text-sm">
-                        <span>
-                          {item.menu_item_name}
-                          {item.portion_size && <span className="text-muted-foreground"> ({item.portion_size})</span>}
-                          {item.customization_notes && <span className="text-muted-foreground"> - {item.customization_notes}</span>}
-                        </span>
-                        <span>x{item.quantity}</span>
-                        <span>Ksh {item.total_price.toFixed(2)}</span>
-                      </div>
-                    ))}
+                  <div className="space-y-2 mb-4">
+                    <h4 className="text-sm font-medium text-muted-foreground">Items Ordered:</h4>
+                    <div className="space-y-1">
+                      {order.items?.map((item: any) => (
+                        <div key={item.id} className="flex justify-between items-start text-sm bg-muted/30 rounded p-2">
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium truncate">{item.menu_item_name}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {item.portion_size && <span>({item.portion_size})</span>}
+                              {item.customization_notes && <span> - {item.customization_notes}</span>}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 ml-2 text-right">
+                            <span className="text-muted-foreground">x{item.quantity}</span>
+                            <span className="font-medium">Ksh {item.total_price.toFixed(2)}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                   
                   <div className="border-t pt-3">
-                    <div className="flex justify-between font-semibold text-lg">
-                      <span>Total:</span>
-                      <span className="text-primary">Ksh {calcOrderTotal(order.items).toFixed(2)}</span>
+                    {/* Original Total (before discount) */}
+                    <div className="flex justify-between text-sm text-muted-foreground mb-2">
+                      <span>Original Total:</span>
+                      <span>Ksh {calcOrderTotal(order.items).toFixed(2)}</span>
                     </div>
-                    <div className="flex justify-between text-xs text-muted-foreground">
-                      <span>Subtotal (before tax):</span>
-                      <span>Ksh {calcOrderSubtotal(order.items).toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between text-xs text-muted-foreground">
-                      <span>Tax (16% VAT):</span>
-                      <span>Ksh {getDiscountedOrderTax(order.items).toFixed(2)}</span>
-                    </div>
+                    
+                    {/* Discount Information */}
                     {getDiscountAmountFromDB(order) > 0 && (
-                      <div className="flex justify-between text-xs text-green-600">
+                      <div className="flex justify-between text-sm text-green-600 mb-2">
                         <span>Discount ({order.discount_type || 'fixed'}):</span>
                         <span>-Ksh {getDiscountAmountFromDB(order).toFixed(2)}</span>
                       </div>
                     )}
+                    
+                    {/* Actual Amount Paid */}
+                    <div className="flex justify-between font-semibold text-lg border-t pt-2">
+                      <span>Amount Paid:</span>
+                      <span className="text-primary">Ksh {order.total_amount?.toFixed(2) || '0.00'}</span>
+                    </div>
+                    
+                    {/* Breakdown Details */}
+                    <div className="mt-2 space-y-1">
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>Subtotal (before tax):</span>
+                        <span>Ksh {calcOrderSubtotal(order.items).toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>Tax (included):</span>
+                        <span>Ksh {getDiscountedOrderTax(order.items).toFixed(2)}</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
               ))
@@ -2884,155 +2988,233 @@ export function CorrectedPOSSystem() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={showPaymentMethodDialog} onOpenChange={setShowPaymentMethodDialog}>
-        <DialogContent className="max-w-md">
+      <Dialog open={showPaymentMethodDialog} onOpenChange={(open) => !open && handleClosePaymentDialog()}>
+        <DialogContent className="max-w-lg w-full mx-4">
           <DialogHeader>
             <DialogTitle>Select Payment Method</DialogTitle>
           </DialogHeader>
           <div className="flex flex-col gap-4 py-2">
-            <div className="flex gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <Button
                 variant={selectedPaymentMethod === 'cash' ? 'default' : 'outline'}
-                className="flex-1"
+                className="h-10"
                 onClick={() => { setSelectedPaymentMethod('cash'); setSplitError(null); }}
               >
                 Cash
               </Button>
               <Button
                 variant={selectedPaymentMethod === 'mpesa' ? 'default' : 'outline'}
-                className="flex-1"
+                className="h-10"
                 onClick={() => { setSelectedPaymentMethod('mpesa'); setSplitError(null); }}
               >
-                Mpesa
+                M-Pesa
               </Button>
               <Button
                 variant={selectedPaymentMethod === 'card' ? 'default' : 'outline'}
-                className="flex-1"
+                className="h-10"
                 onClick={() => { setSelectedPaymentMethod('card'); setSplitError(null); }}
               >
                 Card
               </Button>
               <Button
                 variant={selectedPaymentMethod === 'split' ? 'default' : 'outline'}
-                className="flex-1"
+                className="h-10"
                 onClick={() => { setSelectedPaymentMethod('split'); setSplitError(null); }}
               >
                 Split
               </Button>
             </div>
             {selectedPaymentMethod === 'cash' && (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className="w-32">Amount Received</span>
+              <div className="space-y-3">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">Amount Received</label>
                   <Input
                     type="number"
                     min="0"
                     value={cashReceived}
                     onChange={e => setCashReceived(e.target.value)}
-                    className="flex-1"
+                    className="w-full"
+                    placeholder="Enter amount received"
                   />
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="w-32">Change to Give</span>
-                  <span className="font-bold">
-                    {(() => {
-                      const order = showPayment ? (tableOrders[showPayment.table.id] || showPayment.table.currentOrder) : null;
-                      const received = parseFloat(cashReceived) || 0;
-                      return order ? (received >= order.total_amount ? (received - order.total_amount).toFixed(2) : '0.00') : '0.00';
-                    })()}
-                  </span>
+                <div className="bg-muted/50 rounded-lg p-3">
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm font-medium text-muted-foreground">Change to Give:</span>
+                    <span className="text-lg font-bold text-primary">
+                      Ksh {(() => {
+                        const order = showPayment ? (tableOrders[showPayment.table.id] || showPayment.table.currentOrder) : null;
+                        const received = parseFloat(cashReceived) || 0;
+                        return order ? (received >= order.total_amount ? (received - order.total_amount).toFixed(2) : '0.00') : '0.00';
+                      })()}
+                    </span>
+                  </div>
                 </div>
               </div>
             )}
             {selectedPaymentMethod === 'mpesa' && (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className="w-32">Mobile Number</span>
+              <div className="space-y-3">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-foreground">Mobile Number</label>
                   <Input
                     type="tel"
-                    value={mpesaNumber}
-                    onChange={e => setMpesaNumber(e.target.value)}
-                    className="flex-1"
-                    placeholder="e.g. 0712345678"
+                    value={mpesaPhoneNumber}
+                    onChange={e => setMpesaPhoneNumber(formatMpesaPhoneNumber(e.target.value))}
+                    className="w-full"
+                    placeholder="e.g. 712345678"
+                    maxLength={9}
+                    disabled={mpesaStatus === 'processing'}
                   />
                 </div>
+                
+                {mpesaStatus === 'processing' && (
+                  <div className="bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-lg p-3">
+                    <div className="flex items-start gap-3">
+                      <Loader2 className="h-5 w-5 animate-spin text-blue-600 mt-0.5 flex-shrink-0" />
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium text-blue-800 dark:text-blue-200">
+                          Processing M-Pesa Payment
+                        </p>
+                        <p className="text-xs text-blue-700 dark:text-blue-300">
+                          Please check your phone and enter your M-Pesa PIN to complete the payment
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                
+                {mpesaStatus === 'success' && (
+                  <div className="bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-800 rounded-lg p-3">
+                    <div className="flex items-start gap-3">
+                      <CheckCircle className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium text-green-800 dark:text-green-200">
+                          Payment Successful!
+                        </p>
+                        <p className="text-xs text-green-700 dark:text-green-300">
+                          M-Pesa payment has been received and processed
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                
+                {mpesaStatus === 'failed' && (
+                  <div className="bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 rounded-lg p-3">
+                    <div className="flex items-start gap-3">
+                      <XCircle className="h-5 w-5 text-red-600 mt-0.5 flex-shrink-0" />
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium text-red-800 dark:text-red-200">
+                          Payment Failed
+                        </p>
+                        <p className="text-xs text-red-700 dark:text-red-300">
+                          M-Pesa payment could not be processed. Please try again.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
             {selectedPaymentMethod === 'split' && (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className="w-16">Cash</span>
-                  <Input
-                    type="number"
-                    min="0"
-                    value={splitAmounts.cash}
-                    onChange={e => setSplitAmounts(a => ({ ...a, cash: e.target.value }))}
-                    className="flex-1"
-                  />
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-muted-foreground">Cash Amount</label>
+                    <Input
+                      type="number"
+                      min="0"
+                      value={splitAmounts.cash}
+                      onChange={e => setSplitAmounts(a => ({ ...a, cash: e.target.value }))}
+                      className="w-full"
+                      placeholder="0"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-muted-foreground">M-Pesa Amount</label>
+                    <Input
+                      type="number"
+                      min="0"
+                      value={splitAmounts.mpesa}
+                      onChange={e => setSplitAmounts(a => ({ ...a, mpesa: e.target.value }))}
+                      className="w-full"
+                      placeholder="0"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-muted-foreground">Card Amount</label>
+                    <Input
+                      type="number"
+                      min="0"
+                      value={splitAmounts.card}
+                      onChange={e => setSplitAmounts(a => ({ ...a, card: e.target.value }))}
+                      className="w-full"
+                      placeholder="0"
+                    />
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="w-16">Mpesa</span>
-                  <Input
-                    type="number"
-                    min="0"
-                    value={splitAmounts.mpesa}
-                    onChange={e => setSplitAmounts(a => ({ ...a, mpesa: e.target.value }))}
-                    className="flex-1"
-                  />
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="w-16">Card</span>
-                  <Input
-                    type="number"
-                    min="0"
-                    value={splitAmounts.card}
-                    onChange={e => setSplitAmounts(a => ({ ...a, card: e.target.value }))}
-                    className="flex-1"
-                  />
-                </div>
+                
                 {parseFloat(splitAmounts.cash) > 0 && (
-                  <div className="flex items-center gap-2">
-                    <span className="w-32">Cash Received</span>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-foreground">Cash Received</label>
                     <Input
                       type="number"
                       min="0"
                       value={cashReceived}
                       onChange={e => setCashReceived(e.target.value)}
-                      className="flex-1"
+                      className="w-full"
+                      placeholder="Enter cash received"
                     />
+                    <div className="bg-muted/50 rounded-lg p-2">
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm text-muted-foreground">Change:</span>
+                        <span className="font-bold text-primary">
+                          Ksh {(() => {
+                            const cash = parseFloat(splitAmounts.cash) || 0;
+                            const received = parseFloat(cashReceived) || 0;
+                            return received >= cash ? (received - cash).toFixed(2) : '0.00';
+                          })()}
+                        </span>
+                      </div>
+                    </div>
                   </div>
                 )}
-                {parseFloat(splitAmounts.cash) > 0 && (
-                  <div className="flex items-center gap-2">
-                    <span className="w-32">Change to Give</span>
-                    <span className="font-bold">
-                      {(() => {
-                        const cash = parseFloat(splitAmounts.cash) || 0;
-                        const received = parseFloat(cashReceived) || 0;
-                        return received >= cash ? (received - cash).toFixed(2) : '0.00';
-                      })()}
-                    </span>
-                  </div>
-                )}
+                
                 {parseFloat(splitAmounts.mpesa) > 0 && (
-                  <div className="flex items-center gap-2">
-                    <span className="w-32">Mpesa Number</span>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-foreground">M-Pesa Number</label>
                     <Input
                       type="tel"
                       value={mpesaNumber}
                       onChange={e => setMpesaNumber(e.target.value)}
-                      className="flex-1"
+                      className="w-full"
                       placeholder="e.g. 0712345678"
                     />
                   </div>
                 )}
-                <div className="text-xs text-muted-foreground mt-1">
-                  Total must equal order total: <span className="font-bold">Ksh {(() => {
-                    const order = showPayment ? (tableOrders[showPayment.table.id] || showPayment.table.currentOrder) : null;
-                    return order ? order.total_amount.toFixed(2) : '0.00';
-                  })()}</span>
+                
+                <div className="bg-muted/50 rounded-lg p-3">
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-muted-foreground">Total Split:</span>
+                    <span className="font-bold">
+                      Ksh {(parseFloat(splitAmounts.cash) + parseFloat(splitAmounts.mpesa) + parseFloat(splitAmounts.card)).toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center text-sm mt-1">
+                    <span className="text-muted-foreground">Order Total:</span>
+                    <span className="font-bold text-primary">
+                      Ksh {(() => {
+                        const order = showPayment ? (tableOrders[showPayment.table.id] || showPayment.table.currentOrder) : null;
+                        return order ? order.total_amount.toFixed(2) : '0.00';
+                      })()}
+                    </span>
+                  </div>
                 </div>
-                {splitError && <div className="text-xs text-destructive mt-1">{splitError}</div>}
+                
+                {splitError && (
+                  <div className="bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 rounded-lg p-2">
+                    <p className="text-sm text-red-700 dark:text-red-300">{splitError}</p>
+                  </div>
+                )}
               </div>
             )}
             {selectedPaymentMethod && selectedPaymentMethod !== 'split' && selectedPaymentMethod !== 'cash' && selectedPaymentMethod !== 'mpesa' && (
@@ -3042,15 +3224,39 @@ export function CorrectedPOSSystem() {
             )}
             {splitError && <div className="text-xs text-destructive mt-1">{splitError}</div>}
           </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setShowPaymentMethodDialog(false)} disabled={paymentLoading}>
-              Cancel
-            </Button>
-            <Button onClick={handleConfirmPaymentMethod} disabled={paymentLoading}>
-              {paymentLoading ? (
-                <span className="flex items-center justify-center"><span className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary mr-2"></span>Processing...</span>
+          <DialogFooter className="flex-col sm:flex-row gap-2 sm:gap-0">
+            <div className="flex gap-2 w-full sm:w-auto">
+              <Button 
+                variant="ghost" 
+                onClick={handleClosePaymentDialog} 
+                disabled={paymentLoading || mpesaProcessing}
+                className="flex-1 sm:flex-none"
+              >
+                Cancel
+              </Button>
+              {selectedPaymentMethod === 'mpesa' && mpesaStatus === 'processing' && (
+                <Button 
+                  variant="destructive" 
+                  onClick={cancelMpesaPayment} 
+                  disabled={mpesaProcessing}
+                  className="flex-1 sm:flex-none"
+                >
+                  Cancel Payment
+                </Button>
+              )}
+            </div>
+            <Button 
+              onClick={handleConfirmPaymentMethod} 
+              disabled={paymentLoading || mpesaProcessing || (selectedPaymentMethod === 'mpesa' && mpesaStatus === 'processing')}
+              className="w-full sm:w-auto"
+            >
+              {paymentLoading || mpesaProcessing ? (
+                <span className="flex items-center justify-center">
+                  <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary mr-2"></span>
+                  {selectedPaymentMethod === 'mpesa' ? 'Processing...' : 'Processing...'}
+                </span>
               ) : (
-                'Confirm Payment'
+                selectedPaymentMethod === 'mpesa' ? 'Initiate M-Pesa Payment' : 'Confirm Payment'
               )}
             </Button>
           </DialogFooter>
@@ -3316,7 +3522,7 @@ export function CorrectedPOSSystem() {
           </DialogHeader>
           <div className="mb-4">
             <Input
-              placeholder="Search by name or KRA PIN"
+              placeholder="Search by name"
               value={customerSearch}
               onChange={e => {
                 setCustomerSearch(e.target.value)
@@ -3327,7 +3533,7 @@ export function CorrectedPOSSystem() {
             {customerLoading && <div className="text-xs text-muted-foreground">Searching...</div>}
             {customerResults.map(cust => (
               <div key={cust.id} className="flex justify-between items-center py-1">
-                <span>{cust.name} ({cust.kra_pin})</span>
+                <span>{cust.name}</span>
                 <Button size="sm" onClick={() => { setSelectedCustomer(cust); setShowCustomerDialog(false) }}>Select</Button>
               </div>
             ))}
@@ -3335,7 +3541,6 @@ export function CorrectedPOSSystem() {
           <div className="border-t pt-4 mt-4">
             <h4 className="font-semibold mb-2">Register New Customer</h4>
             <Input placeholder="Name" value={newCustomerName} onChange={e => setNewCustomerName(e.target.value)} className="mb-2" />
-            <Input placeholder="KRA PIN" value={newCustomerPin} onChange={e => setNewCustomerPin(e.target.value)} className="mb-2" />
             <Button onClick={handleAddCustomer} disabled={customerLoading}>Add Customer</Button>
           </div>
         </DialogContent>
@@ -3489,76 +3694,6 @@ export function CorrectedPOSSystem() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {/* Refund Confirmation Dialog */}
-      <Dialog open={!!showRefundDialog} onOpenChange={(open) => !open && setShowRefundDialog(null)}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Confirm Refund</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            {showRefundDialog && (
-              <>
-                <div className="p-4 bg-muted rounded-lg">
-                  <h4 className="font-semibold mb-2">Order Details</h4>
-                  <p className="text-sm text-muted-foreground">Order #{showRefundDialog.order.id.slice(-6)}</p>
-                  <p className="text-sm text-muted-foreground">Table {showRefundDialog.order.table_number}</p>
-                  <p className="text-sm text-muted-foreground">
-                    Total: Ksh {calcOrderTotal(showRefundDialog.order.items).toFixed(2)}
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    Payment: {formatPaymentMethod(showRefundDialog.order.payment_method)}
-                  </p>
-                </div>
-                
-                <div className="space-y-2">
-                  <Label htmlFor="refund-reason">Refund Reason</Label>
-                  <Input
-                    id="refund-reason"
-                    value={refundReason}
-                    onChange={(e) => setRefundReason(e.target.value)}
-                    placeholder="e.g., Customer request, Wrong order, etc."
-                  />
-                </div>
-                
-                <div className="p-4 bg-amber-50 dark:bg-amber-950/20 rounded-lg border border-amber-200 dark:border-amber-800">
-                  <div className="flex items-start gap-2">
-                    <div className="w-2 h-2 bg-amber-500 rounded-full mt-2 flex-shrink-0"></div>
-                    <div className="text-sm text-amber-800 dark:text-amber-200">
-                      <p className="font-medium mb-1">Important Notice</p>
-                      <p className="text-xs">
-                        This refund will be processed through KRA eTIMS system. The refund will be sent to KRA with negative values and rcptTyCd: "R" for refund. This action cannot be undone.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setShowRefundDialog(null)} disabled={!!refundingOrder}>
-              Cancel
-            </Button>
-            <Button 
-              variant="destructive" 
-              onClick={handleRefundOrder}
-              disabled={!!refundingOrder || !refundReason.trim()}
-            >
-              {refundingOrder ? (
-                <span className="flex items-center justify-center">
-                  <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></span>
-                  Processing...
-                </span>
-              ) : (
-                <>
-                  <RotateCcw className="h-4 w-4 mr-2" />
-                  Confirm Refund
-                </>
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
+      </div>
   )
 }

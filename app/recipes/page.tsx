@@ -86,9 +86,17 @@ export default function RecipesPage() {
   // Fetch all ingredients and batches for the form
   useEffect(() => {
     async function fetchOptions() {
-      const { data: ingredients } = await supabase.from("ingredients").select("id, name, unit");
+      const { data: ingredients } = await supabase
+        .from("ingredients")
+        .select(`id, name, unit, item_cd`)
+        .or('item_cd.not.is.null')
+        .not('id','is',null);
       const { data: batches } = await supabase.from("batches").select("id, name, yield_unit as unit");
-      setIngredientOptions((ingredients || []).filter(i => i && typeof i === 'object').map(i => ({ ...(i as object), type: "ingredient" })));
+      // Only include registered ingredients (must have item code)
+      const registeredIngredients = (ingredients || [])
+        .filter(i => i && typeof i === 'object' && ((i as any).itemCd || (i as any).item_cd))
+        .map(i => ({ ...(i as object), type: "ingredient" }));
+      setIngredientOptions(registeredIngredients);
       setBatchOptions((batches || []).filter(b => b && typeof b === 'object').map(b => ({ ...(b as object), type: "batch" })));
     }
     fetchOptions();
@@ -106,15 +114,24 @@ export default function RecipesPage() {
           unit, 
           cost_per_unit, 
           current_stock,
-          itemCd,
-          itemClsCd,
-          taxTyCd
+          item_cd,
+          item_cls_cd,
+          tax_ty_cd
         `)
-        .not('itemCd', 'is', null)
-        .not('itemClsCd', 'is', null)
+        .not('item_cd', 'is', null)
+        .not('item_cls_cd', 'is', null)
         .gt('current_stock', 0);
 
-      setInventoryIngredients(ingredients || []);
+      console.log('ingredients', ingredients);
+      // Normalize potential snake_case fields to camelCase used by UI
+      const normalized = (ingredients || []).map((row: any) => ({
+        ...row,
+        itemCd: row.itemCd ?? row.item_cd ?? null,
+        itemClsCd: row.itemClsCd ?? row.item_cls_cd ?? null,
+        taxTyCd: row.taxTyCd ?? row.tax_ty_cd ?? null,
+      }));
+
+      setInventoryIngredients(normalized);
     } catch (error) {
       console.error("Error fetching inventory ingredients:", error);
     }
@@ -155,8 +172,9 @@ export default function RecipesPage() {
         taxTyCd: recipe.taxTyCd,
         kra_status: recipe.kra_status,
         kra_error: recipe.kra_error,
-        kra_composition_status: recipe.kra_composition_status,
-        kra_composition_no: recipe.kra_composition_no,
+        // Map DB columns (handles both misspelled and legacy names)
+        kra_composition_status: (recipe as any).kra_compostion_status || (recipe as any).kra_composition_status || null,
+        kra_composition_no: (recipe as any).kra_composition_number || (recipe as any).kra_composition_no || null,
       };
     }));
     setRecipes(allRecipes);
@@ -226,44 +244,17 @@ export default function RecipesPage() {
       const res = await fetch('/api/kra/send-item-composition', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          recipe_id: recipe.id,
-          recipe_name: recipe.name,
-          recipe_price: recipe.price,
-          recipe_category: recipe.category,
-          recipe_itemCd: recipe.itemCd, // Pass the recipe's itemCd
-          components: recipe.components
-        }),
+        body: JSON.stringify({ recipeId: recipe.id }),
       })
       
       const data = await res.json()
       
-      if (data.success) {
-        const registeredCount = data.registrationResults?.filter((r: any) => r.success).length || 0
-        const totalComponents = recipe.components.length
-        const successfulCompositions = data.compositionResults?.filter((r: any) => r.success).length || 0
-        const failedCompositions = data.compositionResults?.filter((r: any) => !r.success).length || 0
-        
-        if (failedCompositions === 0) {
-          toast({ 
-            title: 'Item Composition Sent', 
-            description: `Successfully sent to KRA. Composition #${data.compositionNo}. ${registeredCount} ingredients registered.`,
-            variant: 'default'
-          })
-        } else {
-          toast({ 
-            title: 'Item Composition Partial Success', 
-            description: `Completed with ${successfulCompositions} successful and ${failedCompositions} failed components. Check details for errors.`,
-            variant: 'default'
-          })
-          
-          // Show warnings if any components failed
-          if (data.warnings && data.warnings.length > 0) {
-            console.warn('Composition warnings:', data.warnings)
-          }
-        }
-        
-        // Refresh recipes to show updated status
+      if (res.ok && data.success) {
+        toast({ 
+          title: 'Item Composition Sent', 
+          description: 'Successfully sent to KRA.',
+          variant: 'default'
+        })
         await fetchRecipes()
       } else {
         toast({ 
@@ -287,21 +278,28 @@ export default function RecipesPage() {
     try {
       if (editMode && data.id) {
         // Update existing recipe
+        // Build update payload without clearing KRA codes for complex recipes
+        const updatePayload: any = {
+          name: data.name,
+          description: data.description,
+          restaurant: data.restaurant,
+          price: data.price,
+          category: data.category,
+          recipeType: data.recipeType,
+          selectedInventoryItem: data.selectedInventoryItem,
+        }
+        if (data.recipeType === 'inventory' && data.selectedInventoryItem) {
+          updatePayload.itemCd = data.selectedInventoryItem.itemCd
+          updatePayload.itemClsCd = data.selectedInventoryItem.itemClsCd
+          updatePayload.taxTyCd = data.selectedInventoryItem.taxTyCd
+        }
+
+        // Use provided image URL (already uploaded via ImageUpload API)
+        const image_url: string | undefined = data.currentImageUrl
+
         const { error: recipeError } = await supabase
           .from("recipes")
-          .update({ 
-            name: data.name, 
-            description: data.description, 
-            restaurant: data.restaurant,
-            price: data.price, 
-            category: data.category,
-            recipeType: data.recipeType,
-            // Store KRA codes directly in recipes table for inventory-based recipes
-            itemCd: data.recipeType === "inventory" && data.selectedInventoryItem ? data.selectedInventoryItem.itemCd : null,
-            itemClsCd: data.recipeType === "inventory" && data.selectedInventoryItem ? data.selectedInventoryItem.itemClsCd : null,
-            taxTyCd: data.recipeType === "inventory" && data.selectedInventoryItem ? data.selectedInventoryItem.taxTyCd : null,
-            selectedInventoryItem: data.selectedInventoryItem
-          })
+          .update({ ...updatePayload, image_url })
           .eq("id", data.id);
         
         if (recipeError) {
@@ -345,19 +343,12 @@ export default function RecipesPage() {
             const res = await fetch('/api/kra/send-item-composition', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                recipe_id: data.id,
-                recipe_name: data.name,
-                recipe_price: data.price,
-                recipe_category: data.category,
-                recipe_itemCd: updatedRecipe.itemCd,
-                components: data.components
-              }),
+              body: JSON.stringify({ recipeId: data.id }),
             })
             
             const compositionData = await res.json()
             
-            if (compositionData.success) {
+            if (res.ok && compositionData.success) {
               const successfulCompositions = compositionData.compositionResults?.filter((r: any) => r.success).length || 0
               const failedCompositions = compositionData.compositionResults?.filter((r: any) => !r.success).length || 0
               
@@ -406,23 +397,16 @@ export default function RecipesPage() {
             const registerData = await registerRes.json()
             
             if (registerData.success) {
-              // Now send composition with the new itemCd
+              // Now send composition after registration
               const compositionRes = await fetch('/api/kra/send-item-composition', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  recipe_id: data.id,
-                  recipe_name: data.name,
-                  recipe_price: data.price,
-                  recipe_category: data.category,
-                  recipe_itemCd: registerData.itemCd,
-                  components: data.components
-                }),
+                body: JSON.stringify({ recipeId: data.id }),
               })
               
               const compositionData = await compositionRes.json()
               
-              if (compositionData.success) {
+              if (compositionRes.ok && compositionData.success) {
                 toast({ 
                   title: 'Recipe Updated & Registered with KRA', 
                   description: `Recipe updated and registered with KRA. Composition #${compositionData.compositionNo} sent.`,
@@ -469,21 +453,25 @@ export default function RecipesPage() {
         
       } else {
         // Create new recipe
+        const insertPayload: any = {
+          name: data.name,
+          description: data.description,
+          restaurant: data.restaurant,
+          price: data.price,
+          category: data.category,
+          recipeType: data.recipeType,
+          selectedInventoryItem: data.selectedInventoryItem,
+        }
+        if (data.recipeType === 'inventory' && data.selectedInventoryItem) {
+          insertPayload.itemCd = data.selectedInventoryItem.itemCd
+          insertPayload.itemClsCd = data.selectedInventoryItem.itemClsCd
+          insertPayload.taxTyCd = data.selectedInventoryItem.taxTyCd
+        }
+
+        // Insert first to get id, then upload image and update with image_url if needed
         const { data: newRecipe, error } = await supabase
           .from("recipes")
-          .insert([{ 
-            name: data.name, 
-            description: data.description, 
-            restaurant: data.restaurant, 
-            price: data.price, 
-            category: data.category,
-            recipeType: data.recipeType,
-            // Store KRA codes directly in recipes table for inventory-based recipes
-            itemCd: data.recipeType === "inventory" && data.selectedInventoryItem ? data.selectedInventoryItem.itemCd : null,
-            itemClsCd: data.recipeType === "inventory" && data.selectedInventoryItem ? data.selectedInventoryItem.itemClsCd : null,
-            taxTyCd: data.recipeType === "inventory" && data.selectedInventoryItem ? data.selectedInventoryItem.taxTyCd : null,
-            selectedInventoryItem: data.selectedInventoryItem
-          }])
+          .insert([insertPayload])
           .select()
           .single();
         
@@ -496,6 +484,11 @@ export default function RecipesPage() {
           throw new Error(error?.message || "Failed to add recipe.");
         }
         
+        // If an image URL was provided (already uploaded), persist it
+        if (data.currentImageUrl && newRecipe?.id) {
+          await supabase.from('recipes').update({ image_url: data.currentImageUrl }).eq('id', newRecipe.id)
+        }
+
         // Handle components based on recipe type
         if (data.recipeType === "complex") {
           // Insert components for complex recipes

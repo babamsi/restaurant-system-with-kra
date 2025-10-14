@@ -117,49 +117,117 @@ export async function POST(req: NextRequest) {
     const salesDt = formatDate(new Date())
     const totItemCnt = items.length
 
+
+
     // Calculate totals
-    let taxblAmtB = 0
-    let taxAmtB = 0
-    let totalOrderValue = 0
+    // let taxblAmtB = 0
+    // let taxAmtB = 0
+    // let totalOrderValue = 0
 
-    const itemList = items.map((item: any, index: number) => {
-      const { pkgUnitCd, qtyUnitCd } = parseItemCd(item.itemCd)
-      
-      // Calculate tax for this item (16% for tax type B)
-      const itemTaxAmount = item.taxTyCd === 'B' ? Math.round(item.total_price * 0.16) : 0
-      const itemTaxableAmount = item.total_price - itemTaxAmount
 
-      taxblAmtB += itemTaxableAmount
-      taxAmtB += itemTaxAmount
-      totalOrderValue += item.total_price
+    const calculateTaxByType = (items: any[]) => {
+      // console.log("from calculate Tax types: ", items)
+      let taxblAmtA = 0, taxblAmtB = 0, taxblAmtC = 0, taxblAmtD = 0, taxblAmtE = 0
+      let taxAmtA = 0, taxAmtB = 0, taxAmtC = 0, taxAmtD = 0, taxAmtE = 0
+
+      items.forEach(item => {
+        const originalAmount = item.total_price * item.quantity
+        const taxType = item.taxTyCd || 'B'
+        
+        // Calculate discount for this item (proportional to item amount)
+        const totalOrderAmount = totalAmount
+        // console.log("totoal order amount: ", totalOrderAmount)
+        const itemDiscountAmount = totalOrderAmount > 0 ? (originalAmount / totalOrderAmount) * discount : 0
+        // console.log("check discount amount: ", discount, orderData)
+        const discountedAmount = originalAmount - itemDiscountAmount
+        // console.log("Discounted amount: ", discountedAmount)
+        
+        switch (taxType) {
+          case 'A': // Exempt
+            taxblAmtA += discountedAmount
+            taxAmtA += 0 // Exempt from VAT
+            break
+          case 'B': // Standard VAT (16%)
+            taxblAmtB += discountedAmount
+            taxAmtB += discountedAmount * 0.16 // 16% VAT on discounted amount
+            break
+          case 'C': // Zero-rated
+            taxblAmtC += discountedAmount
+            taxAmtC += 0 // Zero-rated for VAT
+            break
+          case 'D': // Non-VAT
+            taxblAmtD += discountedAmount
+            taxAmtD += 0 // Not subject to VAT
+            break
+          case 'E': // Reduced rate (8%)
+            taxblAmtE += discountedAmount
+            taxAmtE += discountedAmount * 0.08 // 8% VAT on discounted amount
+            break
+          default: // Default to standard VAT
+            taxblAmtB += discountedAmount
+            taxAmtB += discountedAmount * 0.16
+        }
+      })
+
+      // console.log("at the down of calculate: ", {
+      //   taxblAmtA, taxblAmtB, taxblAmtC, taxblAmtD, taxblAmtE,
+      //   taxAmtA, taxAmtB, taxAmtC, taxAmtD, taxAmtE
+      // })
 
       return {
-        itemSeq: index + 1,
-        itemCd: item.itemCd,
-        itemClsCd: item.itemClsCd,
-        itemNm: item.name,
-        bcd: null,
-        pkgUnitCd,
-        pkg: 1,
-        qtyUnitCd,
-        qty: item.quantity,
-        itemExprDt: null,
-        prc: item.unit_price,
-        splyAmt: item.total_price,
-        totDcAmt: 0,
-        taxblAmt: itemTaxableAmount,
-        taxTyCd: item.taxTyCd,
-        taxAmt: itemTaxAmount,
-        totAmt: item.total_price
+        taxblAmtA, taxblAmtB, taxblAmtC, taxblAmtD, taxblAmtE,
+        taxAmtA, taxAmtB, taxAmtC, taxAmtD, taxAmtE
       }
-    })
+    }
+
+    const taxBreakdown = calculateTaxByType(items)
+
+    // Calculate total taxable amount and total tax
+    const totalTaxblAmt = taxBreakdown.taxblAmtA + taxBreakdown.taxblAmtB + taxBreakdown.taxblAmtC + taxBreakdown.taxblAmtD + taxBreakdown.taxblAmtE
+    const totalTaxAmt = taxBreakdown.taxAmtA + taxBreakdown.taxAmtB + taxBreakdown.taxAmtC + taxBreakdown.taxAmtD + taxBreakdown.taxAmtE
+
+
+
+
+    // const itemList = items.map((item: any, index: number) => {
+    //   const { pkgUnitCd, qtyUnitCd } = parseItemCd(item.itemCd)
+      
+    //   // Calculate tax for this item (16% for tax type B)
+    //   const itemTaxAmount = item.taxTyCd === 'B' ? Math.round(item.total_price * 0.16) : 0
+    //   const itemTaxableAmount = item.total_price - itemTaxAmount
+
+    //   taxblAmtB += itemTaxableAmount
+    //   taxAmtB += itemTaxAmount
+    //   totalOrderValue += item.total_price
+
+    //   return {
+    //     itemSeq: index + 1,
+    //     itemCd: item.itemCd,
+    //     itemClsCd: item.itemClsCd,
+    //     itemNm: item.name,
+    //     bcd: null,
+    //     pkgUnitCd,
+    //     pkg: 1,
+    //     qtyUnitCd,
+    //     qty: item.quantity,
+    //     itemExprDt: null,
+    //     prc: item.unit_price,
+    //     splyAmt: item.total_price,
+    //     dcAmt: 0,
+    //     dcRt: 0,
+    //     taxblAmt: itemTaxableAmount,
+    //     taxTyCd: item.taxTyCd,
+    //     taxAmt: itemTaxAmount,
+    //     totAmt: item.total_price
+    //   }
+    // })
 
     const totAmt = totalAmount
 
     // Get customer info from the first item or use defaults
     const firstItem = items[0]
-    const custTin = firstItem?.customer_tin || 'A123456789Z'
-    const custNm = firstItem?.customer_name || 'WALK IN CUSTOMER'
+    const custTin = firstItem?.customer_tin || null
+    const custNm = firstItem?.customer_name || null
 
     // Determine payment type
     let pmtTyCd = '01' // Default to cash
@@ -184,49 +252,49 @@ export async function POST(req: NextRequest) {
     const recipeNamesShort = items.map((item: any) => item.name.substring(0, 10)).join(',')
 
     // Store order in database
-    const { data: storedOrderData, error: orderError } = await supabase
-      .from('sales_invoices')
-      .insert({
-        trdInvcNo: saleId,
-        invcNo,
-        orgInvcNo: invcNo || 0,
-        custTin,
-        custNm,
-        salesTyCd: 'N',
-        rcptTyCd: 'S',
-        pmtTyCd,
-        salesSttsCd: '02',
-        cfmDt,
-        salesDt,
-        totItemCnt,
-        taxblAmtB,
-        taxRtB: 16,
-        taxAmtB,
-        totTaxblAmt: taxblAmtB,
-        totTaxAmt: taxAmtB,
-        prchrAcptcYn: 'N',
-        totAmt,
-        totDcAmt: discount?.amount || 0,
-        totDcRt: discount?.amount && totalOrderValue > 0 ? Math.round((discount.amount / totalOrderValue) * 100) : 0,
-        kra_status: 'pending',
-        kra_response: null,
-        items: items.map((item: any) => ({
-          name: item.name,
-          quantity: item.quantity,
-          unitPrice: item.unit_price,
-          totalPrice: item.total_price,
-          discountAmount: item.dcAmt,
-          discountRate: item.dcRt,
-          finalTotal: item.totAmt
-        }))
-      })
-      .select()
-      .single()
+    // const { data: storedOrderData, error: orderError } = await supabase
+    //   .from('sales_invoices')
+    //   .insert({
+    //     trdInvcNo: saleId,
+    //     invcNo,
+    //     orgInvcNo: invcNo || 0,
+    //     custTin,
+    //     custNm,
+    //     salesTyCd: 'N',
+    //     rcptTyCd: 'S',
+    //     pmtTyCd,
+    //     salesSttsCd: '02',
+    //     cfmDt,
+    //     salesDt,
+    //     totItemCnt,
+    //     taxblAmtB,
+    //     taxRtB: 16,
+    //     taxAmtB,
+    //     totTaxblAmt: taxblAmtB,
+    //     totTaxAmt: taxAmtB,
+    //     prchrAcptcYn: 'N',
+    //     totAmt,
+    //     totDcAmt: discount?.amount || 0,
+    //     totDcRt: discount?.amount && totalOrderValue > 0 ? Math.round((discount.amount / totalOrderValue) * 100) : 0,
+    //     kra_status: 'pending',
+    //     kra_response: null,
+    //     items: items.map((item: any) => ({
+    //       name: item.name,
+    //       quantity: item.quantity,
+    //       unitPrice: item.unit_price,
+    //       totalPrice: item.total_price,
+    //       discountAmount: item.dcAmt,
+    //       discountRate: item.dcRt,
+    //       finalTotal: item.totAmt
+    //     }))
+    //   })
+    //   .select()
+    //   .single()
 
-    if (orderError) {
-      console.error('Error storing order:', orderError)
-      return NextResponse.json({ error: 'Failed to store order' }, { status: 500 })
-    }
+    // if (orderError) {
+    //   console.error('Error storing order:', orderError)
+    //   return NextResponse.json({ error: 'Failed to store order' }, { status: 500 })
+    // }
 
     const payload = {
       tin: headers.tin,
@@ -237,46 +305,99 @@ export async function POST(req: NextRequest) {
       orgInvcNo: invcNo || 0,
       custTin,
       custNm,
-      salesTyCd: 'N',
-      rcptTyCd: 'S',
+      salesTyCd: 'N', 
+      rcptTyCd: 'S', // Standard Receipt
       pmtTyCd,
-      salesSttsCd: '02',
+      salesSttsCd: '02', // Approved
       cfmDt,
       salesDt,
       totItemCnt,
-      taxblAmtB,
-      taxRtB: 16,
-      taxAmtB,
-      totTaxblAmt: taxblAmtB,
-      totTaxAmt: taxAmtB,
+      taxblAmtB: taxBreakdown.taxblAmtB,
+      taxRtA: 0, // Exempt rate
+      taxRtB: 16, // Standard VAT rate
+      taxRtC: 0, // Zero-rated rate
+      taxRtD: 0, // Non-VAT rate
+      taxRtE: 8, // Reduced rate
+      taxAmtB: Number(taxBreakdown.taxAmtB.toFixed(2)),
+      taxAmtC: Number(taxBreakdown.taxAmtC.toFixed(2)),
+      taxAmtD: Number(taxBreakdown.taxAmtD.toFixed(2)),
+      taxAmtA: Number(taxBreakdown.taxAmtA.toFixed(2)),
+      taxAmtE: Number(taxBreakdown.taxAmtE.toFixed(2)),
+      totTaxblAmt:  Number(totalTaxblAmt.toFixed(2)),
+      totTaxAmt: Number(totalTaxAmt.toFixed(2)),
       prchrAcptcYn: 'N',
       totAmt,
-      // Add discount information to payload
-      totDcAmt: discount?.amount || 0,
-      totDcRt: discount?.amount && totalOrderValue > 0 ? Math.round((discount.amount / totalOrderValue) * 100) : 0,
       receipt: {
         custTin,
         rcptPbctDt: cfmDt,
         prchrAcptcYn: 'N',
       },
-      itemList,
       // Additional KRA fields as requested
-      taxblAmtA: 0,
-      taxRtE: 16,
-      modrId: recipeNamesShort,
+      taxblAmtA: taxBreakdown.taxblAmtA,
+      modrId: "11999",
       regrNm: recipeNames,
-      regrId: recipeNamesShort,
-      taxblAmtD: 0,
-      taxRtA: 0,
-      taxAmtC: 0,
-      taxAmtD: 0,
-      taxAmtA: 0,
-      taxblAmtE:0,
-      taxblAmtC:0,
+      regrId: "99911",
+      taxblAmtD: taxBreakdown.taxblAmtD,
+      taxblAmtE:taxBreakdown.taxblAmtE,
+      taxblAmtC:taxBreakdown.taxblAmtC,
       modrNm: recipeNames,
-      taxAmtE: 0,
-      taxRtC: 0,
-      taxRtD: 0,
+      itemList: items.map((item: any, index: number) => {
+        const { pkgUnitCd, qtyUnitCd } = parseItemCd(item.itemCd)
+        const originalAmount = item.total_price * item.quantity
+        const taxType = item.taxTyCd || 'B'
+        
+        // Calculate discount for this item (proportional to item amount)
+        const totalOrderAmount = totalAmount
+        const itemDiscountAmount = totalOrderAmount > 0 ? (originalAmount / totalOrderAmount) * discount : 0
+        const discountedAmount = originalAmount - itemDiscountAmount
+        
+        let taxAmount = 0
+        
+        // Calculate tax based on tax type on discounted amount
+        switch (taxType) {
+          case 'A': // Exempt
+            taxAmount = 0
+            break
+          case 'B': // Standard VAT (16%)
+            taxAmount = discountedAmount * 0.16
+            break
+          case 'C': // Zero-rated
+            taxAmount = 0
+            break
+          case 'D': // Non-VAT
+            taxAmount = 0
+            break
+          case 'E': // Reduced rate (8%)
+            taxAmount = discountedAmount * 0.08
+            break
+          default: // Default to standard VAT
+            taxAmount = discountedAmount * 0.16
+        }
+
+        return {
+          itemSeq: index + 1,
+          itemCd: item.itemCd,
+          itemClsCd: item.itemClsCd,
+          itemNm: item.name,
+          bcd: null,
+          pkgUnitCd: pkgUnitCd, // Standard packaging unit
+          pkg: 1,
+          qtyUnitCd: qtyUnitCd || 'U',
+          qty: item.quantity,
+          prc: item.unit_price,
+          splyAmt: item.total_price, // Use discounted amount
+          dcRt: discount > 0 ? Number((itemDiscountAmount / originalAmount) * 100).toFixed(2) : 0, // Discount rate
+          dcAmt: Number(itemDiscountAmount.toFixed(2)), // Discount amount for this item - fixed to 2 decimals
+          isrccCd: null,
+          isrccNm: null,
+          isrcRt: null,
+          isrcAmt: null,
+          taxTyCd: taxType,
+          taxblAmt: discountedAmount, // Taxable amount after discount
+          taxAmt: Number(taxAmount.toFixed(2)), // Tax amount on discounted amount - fixed to 2 decimals
+          totAmt: discountedAmount // Total amount after discount
+        }
+      })
     }
 
     console.log("Payload:", payload)
@@ -289,27 +410,27 @@ export async function POST(req: NextRequest) {
     })
     
     const kraData = await kraRes.json()
-    console.log("receipt KRA: ", kraData)
+    // console.log("receipt KRA: ", kraData)
     if (kraData.resultCd !== '000') {
       // Log error for manual intervention
-      return NextResponse.json({ error: kraData.resultMsg || 'KRA sale failed', kraData, invcNo }, { status: 400 })
+      return NextResponse.json({ error: kraData.resultMsg || 'KRA sale failed', kraData, invcNo, saleId }, { status: 400 })
     }
 
     // Update the order with KRA response
-    const { error: updateError } = await supabase
-      .from('sales_invoices')
-      .update({
-        kra_status: 'success',
-        kra_response: kraData,
-        kra_curRcptNo: kraData.data?.curRcptNo || null
-      })
-      .eq('trdInvcNo', saleId)
+    // const { error: updateError } = await supabase
+    //   .from('sales_invoices')
+    //   .update({
+    //     kra_status: 'success',
+    //     kra_response: kraData,
+    //     kra_curRcptNo: kraData.data?.curRcptNo || null
+    //   })
+    //   .eq('trdInvcNo', saleId)
 
-    if (updateError) {
-      console.error('Error updating order with KRA response:', updateError)
-    }
+    // if (updateError) {
+    //   console.error('Error updating order with KRA response:', updateError)
+    // }
 
-    return NextResponse.json({ success: true, kraData, invcNo })
+    return NextResponse.json({ success: true, kraData, invcNo, saleId })
   } catch (e: any) {
     return NextResponse.json({ error: e.message || 'Internal error' }, { status: 500 })
   }

@@ -136,6 +136,7 @@ export async function POST(req: NextRequest) {
       finalPayload = {
         tin: headers.tin,
         bhfId: headers.bhfId,
+        custBhfId: headers.bhfId,
         ...stockInData,
         totTaxblAmt,
         totTaxAmt,
@@ -184,6 +185,7 @@ export async function POST(req: NextRequest) {
       finalPayload = {
         tin: headers.tin,
         bhfId: headers.bhfId,
+        custBhfId: headers.bhfId,
         ...body,
         sarTyCd: dynamicSarTyCd, // Use dynamic sarTyCd
         totTaxblAmt,
@@ -258,12 +260,12 @@ export async function POST(req: NextRequest) {
       totTaxblAmt,
       totTaxAmt,
       totAmt,
-        remark: `Stock-in for ${items.length} items`,
-        regrId: 'Inventory Manager',
-        regrNm: 'Inventory Manager',
-        modrNm: 'Inventory Manager',
-        modrId: 'Inventory Manager',
-        itemList
+      remark: `Stock-in for ${items.length} items`,
+      regrId: 'Inventory Manager',
+      regrNm: 'Inventory Manager',
+      modrNm: 'Inventory Manager',
+      modrId: 'Inventory Manager',
+      itemList
       }
     } else {
       return NextResponse.json({ error: 'Invalid payload format' }, { status: 400 })

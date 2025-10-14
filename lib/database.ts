@@ -1208,6 +1208,7 @@ export const tableOrdersService = {
     table_number,
     table_id,
     customer_name,
+    customer_tin,
     order_type = 'dine-in',
     subtotal = 0,
     tax_rate = 0,
@@ -1223,6 +1224,7 @@ export const tableOrdersService = {
     table_number?: string;
     table_id?: number;
     customer_name?: string;
+    customer_tin?: string | null;
     order_type?: 'dine-in' | 'takeaway';
     subtotal?: number;
     tax_rate?: number;
@@ -1259,6 +1261,7 @@ export const tableOrdersService = {
           table_number: table_number || 'Takeaway',
           table_id: table_id || 0, // Use a convention like 0 for takeaway
           customer_name,
+          customer_tin,
           order_type,
           subtotal,
           tax_rate,

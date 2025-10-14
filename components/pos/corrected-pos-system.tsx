@@ -36,6 +36,7 @@ import { tableOrdersService } from "@/lib/database"
 import Image from "next/image"
 import { QRCode } from "@/components/ui/qr-code"
 import { Label } from "@/components/ui/label"
+import { generateAndDownloadReceipt, type ReceiptRequest } from '@/lib/receipt-utils'
 import { io } from "socket.io-client"
 
 interface TableState {
@@ -666,15 +667,22 @@ export function CorrectedPOSSystem() {
         throw new Error('Session is no longer active. Please refresh and try again.')
       }
       
-      const cartItems = cart.map(item => ({
-        menu_item_id: item.menu_item_id || (typeof item.id === 'string' ? item.id.split('-')[0] : item.id),
-        menu_item_name: item.name,
-        quantity: item.quantity,
-        unit_price: item.unit_price,
-        total_price: item.total_price,
-        portion_size: item.portionSize,
-        customization_notes: item.customization
-      }))
+      const cartItems = cart.map(item => {
+        // Find the recipe to get KRA codes
+        const recipe = recipes.find(r => r.id === item.menu_item_id || r.id === item.id)
+        return {
+          menu_item_id: item.menu_item_id || (typeof item.id === 'string' ? item.id.split('-')[0] : item.id),
+          menu_item_name: item.name,
+          quantity: item.quantity,
+          unit_price: item.unit_price,
+          total_price: item.total_price,
+          portion_size: item.portionSize,
+          customization_notes: item.customization,
+          item_cd: (recipe as any)?.itemCd || 'KE2NTU0000001', // Default KRA item code
+          item_cls_cd: (recipe as any)?.itemClsCd || '5059690800', // Default classification
+          tax_ty_cd: (recipe as any)?.taxTyCd || 'B' // Default tax type
+        }
+      })
       
       const subtotal = calcCartTotal()
       const taxRate = 0 // Tax is included in price
@@ -706,6 +714,7 @@ export function CorrectedPOSSystem() {
           table_number: selectedTable.number,
           table_id: selectedTable.id,
           customer_name: selectedCustomer?.name || "",
+          customer_tin: selectedCustomer?.kra_pin || null,
           order_type: isTakeAway ? "takeaway" : "dine-in",
           subtotal,
           tax_rate: taxRate,
@@ -716,7 +725,7 @@ export function CorrectedPOSSystem() {
           // discount_reason: appliedDiscount?.reason || null,
           items: cartItems,
           session_id: sessionId
-        })
+        } as any)
         
         if (error) {
           throw new Error(error)
@@ -1096,6 +1105,329 @@ export function CorrectedPOSSystem() {
         loadTableOrders(),
         loadOrderHistory()
       ])
+      
+      // Submit to KRA after successful payment
+      try {
+        toast({
+          title: "Submitting to KRA...",
+          description: "Processing tax submission",
+        })
+        
+        // Build orderData expected by the save-sale route
+        const { data: orderForKRA } = await supabase
+          .from('table_orders')
+          .select('*, items:table_order_items(*)')
+          .eq('id', showPayment.orderId)
+          .single()
+
+        if (!orderForKRA) {
+          throw new Error('Failed to load order for KRA submission')
+        }
+
+        // Map table_order_items to KRA items shape the API expects
+        const kraItems = (orderForKRA.items || []).map((it: any) => {
+          const recipe = (recipes as any[]).find((r: any) => r.id === it.menu_item_id)
+          return {
+            itemCd: (recipe as any)?.itemCd || 'KE2NTU0000001',
+            itemClsCd: (recipe as any)?.itemClsCd || '5059690800',
+            taxTyCd: (recipe as any)?.taxTyCd || 'B',
+            name: it.menu_item_name,
+            unit_price: it.unit_price || 0,
+            quantity: it.quantity || 1,
+            total_price: it.total_price || 0,
+            // help API infer payment method (map mpesa -> mobile for API)
+            payment_method: selectedPaymentMethod === 'card' ? 'card' : (selectedPaymentMethod === 'mpesa' ? 'mobile' : 'cash'),
+            customer_tin: orderForKRA.customer_tin,
+            customer_name: orderForKRA.customer_name,
+          }
+        })
+
+        const orderData = {
+          items: kraItems,
+          totalAmount: orderForKRA.total_amount || (kraItems.reduce((s: number, i: any) => s + (i.total_price || 0), 0)),
+          discount: orderForKRA.discount_amount ? { amount: orderForKRA.discount_amount } : 0,
+        }
+
+        const kraRes = await fetch('/api/kra/save-sale', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orderData }),
+        })
+        
+        const kraData = await kraRes.json()
+        
+        if (kraRes.ok && kraData.success) {
+          toast({
+            title: "KRA Submission Successful",
+            description: `Invoice #${kraData.invoiceNo} submitted to KRA`,
+            duration: 3000,
+          })
+          const { curRcptNo, totRcptNo, intrlData, rcptSign, sdcDateTime } = kraData.kraData.data
+          // Store the sale invoice in the database
+          const { error: insertError } = await supabase
+            .from('sales_invoices')
+            .insert({
+              trdInvcNo: kraData.saleId,
+              orgInvcNo: curRcptNo,
+              order_id: showPayment.orderId,
+              payment_method: selectedPaymentMethod,
+              total_items: orderForKRA.items.length,
+              gross_amount: orderForKRA.total_amount,
+              net_amount: orderForKRA.total_amount - orderForKRA.tax_amount,
+              tax_amount: orderForKRA.tax_amount,
+              kra_curRcptNo: kraData.kraData.data?.curRcptNo,
+              kra_totRcptNo: kraData.kraData.data?.totRcptNo,
+              kra_intrlData: kraData.kraData.data?.intrlData,
+              kra_rcptSign: kraData.kraData.data?.rcptSign,
+              kra_sdcDateTime: kraData.kraData.data?.sdcDateTime,
+              kra_status: "success",
+              kra_response: kraData.kraData,
+              kra_error: null,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+
+            })
+          if (insertError) {
+            console.error('Error storing sale invoice:', insertError)
+          }
+          // After KRA sale approval, send stock-out for direct inventory sales
+          try {
+            const orderItems = orderForKRA.items || []
+            // Build candidate ingredient IDs and names
+            const candidateIds = Array.from(new Set(orderItems
+              .map((it: any) => String(it.menu_item_id || '').trim())
+              .filter((id: string) => id.length > 0)))
+            const candidateNames = Array.from(new Set(orderItems
+              .map((it: any) => String(it.menu_item_name || '').trim())
+              .filter((nm: string) => nm.length > 0)))
+
+            const ingredientsById: Record<string, any> = {}
+            const ingredientsByName: Record<string, any> = {}
+
+            if (candidateIds.length > 0) {
+              const { data: byId } = await supabase
+                .from('ingredients')
+                .select('id, name, item_cd, item_cls_cd, tax_ty_cd, unit')
+                .in('id', candidateIds as any)
+              if (byId) {
+                for (const ing of byId) ingredientsById[ing.id] = ing
+              }
+            }
+            if (candidateNames.length > 0) {
+              const { data: byName } = await supabase
+                .from('ingredients')
+                .select('id, name, item_cd, item_cls_cd, tax_ty_cd, unit')
+                .in('name', candidateNames as any)
+              if (byName) {
+                for (const ing of byName) ingredientsByName[String(ing.name).trim()] = ing
+              }
+            }
+
+            // Keep only items that matched an ingredient by id or name
+            const directInventoryItems = orderItems.filter((it: any) => {
+              const idKey = String(it.menu_item_id || '').trim()
+              const nameKey = String(it.menu_item_name || '').trim()
+              return !!ingredientsById[idKey] || !!ingredientsByName[nameKey]
+            })
+
+            if (directInventoryItems.length === 0) {
+              console.log('Stock-out: No direct inventory items found; skipping')
+            } else {
+              const stockOutItemList = directInventoryItems.map((it: any, idx: number) => {
+                const idKey = String(it.menu_item_id || '').trim()
+                const nameKey = String(it.menu_item_name || '').trim()
+                const ing = ingredientsById[idKey] || ingredientsByName[nameKey]
+                const itemCd = ing?.item_cd
+                const itemClsCd = ing?.item_cls_cd
+                const taxTyCd = ing?.tax_ty_cd
+                const qtyUnitCd = ing?.unit || 'U'
+                const itemNm = ing?.name || nameKey
+                const qty = it.quantity || 1
+                const prc = it.unit_price || 0
+                const splyAmt = prc * qty
+                const taxType = taxTyCd || 'B'
+                let taxAmt = 0
+                switch (taxType) {
+                  case 'B':
+                    taxAmt = splyAmt * 0.16
+                    break
+                  case 'E':
+                    taxAmt = splyAmt * 0.08
+                    break
+                  case 'A':
+                  case 'C':
+                  case 'D':
+                  default:
+                    taxAmt = 0
+                }
+                const taxblAmt = splyAmt
+                const totAmt = splyAmt
+                return {
+                  itemSeq: idx + 1,
+                  itemCd,
+                  itemClsCd,
+                  itemNm,
+                  bcd: null,
+                  pkgUnitCd: 'NT',
+                  pkg: 1,
+                  qtyUnitCd,
+                  qty,
+                  itemExprDt: null,
+                  prc,
+                  splyAmt,
+                  totDcAmt: 0,
+                  taxblAmt,
+                  taxTyCd,
+                  taxAmt: Number(taxAmt.toFixed(2)),
+                  totAmt: totAmt
+                }
+              })
+
+              const ocrnDt = new Date().toISOString().slice(0,10).replace(/-/g, '')
+              const stockOutPayload = {
+                sarNo: kraData.saleId,
+                orgSarNo: kraData.saleId,
+                regTyCd: 'A',
+                regrId: 'Inventory Manager',
+                regrNm: 'Inventory Manager',
+                modrNm: 'Inventory Manager',
+                modrId: 'Inventory Manager',
+                totItemCnt: stockOutItemList.length,
+                ocrnDt,
+                itemList: stockOutItemList,
+                sarTyCd: '11',
+                stockChange: -1,
+                context: 'sale'
+              }
+              console.log('Stock-out: prepared payload', stockOutPayload)
+              const stockOutRes = await fetch('/api/kra/stock-in-enhanced', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(stockOutPayload)
+              })
+              const stockOutJson = await stockOutRes.json()
+              if (!stockOutRes.ok) {
+                console.warn('Stock-out submission failed:', stockOutJson)
+              } else {
+                console.log('Stock-out submission successful:', stockOutJson)
+              }
+            }
+          } catch (stockOutErr) {
+            console.warn('Error during stock-out submission:', stockOutErr)
+          }
+          try {
+            const receiptItems = orderData.items.map((item: any) => {
+              // Determine tax type based on item category or default to 16% VAT
+              let taxType = item.taxTyCd || 'B' // Default to 16% VAT
+              
+              // You can customize this logic based on your item categories
+              // if (item.category?.toLowerCase().includes('exempt') || item.category?.toLowerCase().includes('basic')) {
+              //   taxType = 'A' // Exempt
+              // } else if (item.category?.toLowerCase().includes('zero') || item.category?.toLowerCase().includes('export')) {
+              //   taxType = 'C' // Zero rated
+              // } else if (item.category?.toLowerCase().includes('non-vat') || item.category?.toLowerCase().includes('service')) {
+              //   taxType = 'D' // Non-VAT
+              // } else if (item.category?.toLowerCase().includes('8%')) {
+              //   taxType = 'E' // 8% VAT
+              // }
+              
+              const itemTotal = item.unit_price * item.quantity
+              const taxAmount = taxType === 'B' ? itemTotal * 0.16 : 
+                               taxType === 'E' ? itemTotal * 0.08 : 0
+              
+              return {
+                name: item.name,
+                unit_price: item.unit_price,
+                quantity: item.quantity,
+                total: itemTotal,
+                tax_rate: taxType === 'B' ? 16 : taxType === 'E' ? 8 : 0,
+                tax_amount: taxAmount,
+                tax_type: taxType
+              }
+            })
+  
+            const receiptData: ReceiptRequest = {
+              kraData: {
+                curRcptNo,
+                totRcptNo,
+                intrlData,
+                rcptSign,
+                sdcDateTime,
+                invcNo: kraData.invcNo,
+                trdInvcNo: order.id
+              },
+              items: receiptItems,
+              customer: {
+                name: selectedCustomer?.name || null,
+                pin: selectedCustomer?.kra_pin || null
+              },
+              payment_method: paymentMethod,
+              total_amount: orderForKRA.total_amount,
+              tax_amount: orderForKRA.tax_amount,
+              net_amount: orderForKRA.total_amount - orderForKRA.tax_amount,
+              order_id: order.id,
+              // Add discount information if applicable
+              discount_amount: 0, // You can calculate this based on your discount logic
+              discount_percentage: 0,
+              discount_narration: ''
+            }
+  
+            // Generate and download KRA receipt as PDF
+            await generateAndDownloadReceipt(receiptData)
+            
+            toast({ 
+              title: 'KRA Receipt Generated', 
+              description: 'KRA receipt has been generated and downloaded as PDF successfully.',
+              variant: 'default'
+            })
+          } catch (pdfErr) {
+            console.error('Error generating/downloading PDF receipt:', pdfErr)
+          }
+
+          // Print receipt after successful KRA submission
+          try {
+            await handlePrintReceipt(orderForKRA, kraData)
+          } catch (printErr) {
+            console.error('Error printing receipt:', printErr)
+          }
+        } else {
+          console.log('KRA submission failed--->:', kraData)
+          toast({
+            title: "KRA Submission Failed",
+            description: kraData.error || "Failed to submit to KRA",
+            variant: "destructive",
+          })
+          // Store the sale invoice in the database
+          const { error: insertError } = await supabase
+            .from('sales_invoices')
+            .insert({
+              trdInvcNo: kraData.invcNo,
+              orgInvcNo: kraData.invcNo,
+              payment_method: selectedPaymentMethod,
+              order_id: showPayment.orderId,
+              total_items: orderForKRA.items.length,
+              gross_amount: orderForKRA.total_amount,
+              net_amount: orderForKRA.total_amount - orderForKRA.tax_amount,
+              tax_amount: orderForKRA.tax_amount,
+              kra_status: 'error',
+              kra_error: kraData.error,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+
+            })
+          if (insertError) {
+            console.error('Error storing sale invoice:', insertError)
+          }
+        }
+      } catch (kraError: any) {
+        console.log('KRA submission error:', kraError)
+        toast({
+          title: "KRA Submission Error",
+          description: kraError.message || "Failed to submit to KRA",
+          variant: "destructive",
+        })
+      }
+      
       // Fetch the latest order data for the receipt
       const { data: latestOrder } = await supabase
         .from('table_orders')
@@ -1153,11 +1485,9 @@ export function CorrectedPOSSystem() {
   }
 
   // Print receipt
-  const handlePrintReceipt = async (order: any) => {
-    // ... existing browser print logic ...
-    // --- Thermal Printer Integration ---
+  const handlePrintReceipt = async (order: any, kraData?: any) => {
     try {
-      const res = await fetch('http://localhost:4000/print-receipt', {
+      const res = await fetch('/api/print-receipt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1173,6 +1503,7 @@ export function CorrectedPOSSystem() {
           date: new Date(order.created_at).toLocaleDateString(),
           time: new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           receiptId: order.id,
+          kraData: kraData, // Pass KRA data for receipt formatting
         }),
       });
       const result = await res.json();
@@ -1937,6 +2268,7 @@ export function CorrectedPOSSystem() {
   const [customerSearch, setCustomerSearch] = useState("")
   const [customerResults, setCustomerResults] = useState<any[]>([])
   const [newCustomerName, setNewCustomerName] = useState("")
+  const [newCustomerPin, setNewCustomerPin] = useState("")
   const [customerLoading, setCustomerLoading] = useState(false)
 
   // Fetch customers for search
@@ -1945,7 +2277,7 @@ export function CorrectedPOSSystem() {
     const { data, error } = await supabase
       .from('customers')
       .select('*')
-      .ilike('name', `%${query}%`)
+      .or(`name.ilike.%${query}%,kra_pin.ilike.%${query}%`)
       .order('created_at', { ascending: false })
       .limit(10)
     setCustomerResults(data || [])
@@ -1954,25 +2286,26 @@ export function CorrectedPOSSystem() {
 
   // Add new customer
   const handleAddCustomer = async () => {
-    if (!newCustomerName.trim()) {
-      toast({ title: 'Missing Info', description: 'Name is required', variant: 'destructive' })
+    if (!newCustomerName.trim() || !newCustomerPin.trim()) {
+      toast({ title: 'Missing Info', description: 'Name and PIN are required', variant: 'destructive' })
       return
     }
     setCustomerLoading(true)
     const { data, error } = await supabase
       .from('customers')
-      .insert({ name: newCustomerName.trim() })
+      .insert({ name: newCustomerName.trim(), kra_pin: newCustomerPin.trim().toUpperCase() })
       .select()
       .single()
     setCustomerLoading(false)
     if (error) {
-    console.log(error)
+      console.log(error)
       toast({ title: 'Error', description: error.message, variant: 'destructive' })
       return
     }
     setSelectedCustomer(data)
     setShowCustomerDialog(false)
     setNewCustomerName("")
+    setNewCustomerPin("")
     toast({ title: 'Customer Added', description: `Added ${data.name}` })
   }
 
@@ -3522,7 +3855,7 @@ export function CorrectedPOSSystem() {
           </DialogHeader>
           <div className="mb-4">
             <Input
-              placeholder="Search by name"
+              placeholder="Search by name or PIN"
               value={customerSearch}
               onChange={e => {
                 setCustomerSearch(e.target.value)
@@ -3533,7 +3866,12 @@ export function CorrectedPOSSystem() {
             {customerLoading && <div className="text-xs text-muted-foreground">Searching...</div>}
             {customerResults.map(cust => (
               <div key={cust.id} className="flex justify-between items-center py-1">
-                <span>{cust.name}</span>
+                <div>
+                  <div className="font-medium leading-tight">{cust.name}</div>
+                  {cust.kra_pin ? (
+                    <div className="text-xs text-muted-foreground">{cust.kra_pin}</div>
+                  ) : null}
+                </div>
                 <Button size="sm" onClick={() => { setSelectedCustomer(cust); setShowCustomerDialog(false) }}>Select</Button>
               </div>
             ))}
@@ -3541,6 +3879,7 @@ export function CorrectedPOSSystem() {
           <div className="border-t pt-4 mt-4">
             <h4 className="font-semibold mb-2">Register New Customer</h4>
             <Input placeholder="Name" value={newCustomerName} onChange={e => setNewCustomerName(e.target.value)} className="mb-2" />
+            <Input placeholder="KRA PIN" value={newCustomerPin} onChange={e => setNewCustomerPin(e.target.value)} className="mb-2 uppercase" />
             <Button onClick={handleAddCustomer} disabled={customerLoading}>Add Customer</Button>
           </div>
         </DialogContent>

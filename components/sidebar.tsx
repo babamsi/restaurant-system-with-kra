@@ -26,6 +26,7 @@ const navigation = [
   { name: "Kitchen", href: "/kitchen", icon: ChefHat },
   { name: "Recipes", href: "/recipes", icon: ClipboardList },
   { name: "Point of Sale", href: "/pos", icon: ShoppingCart },
+  { name: "Orders", href: "/orders", icon: FileText },
 
   // KRA operations
   { name: "KRA Purchases", href: "/kra/purchases", icon: Receipt},

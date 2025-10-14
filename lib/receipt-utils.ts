@@ -19,7 +19,7 @@ export interface ReceiptItem {
   total: number
   tax_rate: number
   tax_amount: number
-  tax_type: 'A-EX' | 'B' | 'C' | 'D' | 'E' // A-EX=Exempt, B=16% VAT, C=0%, D=Non-VAT, E=8%
+  tax_type: 'A' | 'B' | 'C' | 'D' | 'E' // A-EX=Exempt, B=16% VAT, C=0%, D=Non-VAT, E=8%
 }
 
 export interface ReceiptRequest {
@@ -43,7 +43,7 @@ export interface ReceiptRequest {
 const BUSINESS_CONFIG = {
   name: "Restaurant POS",
   address: "Nairobi, Kenya",
-  pin: "P052454103Q",
+  pin: "P600001926A",
   bhfId: "00",
   commercialMessage: "Welcome to our restaurant",
   thankYouMessage: "THANK YOU\nWE LOOK FORWARD TO SERVE YOU AGAIN"
@@ -151,7 +151,7 @@ export function calculateTaxBreakdown(items: ReceiptItem[], discountAmount: numb
     const discountedAmount = item.total - itemDiscount
     
     switch (item.tax_type) {
-      case 'A-EX':
+      case 'A':
         breakdown.exempt.amount += discountedAmount
         breakdown.exempt.tax += 0
         break
@@ -204,7 +204,7 @@ export function generateKRAReceiptText(data: ReceiptRequest): string {
     const total = formatCurrency(item.total)
     const taxType = item.tax_type
     
-    return `${item.name}\n${unitPrice}x ${quantity} ${total}${taxType}`
+    return `${item.name}\n${unitPrice}x ${quantity} ${total} ${taxType} ()`
   }).join('\n')
   
   // Format tax breakdown table
@@ -372,6 +372,8 @@ export async function generatePDFReceipt(data: ReceiptRequest): Promise<Blob> {
   
   // Buyer PIN
   if (customer.pin) {
+    doc.text(`Customer: ${customer.name}`, 5, yPosition)
+    yPosition += 5
     doc.text(`Buyer PIN: ${customer.pin}`, 5, yPosition)
     yPosition += 5
   }
@@ -436,13 +438,14 @@ export async function generatePDFReceipt(data: ReceiptRequest): Promise<Blob> {
   doc.setFontSize(6)
   doc.text('Rate Amount VAT', 5, yPosition)
   yPosition += 3
-  doc.text(`16% ${formatCurrency(taxBreakdown.vat16.amount)} ${formatCurrency(taxBreakdown.vat16.tax)}`, 5, yPosition)
+  doc.text(`B-16% ${formatCurrency(taxBreakdown.vat16.amount)} ${formatCurrency(taxBreakdown.vat16.tax)}`, 5, yPosition)
   yPosition += 3
-  doc.text(`8% ${formatCurrency(taxBreakdown.vat8.amount)} ${formatCurrency(taxBreakdown.vat8.tax)}`, 5, yPosition)
+  doc.text(`E-8% ${formatCurrency(taxBreakdown.vat8.amount)} ${formatCurrency(taxBreakdown.vat8.tax)}`, 5, yPosition)
   yPosition += 3
-  doc.text(`EX ${formatCurrency(taxBreakdown.exempt.amount)} ${formatCurrency(taxBreakdown.exempt.tax)}`, 5, yPosition)
+  doc.text(`A-EX ${formatCurrency(taxBreakdown.exempt.amount)} ${formatCurrency(taxBreakdown.exempt.tax)}`, 5, yPosition)
   yPosition += 5
-  
+  doc.text(`D-Non VAT ${formatCurrency(taxBreakdown.nonVatable.amount)} ${formatCurrency(taxBreakdown.exempt.tax)}`, 5, yPosition)
+  yPosition += 5
   // Separator line
   doc.line(5, yPosition, 75, yPosition)
   yPosition += 5

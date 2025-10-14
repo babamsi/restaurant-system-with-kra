@@ -36,7 +36,7 @@ import { tableOrdersService } from "@/lib/database"
 import Image from "next/image"
 import { QRCode } from "@/components/ui/qr-code"
 import { Label } from "@/components/ui/label"
-import { generateAndDownloadReceipt, type ReceiptRequest } from '@/lib/receipt-utils'
+import { generateAndDownloadReceipt, generatePDFReceipt, downloadReceiptAsPDF, type ReceiptRequest } from '@/lib/receipt-utils'
 import { io } from "socket.io-client"
 
 interface TableState {
@@ -168,6 +168,169 @@ export function CorrectedPOSSystem() {
   // Add state for replacing an existing item
   const [replacingExistingItem, setReplacingExistingItem] = useState<null | { item: CartItem; index: number }>(null)
   const [replaceSelectedMenuItem, setReplaceSelectedMenuItem] = useState<ExtendedMenuItem | null>(null)
+
+  // Refund state
+  const [showRefundDialog, setShowRefundDialog] = useState<null | { order: any }>(null)
+  const [refundMode, setRefundMode] = useState<'full' | 'partial'>('full')
+  const [refundItems, setRefundItems] = useState<Array<{ id: any; menu_item_name: string; unit_price: number; max: number; quantity: number }>>([])
+
+  const openRefundDialog = (order: any) => {
+    setRefundMode('full')
+    setRefundItems((order.items || []).map((it: any) => ({
+      id: it.id,
+      menu_item_name: it.menu_item_name,
+      unit_price: it.unit_price || 0,
+      max: it.quantity || 0,
+      quantity: 0,
+    })))
+    setShowRefundDialog({ order })
+  }
+
+  const updateRefundItemQty = (id: any, qty: number) => {
+    setRefundItems((prev) => prev.map(it => it.id === id ? { ...it, quantity: Math.max(0, Math.min(it.max, qty)) } : it))
+  }
+
+  const getRefundTotal = (): number => {
+    if (!showRefundDialog) return 0
+    if (refundMode === 'full') {
+      return showRefundDialog.order.total_amount || 0
+    }
+    return refundItems.reduce((sum, it) => sum + (it.unit_price * it.quantity), 0)
+  }
+
+  const [isSubmittingRefund, setIsSubmittingRefund] = useState(false)
+
+  const submitRefund = async () => {
+    if (!showRefundDialog) return
+    try {
+      setIsSubmittingRefund(true)
+      const orderId = showRefundDialog.order.id
+      let body: any = { orderId }
+      if (refundMode === 'partial') {
+        const items = refundItems.filter(it => it.quantity > 0).map(it => ({
+          menu_item_name: it.menu_item_name,
+          quantity: it.quantity,
+          unit_price: it.unit_price,
+        }))
+        if (items.length === 0) {
+          toast({ title: 'No Items Selected', description: 'Select at least one item to refund.', variant: 'destructive' })
+          return
+        }
+        body.refundItems = items
+      }
+
+      const res = await fetch('/api/kra/refund', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data?.error || 'Refund failed')
+      }
+
+      // Generate PDF receipt on client side after successful refund
+      try {
+        if (showRefundDialog) {
+          const order = showRefundDialog.order
+          const selectedItems = refundMode === 'partial' 
+            ? refundItems.filter(it => it.quantity > 0)
+            : order.items || []
+
+          // Fetch recipes to get correct tax codes
+          const recipeIds = Array.from(new Set(selectedItems.map((item: any) => item.menu_item_id).filter((id: any) => Boolean(id))))
+          const { data: recipesData } = await supabase
+            .from('recipes')
+            .select('id, name, itemCd, itemClsCd, taxTyCd')
+            .in('id', recipeIds)
+
+          const recipeById = new Map((recipesData || []).map(r => [r.id, r]))
+
+          // Build receipt items with proper tax information from recipes
+          const receiptItems = selectedItems.map((item: any) => {
+            const recipe = recipeById.get(item.menu_item_id)
+            // Use tax code from recipe, fallback to item, then default to 'B'
+            console.log("item: _>> ", item)
+            const taxType = recipe?.taxTyCd || item.taxTyCd
+            
+            console.log(`Refund PDF - Item: ${item.menu_item_name}, Recipe ID: ${item.menu_item_id}, Recipe Tax: ${recipe?.taxTyCd}, Item Tax: ${item.taxTyCd}, Final Tax: ${taxType}`)
+            
+            const itemTotal = item.unit_price * item.quantity
+            const taxAmount = taxType === 'B' ? itemTotal * 0.16 : 
+                             taxType === 'E' ? itemTotal * 0.08 : 0
+            
+            return {
+              name: item.menu_item_name || item.name,
+              unit_price: -item.unit_price, // Negative for refund
+              quantity: item.quantity,
+              total: -itemTotal, // Negative for refund
+              tax_rate: taxType === 'B' ? 16 : taxType === 'E' ? 8 : 0,
+              tax_amount: -taxAmount, // Negative for refund
+              tax_type: taxType
+            }
+          })
+
+          // Calculate totals (negative for refund)
+          const totalAmount = receiptItems.reduce((sum: number, item: any) => sum + item.total, 0)
+          const totalTaxAmount = receiptItems.reduce((sum: number, item: any) => sum + item.tax_amount, 0)
+          const netAmount = totalAmount - totalTaxAmount
+
+          const receiptData: ReceiptRequest = {
+            kraData: {
+              curRcptNo: data.kraData?.data?.curRcptNo || data.refundInvoiceNo?.toString() || '',
+              totRcptNo: data.kraData?.data?.totRcptNo || data.refundInvoiceNo?.toString() || '',
+              intrlData: data.kraData?.data?.intrlData || '',
+              rcptSign: data.kraData?.data?.rcptSign || '',
+              sdcDateTime: data.kraData?.data?.sdcDateTime || new Date().toISOString(),
+              invcNo: data.refundInvoiceNo || 0,
+              trdInvcNo: order.id
+            },
+            items: receiptItems,
+            customer: {
+              name: order.customer_name || null,
+              pin: order.customer_tin || null
+            },
+            payment_method: (() => {
+              try {
+                const paymentData = typeof order.payment_method === 'string' 
+                  ? JSON.parse(order.payment_method) 
+                  : order.payment_method
+                return paymentData?.method || 'Cash'
+              } catch {
+                return 'Cash'
+              }
+            })(),
+            total_amount: totalAmount, // Negative for refund
+            tax_amount: totalTaxAmount, // Negative for refund
+            net_amount: netAmount, // Negative for refund
+            order_id: order.id,
+            discount_amount: 0,
+            discount_percentage: 0,
+            discount_narration: ''
+          }
+
+          // Generate and download refund receipt as PDF
+          await generateAndDownloadReceipt(receiptData)
+        }
+      } catch (pdfErr) {
+        console.error('Error generating refund PDF:', pdfErr)
+        // Don't fail the refund if PDF generation fails
+      }
+
+      toast({ 
+        title: 'Refund Successful', 
+        description: data.message || 'Refund was processed and sent to KRA.' + (data.pdfGenerated ? ' PDF receipt downloaded.' : ''),
+        variant: 'default'
+      })
+      
+      setShowRefundDialog(null)
+      await loadOrderHistory()
+    } catch (e: any) {
+      toast({ title: 'Refund Error', description: e.message || 'Failed to process refund', variant: 'destructive' })
+    } finally {
+      setIsSubmittingRefund(false)
+    }
+  }
 
 
   // Discount System State
@@ -550,14 +713,14 @@ export function CorrectedPOSSystem() {
 
   const loadOrderHistory = async () => {
     try {
-      // Load completed and paid orders for history
+      // Load paid and refunded orders for history
       const { data: completedOrders } = await supabase
         .from('table_orders')
         .select(`
           *,
           items:table_order_items(*)
         `)
-        .eq('status', 'paid')
+        .in('status', ['paid', 'refunded', 'partially_refunded'])
         .order('created_at', { ascending: false })
         .limit(50) // Limit to last 50 orders for performance
       
@@ -1159,7 +1322,7 @@ export function CorrectedPOSSystem() {
         if (kraRes.ok && kraData.success) {
           toast({
             title: "KRA Submission Successful",
-            description: `Invoice #${kraData.invoiceNo} submitted to KRA`,
+            description: `Invoice #${kraData.invcNo} submitted to KRA`,
             duration: 3000,
           })
           const { curRcptNo, totRcptNo, intrlData, rcptSign, sdcDateTime } = kraData.kraData.data
@@ -2608,6 +2771,54 @@ export function CorrectedPOSSystem() {
         </DialogContent>
       </Dialog>
 
+      {/* Refund Dialog */}
+      <Dialog open={!!showRefundDialog} onOpenChange={(open) => { if (!open) setShowRefundDialog(null) }}>
+        <DialogContent className="max-w-lg w-full mx-4">
+          <DialogHeader>
+            <DialogTitle>Refund Order {showRefundDialog ? `#${showRefundDialog.order.id.slice(-6)}` : ''}</DialogTitle>
+          </DialogHeader>
+          {showRefundDialog && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-2">
+                <Button variant={refundMode === 'full' ? 'default' : 'outline'} onClick={() => setRefundMode('full')}>Full Refund</Button>
+                <Button variant={refundMode === 'partial' ? 'default' : 'outline'} onClick={() => setRefundMode('partial')}>Partial Refund</Button>
+              </div>
+              {refundMode === 'partial' ? (
+                <div className="space-y-3 max-h-64 overflow-auto">
+                  {(showRefundDialog.order.items || []).map((it: any) => {
+                    const state = refundItems.find(ri => ri.id === it.id)
+                    return (
+                      <div key={it.id} className="flex items-center justify-between gap-2 p-2 border rounded">
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium truncate">{it.menu_item_name}</div>
+                          <div className="text-xs text-muted-foreground">Unit: Ksh {Number(it.unit_price || 0).toFixed(2)} • Max: {it.quantity}</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button size="icon" variant="outline" className="h-7 w-7" onClick={() => updateRefundItemQty(it.id, (state?.quantity || 0) - 1)}>-</Button>
+                          <span className="w-6 text-center text-sm">{state?.quantity || 0}</span>
+                          <Button size="icon" variant="outline" className="h-7 w-7" onClick={() => updateRefundItemQty(it.id, (state?.quantity || 0) + 1)}>+</Button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">This will refund the entire order.</div>
+              )}
+              <div className="flex justify-between font-medium">
+                <span>Refund Total:</span>
+                <span>Ksh {getRefundTotal().toFixed(2)}</span>
+              </div>
+              <div className="flex gap-2 justify-end">
+                <Button variant="ghost" onClick={() => setShowRefundDialog(null)} disabled={isSubmittingRefund}>Cancel</Button>
+                <Button onClick={submitRefund} disabled={isSubmittingRefund}>
+                  {isSubmittingRefund ? 'Processing…' : 'Confirm Refund'}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
       <Dialog open={!!showPayment} onOpenChange={(open) => !open && setShowPayment(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -3213,8 +3424,15 @@ export function CorrectedPOSSystem() {
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-2">
                         <h3 className="font-semibold text-lg">Order #{order.id.slice(-6)}</h3>
-                        <Badge variant={order.status === "paid" ? "default" : "secondary"}>
-                          {order.status}
+                        <Badge variant={
+                          order.status === "paid" ? "default" : 
+                          order.status === "refunded" ? "destructive" :
+                          order.status === "partially_refunded" ? "secondary" : 
+                          "secondary"
+                        }>
+                          {order.status === "refunded" ? "Refunded" : 
+                           order.status === "partially_refunded" ? "Partially Refunded" :
+                           order.status}
                         </Badge>
                       </div>
                       <p className="text-sm text-muted-foreground mb-2">
@@ -3257,27 +3475,57 @@ export function CorrectedPOSSystem() {
                         <FileText className="h-4 w-4 mr-1" />
                         Print
                       </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => openRefundDialog(order)}
+                        className="flex-1 sm:flex-none"
+                      >
+                        Refund
+                      </Button>
                     </div>
                   </div>
                   
                   <div className="space-y-2 mb-4">
                     <h4 className="text-sm font-medium text-muted-foreground">Items Ordered:</h4>
                     <div className="space-y-1">
-                      {order.items?.map((item: any) => (
-                        <div key={item.id} className="flex justify-between items-start text-sm bg-muted/30 rounded p-2">
-                          <div className="flex-1 min-w-0">
-                            <div className="font-medium truncate">{item.menu_item_name}</div>
-                            <div className="text-xs text-muted-foreground">
-                              {item.portion_size && <span>({item.portion_size})</span>}
-                              {item.customization_notes && <span> - {item.customization_notes}</span>}
+                      {order.items?.map((item: any) => {
+                        // Handle case where refunded_quantity field might not exist
+                        const refundedQty = item.refunded_quantity || 0
+                        const remainingQty = item.quantity - refundedQty
+                        const isFullyRefunded = refundedQty >= item.quantity
+                        const isPartiallyRefunded = refundedQty > 0 && refundedQty < item.quantity
+                        
+                        return (
+                          <div key={item.id} className={`flex justify-between items-start text-sm bg-muted/30 rounded p-2 ${isFullyRefunded ? 'opacity-60' : ''}`}>
+                            <div className="flex-1 min-w-0">
+                              <div className={`font-medium truncate ${isFullyRefunded ? 'line-through' : ''}`}>
+                                {item.menu_item_name}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                {item.portion_size && <span>({item.portion_size})</span>}
+                                {item.customization_notes && <span> - {item.customization_notes}</span>}
+                                {isPartiallyRefunded && (
+                                  <span className="text-orange-600 ml-1">
+                                    ({refundedQty} refunded, {remainingQty} remaining)
+                                  </span>
+                                )}
+                                {isFullyRefunded && (
+                                  <span className="text-red-600 ml-1">(fully refunded)</span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 ml-2 text-right">
+                              <span className={`text-muted-foreground ${isFullyRefunded ? 'line-through' : ''}`}>
+                                x{item.quantity}
+                              </span>
+                              <span className={`font-medium ${isFullyRefunded ? 'line-through' : ''}`}>
+                                Ksh {item.total_price.toFixed(2)}
+                              </span>
                             </div>
                           </div>
-                          <div className="flex items-center gap-2 ml-2 text-right">
-                            <span className="text-muted-foreground">x{item.quantity}</span>
-                            <span className="font-medium">Ksh {item.total_price.toFixed(2)}</span>
-                          </div>
-                        </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   </div>
                   

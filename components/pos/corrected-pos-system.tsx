@@ -261,6 +261,12 @@ export function CorrectedPOSSystem() {
           const recipesMap: Record<string, any> = {}
           recipes.forEach((r: any) => { recipesMap[r.name] = r })
 
+          // Compute discount factor from original order totals
+          const orderItemsAll: any[] = order.items || []
+          const baseSum = orderItemsAll.reduce((s: number, it: any) => s + Number(it.unit_price || 0) * Number(it.quantity || 0), 0)
+          const discountAmount = Number(order.discount_amount || 0)
+          const discountFactor = baseSum > 0 ? (baseSum - discountAmount) / baseSum : 1
+
           const receiptItems = selectedItems.map((item: any) => {
             // Determine tax type based on item category or default to 16% VAT
             let taxType = 'B' // Default to 16% VAT

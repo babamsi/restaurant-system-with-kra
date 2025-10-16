@@ -43,7 +43,7 @@ export interface ReceiptRequest {
 const BUSINESS_CONFIG = {
   name: "Restaurant POS",
   address: "Nairobi, Kenya",
-  pin: "P600001926A",
+  pin: "P052454103Q",
   bhfId: "00",
   commercialMessage: "Welcome to our restaurant",
   thankYouMessage: "THANK YOU\nWE LOOK FORWARD TO SERVE YOU AGAIN"
@@ -197,6 +197,11 @@ export function generateKRAReceiptText(data: ReceiptRequest): string {
   // Use the calculated VAT from tax breakdown instead of the passed tax_amount
   const correctVATAmount = taxBreakdown.vat16.tax + taxBreakdown.vat8.tax
   
+  // Determine actual paid total (prefer net_amount if valid)
+  const paidTotal = (typeof net_amount === 'number' && isFinite(net_amount) && net_amount > 0)
+    ? net_amount
+    : total_amount
+  
   // Format items for receipt
   const itemsText = items.map(item => {
     const unitPrice = formatCurrency(item.unit_price)
@@ -223,18 +228,19 @@ PIN: ${BUSINESS_CONFIG.pin}
 TAX INVOICE
 --------------------------------------------------
 ${BUSINESS_CONFIG.commercialMessage}
-${customer.pin ? `Buyer PIN: ${customer.pin}` : ''}
+${customer?.name ? `Customer: ${customer.name}` : ''}
+${customer?.pin ? `Buyer PIN: ${customer.pin}` : ''}
 --------------------------------------------------
 ${itemsText}
-${discount_narration ? `\nDiscount narration and value: ${discount_percentage}% (${formatCurrency(totalDiscount)})` : ''}
+${totalDiscount > 0 ? `\nDiscount${discount_narration ? ` (${discount_narration})` : ''}: ${discount_percentage}% (${formatCurrency(totalDiscount)})` : ''}
 -----------------------------------------------------
 TOTAL BEFORE DISCOUNT ${formatCurrency(totalBeforeDiscount)}
 ${totalDiscount > 0 ? `TOTAL DISCOUNT AWARDED (${formatCurrency(totalDiscount)})` : ''}
 SUB TOTAL ${formatCurrency(subtotal)}
 VAT ${formatCurrency(correctVATAmount)}
-TOTAL ${formatCurrency(total_amount)}
+TOTAL ${formatCurrency(paidTotal)}
 --------------------------------------------------
-${payment_method.toUpperCase()} ${formatCurrency(total_amount)}
+${payment_method.toUpperCase()} ${formatCurrency(paidTotal)}
 ITEMS NUMBER ${items.length}
 ------------------------------------------------
 ${taxTable}
@@ -328,6 +334,11 @@ export async function generatePDFReceipt(data: ReceiptRequest): Promise<Blob> {
   // Use the calculated VAT from tax breakdown instead of the passed tax_amount
   const correctVATAmount = taxBreakdown.vat16.tax + taxBreakdown.vat8.tax
   
+  // Determine actual paid total (prefer net_amount if valid)
+  const paidTotal = (typeof net_amount === 'number' && isFinite(net_amount) && net_amount > 0)
+    ? net_amount
+    : total_amount
+  
   // Generate QR code
   const qrCodeURL = generateKRAQRCodeURL(kraData)
   const qrCodeDataUrl = await generateQRCode(qrCodeURL)
@@ -370,10 +381,12 @@ export async function generatePDFReceipt(data: ReceiptRequest): Promise<Blob> {
   doc.text(BUSINESS_CONFIG.commercialMessage, 5, yPosition)
   yPosition += 5
   
-  // Buyer PIN
-  if (customer.pin) {
+  // Customer name and Buyer PIN
+  if (customer?.name) {
     doc.text(`Customer: ${customer.name}`, 5, yPosition)
     yPosition += 5
+  }
+  if (customer?.pin) {
     doc.text(`Buyer PIN: ${customer.pin}`, 5, yPosition)
     yPosition += 5
   }
@@ -395,8 +408,9 @@ export async function generatePDFReceipt(data: ReceiptRequest): Promise<Blob> {
   })
   
   // Discount
-  if (discount_narration) {
-    doc.text(`Discount: ${discount_percentage}% (${formatCurrency(totalDiscount)})`, 5, yPosition)
+  if (totalDiscount > 0) {
+    const discountLabel = discount_narration ? `Discount (${discount_narration})` : 'Discount'
+    doc.text(`${discountLabel}: ${discount_percentage}% (${formatCurrency(totalDiscount)})`, 5, yPosition)
     yPosition += 5
   }
   
@@ -417,7 +431,7 @@ export async function generatePDFReceipt(data: ReceiptRequest): Promise<Blob> {
   yPosition += 4
   doc.text(`VAT ${formatCurrency(correctVATAmount)}`, 5, yPosition)
   yPosition += 4
-  doc.text(`TOTAL ${formatCurrency(total_amount)}`, 5, yPosition)
+  doc.text(`TOTAL ${formatCurrency(paidTotal)}`, 5, yPosition)
   yPosition += 5
   
   // Separator line
@@ -425,7 +439,7 @@ export async function generatePDFReceipt(data: ReceiptRequest): Promise<Blob> {
   yPosition += 5
   
   // Payment method and items count
-  doc.text(`${payment_method.toUpperCase()} ${formatCurrency(total_amount)}`, 5, yPosition)
+  doc.text(`${payment_method.toUpperCase()} ${formatCurrency(paidTotal)}`, 5, yPosition)
   yPosition += 4
   doc.text(`ITEMS: ${items.length}`, 5, yPosition)
   yPosition += 5
@@ -444,7 +458,7 @@ export async function generatePDFReceipt(data: ReceiptRequest): Promise<Blob> {
   yPosition += 3
   doc.text(`A-EX ${formatCurrency(taxBreakdown.exempt.amount)} ${formatCurrency(taxBreakdown.exempt.tax)}`, 5, yPosition)
   yPosition += 5
-  doc.text(`D-Non VAT ${formatCurrency(taxBreakdown.nonVatable.amount)} ${formatCurrency(taxBreakdown.exempt.tax)}`, 5, yPosition)
+  doc.text(`D-Non VAT ${formatCurrency(taxBreakdown.nonVatable.amount)} ${formatCurrency(taxBreakdown.nonVatable.tax)}`, 5, yPosition)
   yPosition += 5
   // Separator line
   doc.line(5, yPosition, 75, yPosition)

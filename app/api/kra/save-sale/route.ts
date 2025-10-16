@@ -125,21 +125,34 @@ export async function POST(req: NextRequest) {
     // let totalOrderValue = 0
 
 
+    // Normalize numeric inputs and compute base sums for discount proration
+    const discountAmount: number = typeof discount === 'object' && discount !== null
+      ? Number(discount.amount || 0)
+      : Number(discount || 0)
+
+    // Compute original (pre-discount) line totals and base sum
+    const originalLineTotals: number[] = (items as any[]).map((item: any) => {
+      const qty = Number(item.quantity || 0)
+      const unitPrice = Number(item.unit_price || 0)
+      // Prefer explicit total_price if provided, else derive
+      const lineTotal = item.total_price != null ? Number(item.total_price) : unitPrice * qty
+      return isFinite(lineTotal) ? lineTotal : 0
+    })
+    const baseSum = originalLineTotals.reduce((s, v) => s + v, 0)
+
+    const normalizedTotalAmount = Number(totalAmount != null ? totalAmount : baseSum)
+
     const calculateTaxByType = (items: any[]) => {
       // console.log("from calculate Tax types: ", items)
       let taxblAmtA = 0, taxblAmtB = 0, taxblAmtC = 0, taxblAmtD = 0, taxblAmtE = 0
       let taxAmtA = 0, taxAmtB = 0, taxAmtC = 0, taxAmtD = 0, taxAmtE = 0
 
-      items.forEach(item => {
-        const originalAmount = item.total_price * item.quantity
+      items.forEach((item, idx) => {
         const taxType = item.taxTyCd || 'B'
-        
-        // Calculate discount for this item (proportional to item amount)
-        const totalOrderAmount = totalAmount
-        // console.log("totoal order amount: ", totalOrderAmount)
-        const itemDiscountAmount = totalOrderAmount > 0 ? (originalAmount / totalOrderAmount) * discount : 0
-        // console.log("check discount amount: ", discount, orderData)
-        const discountedAmount = originalAmount - itemDiscountAmount
+        const originalAmount = originalLineTotals[idx] || 0
+        // Prorate discount across items using baseSum (pre-discount total)
+        const itemDiscountAmount = baseSum > 0 ? (originalAmount / baseSum) * discountAmount : 0
+        const discountedAmount = Math.max(0, originalAmount - itemDiscountAmount)
         // console.log("Discounted amount: ", discountedAmount)
         
         switch (taxType) {
@@ -222,7 +235,18 @@ export async function POST(req: NextRequest) {
     //   }
     // })
 
-    const totAmt = totalAmount
+    // Overall total should be sum of discounted line totals
+    const totAmt = ((): number => {
+      if (!items || items.length === 0) return 0
+      let sum = 0
+      items.forEach((item: any, idx: number) => {
+        const originalAmount = originalLineTotals[idx] || 0
+        const itemDiscountAmount = baseSum > 0 ? (originalAmount / baseSum) * discountAmount : 0
+        const discountedAmount = Math.max(0, originalAmount - itemDiscountAmount)
+        sum += discountedAmount
+      })
+      return Number(sum.toFixed(2))
+    })()
 
     // Get customer info from the first item or use defaults
     const firstItem = items[0]
@@ -343,16 +367,18 @@ export async function POST(req: NextRequest) {
       modrNm: recipeNames,
       itemList: items.map((item: any, index: number) => {
         const { pkgUnitCd, qtyUnitCd } = parseItemCd(item.itemCd)
-        const originalAmount = item.total_price * item.quantity
+        const qty = Number(item.quantity || 0)
+        const unitPrice = Number(item.unit_price || 0)
+        const lineTotal = item.total_price != null ? Number(item.total_price) : unitPrice * qty
+        const originalAmount = isFinite(lineTotal) ? lineTotal : 0
         const taxType = item.taxTyCd || 'B'
-        
-        // Calculate discount for this item (proportional to item amount)
-        const totalOrderAmount = totalAmount
-        const itemDiscountAmount = totalOrderAmount > 0 ? (originalAmount / totalOrderAmount) * discount : 0
-        const discountedAmount = originalAmount - itemDiscountAmount
-        
+
+        // Calculate discount for this item (proportional to pre-discount amount)
+        const itemDiscountAmount = baseSum > 0 ? (originalAmount / baseSum) * discountAmount : 0
+        const discountedAmount = Math.max(0, originalAmount - itemDiscountAmount)
+
         let taxAmount = 0
-        
+
         // Calculate tax based on tax type on discounted amount
         switch (taxType) {
           case 'A': // Exempt
@@ -383,19 +409,19 @@ export async function POST(req: NextRequest) {
           pkgUnitCd: pkgUnitCd, // Standard packaging unit
           pkg: 1,
           qtyUnitCd: qtyUnitCd || 'U',
-          qty: item.quantity,
-          prc: item.unit_price,
-          splyAmt: item.total_price, // Use discounted amount
-          dcRt: discount > 0 ? Number((itemDiscountAmount / originalAmount) * 100).toFixed(2) : 0, // Discount rate
+          qty: qty,
+          prc: unitPrice,
+          splyAmt: Number(discountedAmount.toFixed(2)), // Discounted supply amount
+          dcRt: originalAmount > 0 ? Number(((itemDiscountAmount / originalAmount) * 100).toFixed(2)) : 0, // Discount rate (number)
           dcAmt: Number(itemDiscountAmount.toFixed(2)), // Discount amount for this item - fixed to 2 decimals
           isrccCd: null,
           isrccNm: null,
           isrcRt: null,
           isrcAmt: null,
           taxTyCd: taxType,
-          taxblAmt: discountedAmount, // Taxable amount after discount
+          taxblAmt: Number(discountedAmount.toFixed(2)), // Taxable amount after discount
           taxAmt: Number(taxAmount.toFixed(2)), // Tax amount on discounted amount - fixed to 2 decimals
-          totAmt: discountedAmount // Total amount after discount
+          totAmt: Number(discountedAmount.toFixed(2)) // Total amount after discount
         }
       })
     }

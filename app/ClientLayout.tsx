@@ -5,7 +5,7 @@ import { useEffect } from "react"
 import { ThemeProvider } from "@/components/theme-provider"
 import { Sidebar } from "@/components/sidebar"
 import { ResponsiveLayout } from "@/components/responsive-layout"
-import { Toaster } from "@/components/ui/toaster"
+import { Toaster } from 'sonner'
 import { useCompleteInventoryStore } from "@/stores/complete-inventory-store"
 import { useCompleteKitchenStore } from "@/stores/complete-kitchen-store"
 import { useCompletePOSStore } from "@/stores/complete-pos-store"
@@ -69,7 +69,7 @@ export default function ClientLayout({
           {/* Main Content */}
           {children}
         </ResponsiveLayout>
-        <Toaster />
+        <Toaster position="top-center" richColors />
       </ThemeProvider>
     </UserSessionProvider>
   )

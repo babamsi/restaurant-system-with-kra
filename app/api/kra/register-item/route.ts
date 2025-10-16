@@ -385,8 +385,8 @@ export async function POST(req: NextRequest) {
 
     // Generate KRA codes using the working approach (allow override from UI if provided)
     const itemCd = await getNextItemCd(finalUnit, isRecipe)
-    const itemClsCd = overrideItemClsCd
-    const taxTyCd = overrideTaxTyCd
+    const itemClsCd = overrideItemClsCd || generateItemClsCd(category)
+    const taxTyCd = overrideTaxTyCd || generateTaxTyCd(itemClsCd)
 
     console.log(`Generated codes - itemCd: ${itemCd}, itemClsCd: ${itemClsCd}, taxTyCd: ${taxTyCd}`)
 

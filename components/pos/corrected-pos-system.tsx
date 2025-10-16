@@ -27,7 +27,8 @@ import {
   Smartphone,
   Loader2,
 } from "lucide-react"
-import { useToast } from "@/hooks/use-toast"
+// import { useToast } from "@/hooks/use-toast"
+import { toast } from "sonner"
 import { useCompletePOSStore, useCompletePOSStore as usePOSStore } from "@/stores/complete-pos-store"
 import { useOrdersStore } from "@/stores/orders-store"
 import type { MenuItem, CartItem } from "@/types/unified-system"
@@ -73,7 +74,7 @@ interface ExtendedMenuItem extends MenuItem {
 }
 
 export function CorrectedPOSSystem() {
-  const { toast } = useToast()
+  // const { toast } = useToast()
   const {
     menuItems,
     cart,
@@ -172,15 +173,20 @@ export function CorrectedPOSSystem() {
   // Refund state
   const [showRefundDialog, setShowRefundDialog] = useState<null | { order: any }>(null)
   const [refundMode, setRefundMode] = useState<'full' | 'partial'>('full')
-  const [refundItems, setRefundItems] = useState<Array<{ id: any; menu_item_name: string; unit_price: number; max: number; quantity: number }>>([])
+  const [refundItems, setRefundItems] = useState<Array<{ id: any; menu_item_name: string; unit_price: number; discounted_unit_price: number; max: number; quantity: number }>>([])
 
   const openRefundDialog = (order: any) => {
     setRefundMode('full')
-    setRefundItems((order.items || []).map((it: any) => ({
+    const items: Array<any> = order.items || []
+    const baseSum = items.reduce((s: number, it: any) => s + Number(it.unit_price || 0) * Number(it.quantity || 0), 0)
+    const discountAmount = Number(order.discount_amount || 0)
+    const discountFactor = baseSum > 0 ? (baseSum - discountAmount) / baseSum : 1
+    setRefundItems(items.map((it: any) => ({
       id: it.id,
       menu_item_name: it.menu_item_name,
-      unit_price: it.unit_price || 0,
-      max: it.quantity || 0,
+      unit_price: Number(it.unit_price || 0),
+      discounted_unit_price: Number(it.unit_price || 0) * discountFactor,
+      max: Number(it.quantity || 0),
       quantity: 0,
     })))
     setShowRefundDialog({ order })
@@ -195,7 +201,7 @@ export function CorrectedPOSSystem() {
     if (refundMode === 'full') {
       return showRefundDialog.order.total_amount || 0
     }
-    return refundItems.reduce((sum, it) => sum + (it.unit_price * it.quantity), 0)
+    return refundItems.reduce((sum, it) => sum + (Number(it.discounted_unit_price) * Number(it.quantity)), 0)
   }
 
   const [isSubmittingRefund, setIsSubmittingRefund] = useState(false)
@@ -213,7 +219,7 @@ export function CorrectedPOSSystem() {
           unit_price: it.unit_price,
         }))
         if (items.length === 0) {
-          toast({ title: 'No Items Selected', description: 'Select at least one item to refund.', variant: 'destructive' })
+          toast.error('No Items Selected, Select at least one item to refund.')
           return
         }
         body.refundItems = items
@@ -235,7 +241,12 @@ export function CorrectedPOSSystem() {
           const order = showRefundDialog.order
           const selectedItems = refundMode === 'partial' 
             ? refundItems.filter(it => it.quantity > 0)
-            : order.items || []
+            : (order.items || []).map((it: any) => ({
+                id: it.id,
+                menu_item_name: it.menu_item_name,
+                unit_price: it.unit_price,
+                quantity: it.quantity,
+              }))
 
           // Fetch recipes to get correct tax codes
           const recipeIds = Array.from(new Set(selectedItems.map((item: any) => item.menu_item_id).filter((id: any) => Boolean(id))))
@@ -247,21 +258,31 @@ export function CorrectedPOSSystem() {
           const recipeById = new Map((recipesData || []).map(r => [r.id, r]))
 
           // Build receipt items with proper tax information from recipes
+          const recipesMap: Record<string, any> = {}
+          recipes.forEach((r: any) => { recipesMap[r.name] = r })
+
           const receiptItems = selectedItems.map((item: any) => {
-            const recipe = recipeById.get(item.menu_item_id)
-            // Use tax code from recipe, fallback to item, then default to 'B'
-            console.log("item: _>> ", item)
-            const taxType = recipe?.taxTyCd || item.taxTyCd
-            
-            console.log(`Refund PDF - Item: ${item.menu_item_name}, Recipe ID: ${item.menu_item_id}, Recipe Tax: ${recipe?.taxTyCd}, Item Tax: ${item.taxTyCd}, Final Tax: ${taxType}`)
-            
-            const itemTotal = item.unit_price * item.quantity
+            // Determine tax type based on item category or default to 16% VAT
+            let taxType = 'B' // Default to 16% VAT
+            const recipe = recipesMap[item.menu_item_name]
+            if (recipe) {
+              const nameLower = (recipe.category || '').toLowerCase()
+              if (nameLower.includes('exempt') || nameLower.includes('basic')) taxType = 'A'
+              else if (nameLower.includes('zero') || nameLower.includes('export')) taxType = 'C'
+              else if (nameLower.includes('non-vat') || nameLower.includes('service')) taxType = 'D'
+              else if (nameLower.includes('8%')) taxType = 'E'
+            }
+            // Use discounted unit price for refunds (prorated across all items)
+            const discountedUnit = refundMode === 'partial'
+              ? (refundItems.find(ri => ri.id === item.id)?.discounted_unit_price ?? (item.unit_price * discountFactor))
+              : (Number(item.unit_price) * discountFactor)
+            const itemTotal = discountedUnit * item.quantity
             const taxAmount = taxType === 'B' ? itemTotal * 0.16 : 
                              taxType === 'E' ? itemTotal * 0.08 : 0
             
             return {
               name: item.menu_item_name || item.name,
-              unit_price: -item.unit_price, // Negative for refund
+              unit_price: -discountedUnit, // Negative for refund
               quantity: item.quantity,
               total: -itemTotal, // Negative for refund
               tax_rate: taxType === 'B' ? 16 : taxType === 'E' ? 8 : 0,
@@ -317,16 +338,14 @@ export function CorrectedPOSSystem() {
         // Don't fail the refund if PDF generation fails
       }
 
-      toast({ 
-        title: 'Refund Successful', 
+      toast.success('Refund Successful', { 
         description: data.message || 'Refund was processed and sent to KRA.' + (data.pdfGenerated ? ' PDF receipt downloaded.' : ''),
-        variant: 'default'
       })
-      
+
       setShowRefundDialog(null)
       await loadOrderHistory()
     } catch (e: any) {
-      toast({ title: 'Refund Error', description: e.message || 'Failed to process refund', variant: 'destructive' })
+      toast.error('Refund Error', { description: e.message || 'Failed to process refund' })
     } finally {
       setIsSubmittingRefund(false)
     }
@@ -519,6 +538,16 @@ export function CorrectedPOSSystem() {
     return calculateDiscountAmount(subtotal, appliedDiscount.type, appliedDiscount.value)
   }
 
+  // Reset discount and customer when starting/ending orders
+  const resetDiscountAndCustomer = () => {
+    setAppliedDiscount(null)
+    setBogoItems([])
+    setDiscountValue('')
+    setDiscountReason('')
+    setDiscountType('percentage')
+    setSelectedCustomer(null)
+  }
+
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000)
     return () => clearInterval(timer)
@@ -564,10 +593,8 @@ export function CorrectedPOSSystem() {
       
     } catch (error) {
       console.error("Error fetching recipes:", error)
-      toast({
-        title: "Error Loading Recipes",
+      toast.error("Error Loading Recipes", {
         description: "Failed to load recipes from database",
-        variant: "destructive",
       })
     } finally {
       setLoading(false)
@@ -667,9 +694,9 @@ export function CorrectedPOSSystem() {
     clearCart()
     setEditingOrderId(null)
     setExistingOrderItems([])
+    resetDiscountAndCustomer()
     setShowTakeAwayDialog(false)
-    toast({
-      title: "New Take Away Order",
+    toast.success("New Take Away Order", {
       description: "Ready to take a new take away order.",
     })
     loadTakeAwayOrders();
@@ -698,8 +725,7 @@ export function CorrectedPOSSystem() {
     }))
     setExistingOrderItems(cartItems)
     setShowTakeAwayDialog(false)
-    toast({
-      title: "Loaded Take Away Order",
+    toast.success("Loaded Take Away Order", {
       description: `Loaded order #${order.id.slice(-6)} to add more items.`,
     })
     loadTakeAwayOrders();
@@ -784,8 +810,7 @@ export function CorrectedPOSSystem() {
       customization: customizationNotes
     })
 
-    toast({
-      title: "Added to Order",
+    toast.success("Added to Order", {
       description: displayText + (customizationNotes ? ` (${customizationNotes})` : ""),
       duration: 500,
     })
@@ -798,19 +823,15 @@ export function CorrectedPOSSystem() {
   const handlePlaceOrder = async () => {
     if (!sessionId) {
       setShowSessionDialog(true)
-      toast({ 
-        title: 'No Open Session', 
+      toast.error('No Open Session', { 
         description: 'Please open the day before placing orders.', 
-        variant: 'destructive' 
       })
       return
     }
 
     if (!selectedTable || cart.length === 0) {
-      toast({
-        title: "Error",
+      toast.error("Error", {
         description: "Please select a table and add items to cart",
-        variant: "destructive",
       })
       return
     }
@@ -865,8 +886,7 @@ export function CorrectedPOSSystem() {
         }
         
         console.log('POS: Added items to existing order:', editingOrderId)
-        toast({
-          title: "Order Updated",
+        toast.success("Order Updated", {
           description: `Added items to ${selectedTable.number}`,
           duration: 2000,
         })
@@ -885,7 +905,7 @@ export function CorrectedPOSSystem() {
           total_amount: finalTotalAmount,
           discount_amount: Number(discountAmount.toFixed(2)),
           discount_type: appliedDiscount?.type || null,
-          // discount_reason: appliedDiscount?.reason || null,
+          discount_reason: appliedDiscount?.reason || null,
           items: cartItems,
           session_id: sessionId
         } as any)
@@ -907,10 +927,9 @@ export function CorrectedPOSSystem() {
           setEditingOrderId(data.id)
           
           console.log('POS: Created new order:', data.id, 'for session:', sessionId)
-          toast({
-            title: "Order Placed",
+          toast.success("Order Placed", {
             description: `Order placed for ${selectedTable.number}`,
-            duration: 2000,
+            duration: 500,
           })
     } else {
           throw new Error('Order created but no data returned')
@@ -925,13 +944,12 @@ export function CorrectedPOSSystem() {
       setExistingOrderItems([])
       setSelectedTable(null)
       setEditingOrderId(null)
+      resetDiscountAndCustomer()
       
     } catch (error: any) {
       console.error("POS: Error placing order:", error)
-      toast({
-        title: "Error",
+      toast.error("Error", {
         description: error.message || "Failed to place order",
-        variant: "destructive",
       })
     } finally {
       setPlacingOrder(false)
@@ -970,10 +988,8 @@ export function CorrectedPOSSystem() {
     // Validate session first
     const sessionValidation = await validateSession()
     if (!sessionValidation.valid) {
-      toast({
-        title: 'Session Error',
+      toast.error('Session Error', {
         description: sessionValidation.error || 'Invalid session',
-        variant: 'destructive',
       })
       setShowSessionDialog(true)
       return
@@ -989,6 +1005,7 @@ export function CorrectedPOSSystem() {
     clearCart()
     setEditingOrderId(null)
     setExistingOrderItems([])
+    resetDiscountAndCustomer()
 
     // If table has an active order in current session, load it
     if (table.currentOrder && table.currentOrder.session_id === sessionId) {
@@ -1016,16 +1033,15 @@ export function CorrectedPOSSystem() {
       
       setExistingOrderItems(cartItems)
       
-      toast({
-        title: "Table Selected",
+      toast.info("Table Selected", {
         description: `Loaded existing order for ${table.number}`,
-        duration: 2000,
+        duration: 1000,
+        
       })
     } else {
-      toast({
-        title: "Table Selected",
+      toast.info("Table Selected", {
         description: `Ready to take orders for ${table.number}`,
-        duration: 2000,
+        duration: 1000,
       })
     }
   }
@@ -1036,10 +1052,8 @@ export function CorrectedPOSSystem() {
     // Validate session first
     const sessionValidation = await validateSession()
     if (!sessionValidation.valid) {
-      toast({
-        title: 'Session Error',
+      toast.error('Session Error', {
         description: sessionValidation.error || 'Invalid session',
-        variant: 'destructive',
       })
       setShowSessionDialog(true)
       return
@@ -1050,19 +1064,15 @@ export function CorrectedPOSSystem() {
     
     // Ensure the order belongs to current session
     if (currentOrder && currentOrder.session_id !== sessionId) {
-      toast({
-        title: "Session Mismatch",
+      toast.error("Session Mismatch", {
         description: "This order belongs to a different session",
-        variant: "destructive",
       })
       return
     }
     
     if (!currentOrder) {
-      toast({
-        title: "No Order Found",
+      toast.error("No Order Found", {
         description: "No active order found for this table",
-        variant: "destructive",
       })
       return
     }
@@ -1096,10 +1106,9 @@ export function CorrectedPOSSystem() {
     // Close the table options dialog
       setShowTableOptions(null)
     
-    toast({
-      title: "Order Loaded",
+    toast.success("Order Loaded", {
       description: `Loaded existing order for ${table.number}`,
-      duration: 2000,
+      duration: 100,
     })
   }
 
@@ -1109,10 +1118,8 @@ export function CorrectedPOSSystem() {
     // Validate session first
     const sessionValidation = await validateSession()
     if (!sessionValidation.valid) {
-      toast({
-        title: 'Session Error',
+      toast.error('Session Error', {
         description: sessionValidation.error || 'Invalid session',
-        variant: 'destructive',
       })
       setShowSessionDialog(true)
       return
@@ -1122,29 +1129,23 @@ export function CorrectedPOSSystem() {
     
     // Ensure the order belongs to current session
     if (currentOrder && currentOrder.session_id !== sessionId) {
-      toast({
-        title: "Session Mismatch",
+      toast.error("Session Mismatch", {
         description: "This order belongs to a different session",
-        variant: "destructive",
       })
       return
     }
     
     if (!currentOrder) {
-      toast({
-        title: "No Order Found",
+      toast.error("No Order Found", {
         description: "No active order found for this table",
-        variant: "destructive",
       })
       return
     }
     
     // Only allow payment for completed orders
     if (currentOrder.status !== 'completed') {
-      toast({
-        title: "Order Not Ready for Payment",
+      toast.error("Order Not Ready for Payment", {
         description: `Order status is "${currentOrder.status}". Please complete the order first before proceeding to payment.`,
-        variant: "destructive",
       })
       return
     }
@@ -1271,8 +1272,7 @@ export function CorrectedPOSSystem() {
       
       // Submit to KRA after successful payment
       try {
-        toast({
-          title: "Submitting to KRA...",
+        toast.success("Submitting to KRA...", {
           description: "Processing tax submission",
         })
         
@@ -1307,8 +1307,9 @@ export function CorrectedPOSSystem() {
 
         const orderData = {
           items: kraItems,
-          totalAmount: orderForKRA.total_amount || (kraItems.reduce((s: number, i: any) => s + (i.total_price || 0), 0)),
-          discount: orderForKRA.discount_amount ? { amount: orderForKRA.discount_amount } : 0,
+          totalAmount: Number(orderForKRA.total_amount ?? (kraItems.reduce((s: number, i: any) => s + (Number(i.total_price) || 0), 0))),
+          // send discount as a number for backend simplicity
+          discount: Number(orderForKRA.discount_amount || 0),
         }
 
         const kraRes = await fetch('/api/kra/save-sale', {
@@ -1320,8 +1321,7 @@ export function CorrectedPOSSystem() {
         const kraData = await kraRes.json()
         
         if (kraRes.ok && kraData.success) {
-          toast({
-            title: "KRA Submission Successful",
+          toast.success("KRA Submission Successful", {
             description: `Invoice #${kraData.invcNo} submitted to KRA`,
             duration: 3000,
           })
@@ -1521,27 +1521,30 @@ export function CorrectedPOSSystem() {
               },
               items: receiptItems,
               customer: {
-                name: selectedCustomer?.name || null,
-                pin: selectedCustomer?.kra_pin || null
+                name: (orderForKRA.customer_name || order.customer_name || selectedCustomer?.name || 'WALK IN CUSTOMER') as string,
+                pin: (orderForKRA.customer_tin || order.customer_tin || selectedCustomer?.kra_pin || undefined) as string | undefined
               },
               payment_method: paymentMethod,
               total_amount: orderForKRA.total_amount,
               tax_amount: orderForKRA.tax_amount,
               net_amount: orderForKRA.total_amount - orderForKRA.tax_amount,
               order_id: order.id,
-              // Add discount information if applicable
-              discount_amount: 0, // You can calculate this based on your discount logic
-              discount_percentage: 0,
-              discount_narration: ''
+              // Discount information
+              discount_amount: Number(orderForKRA.discount_amount || 0),
+              discount_percentage: (orderForKRA.discount_type === 'percentage')
+                ? Number((orderForKRA as any).discount_value || 0)
+                : 0,
+              discount_narration: (orderForKRA.discount_amount && Number(orderForKRA.discount_amount) > 0)
+                ? (orderForKRA.discount_reason || (orderForKRA.discount_type === 'percentage' ? `${(orderForKRA as any).discount_value || 0}% discount` : 'Fixed discount'))
+                : ''
             }
   
             // Generate and download KRA receipt as PDF
             await generateAndDownloadReceipt(receiptData)
             
-            toast({ 
-              title: 'KRA Receipt Generated', 
+            toast.success("KRA Receipt Generated", { 
               description: 'KRA receipt has been generated and downloaded as PDF successfully.',
-              variant: 'default'
+              duration: 3000,
             })
           } catch (pdfErr) {
             console.error('Error generating/downloading PDF receipt:', pdfErr)
@@ -1555,17 +1558,14 @@ export function CorrectedPOSSystem() {
           }
         } else {
           console.log('KRA submission failed--->:', kraData)
-          toast({
-            title: "KRA Submission Failed",
+          toast.error("KRA Submission Failed", {
             description: kraData.error || "Failed to submit to KRA",
-            variant: "destructive",
           })
           // Store the sale invoice in the database
           const { error: insertError } = await supabase
             .from('sales_invoices')
             .insert({
-              trdInvcNo: kraData.invcNo,
-              orgInvcNo: kraData.invcNo,
+              trdInvcNo: kraData.saleId,
               payment_method: selectedPaymentMethod,
               order_id: showPayment.orderId,
               total_items: orderForKRA.items.length,
@@ -1584,10 +1584,8 @@ export function CorrectedPOSSystem() {
         }
       } catch (kraError: any) {
         console.log('KRA submission error:', kraError)
-        toast({
-          title: "KRA Submission Error",
+        toast.error("KRA Submission Error", {
           description: kraError.message || "Failed to submit to KRA",
-          variant: "destructive",
         })
       }
       
@@ -1602,8 +1600,7 @@ export function CorrectedPOSSystem() {
       } else {
         handlePrintReceipt(order)
       }
-      toast({
-        title: "Payment Complete",
+      toast.success("Payment Complete", {
         description: `Table ${showPayment.table.number} has been cleared`,
         duration: 2000,
       })
@@ -1616,10 +1613,8 @@ export function CorrectedPOSSystem() {
       setMpesaNumber('')
     } catch (error: any) {
       console.error("Error marking order as paid:", error)
-      toast({
-        title: "Error",
+      toast.error("Error", {
         description: error.message || "Failed to process payment",
-        variant: "destructive",
       })
     } finally {
       setPaymentLoading(false)
@@ -1631,6 +1626,7 @@ export function CorrectedPOSSystem() {
     setSelectedTable(null)
     setEditingOrderId(null)
     setExistingOrderItems([])
+    resetDiscountAndCustomer()
   }
 
   const handleClosePaymentDialog = () => {
@@ -1671,12 +1667,12 @@ export function CorrectedPOSSystem() {
       });
       const result = await res.json();
       if (result.success) {
-        toast({ title: 'Printed to Thermal Printer', description: 'Receipt sent to printer.' });
+        toast.success("Printed to Thermal Printer", { description: 'Receipt sent to printer.' });
       } else {
-        toast({ title: 'Print Error', description: result.error || 'Failed to print receipt', variant: 'destructive' });
+        toast.error("Print Error", { description: result.error || 'Failed to print receipt' });
       }
     } catch (err: any) {
-      toast({ title: 'Print Error', description: err.message || 'Failed to print receipt', variant: 'destructive' });
+      toast.error("Print Error", { description: err.message || 'Failed to print receipt' });
     }
   };
 
@@ -1739,10 +1735,8 @@ export function CorrectedPOSSystem() {
 
   const initiateMpesaPayment = async (order: any) => {
     if (!validateMpesaPhoneNumber(mpesaPhoneNumber)) {
-      toast({
-        title: "Invalid Phone Number",
+      toast.error("Invalid Phone Number", {
         description: "Please enter a valid M-Pesa phone number in format 7xxxxxxxx",
-        variant: "destructive",
       })
       return false
     }
@@ -1766,8 +1760,7 @@ export function CorrectedPOSSystem() {
 
       if (data.success) {
         setCheckoutRequestId(data.checkoutRequestId)
-        toast({
-          title: "M-Pesa Payment Initiated",
+        toast.success("M-Pesa Payment Initiated", {
           description: "Please check your phone and enter your M-Pesa PIN to complete the payment",
         })
         return true
@@ -1778,10 +1771,8 @@ export function CorrectedPOSSystem() {
       console.error('M-Pesa payment error:', error)
       setMpesaStatus("failed")
       setMpesaProcessing(false)
-      toast({
-        title: "Payment Failed",
+      toast.error("Payment Failed", {
         description: error.message || "Failed to initiate M-Pesa payment",
-        variant: "destructive",
       })
       return false
     }
@@ -1837,8 +1828,7 @@ export function CorrectedPOSSystem() {
         handlePrintReceipt(order)
       }
       
-      toast({
-        title: "M-Pesa Payment Successful!",
+      toast.success("M-Pesa Payment Successful!", {
         description: `Payment completed successfully. Transaction ID: ${transId}`,
         duration: 3000,
       })
@@ -1860,10 +1850,8 @@ export function CorrectedPOSSystem() {
       console.error("Error processing M-Pesa payment:", error)
       setMpesaStatus("failed")
       setMpesaProcessing(false)
-      toast({
-        title: "Payment Processing Error",
+      toast.error("Payment Processing Error", {
         description: error.message || "Failed to process M-Pesa payment",
-        variant: "destructive",
       })
       return false
     }
@@ -1874,8 +1862,7 @@ export function CorrectedPOSSystem() {
     setMpesaProcessing(false)
     setCheckoutRequestId("")
     setMpesaPhoneNumber("")
-    toast({
-      title: "Payment Cancelled",
+    toast.error("Payment Cancelled", {
       description: "M-Pesa payment has been cancelled",
     })
   }
@@ -1900,10 +1887,10 @@ export function CorrectedPOSSystem() {
         clearCart()
       }
       await Promise.all([loadTableOrders(), loadOrderHistory()])
-      toast({ title: 'Order Cancelled', description: `Order for ${table.number} has been cancelled.`, duration: 2000 })
+      toast.warning("Order Cancelled", { description: `Order for ${table.number} has been cancelled.`, duration: 2000 })
       setShowTableOptions(null)
     } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to cancel order', variant: 'destructive' })
+      toast.error("Error", { description: error.message || 'Failed to cancel order' })
     } finally {
       setCancellingOrder(false)
     }
@@ -1942,12 +1929,12 @@ export function CorrectedPOSSystem() {
         clearCart()
       }
       await Promise.all([loadTableOrders(), loadOrderHistory()])
-      toast({ title: 'Order Transferred', description: `Order moved to ${transferTargetTable.number}.`, duration: 2000 })
+      toast.success("Order Transferred", { description: `Order moved to ${transferTargetTable.number}.`, duration: 2000 })
       setShowTransferDialog(null)
       setTransferTargetTable(null)
       setShowTableOptions(null)
     } catch (error: any) {
-      toast({ title: 'Error', description: error.message || 'Failed to transfer order', variant: 'destructive' })
+      toast.error("Error", { description: error.message || 'Failed to transfer order' })
     } finally {
       setTransferringOrder(false)
     }
@@ -2092,8 +2079,7 @@ export function CorrectedPOSSystem() {
             console.log('Callback Metadata:', CallbackMetadata);
             console.log('Customer:', FirstName);
             setTransactionId(TransID);
-            toast({
-              title: "Payment Received",
+            toast.success("Payment Received", {
               description: `Got the payment from ${FirstName}`,
             });
             setMpesaProcessing(false);
@@ -2106,10 +2092,8 @@ export function CorrectedPOSSystem() {
           } else {
             setMpesaStatus('failed');
             setMpesaProcessing(false);
-            toast({
-              title: "Payment Failed",
+            toast.error("Payment Failed", {
               description: ResultDesc || 'M-Pesa payment failed',
-              variant: "destructive",
             });
           }
         }
@@ -2120,10 +2104,8 @@ export function CorrectedPOSSystem() {
         if (mpesaStatus === "processing") {
           setMpesaStatus("failed");
           setMpesaProcessing(false);
-          toast({
-            title: "Payment Timeout",
+          toast.error("Payment Timeout", {
             description: "M-Pesa payment timed out. Please try again.",
-            variant: "destructive",
           });
         }
       }, 300000); // 5 minutes timeout
@@ -2238,10 +2220,8 @@ export function CorrectedPOSSystem() {
         const tableNumbers = unpaidOrders.map(o => o.table_number).join(', ')
         const errorMsg = `Cannot close day: There are still orders in progress on tables ${tableNumbers}. Please complete all orders before closing the day.`
         setSessionError(errorMsg)
-        toast({
-          title: 'Cannot Close Day',
+        toast.error("Cannot Close Day", {
           description: errorMsg,
-          variant: 'destructive',
         })
         return
       }
@@ -2264,17 +2244,14 @@ export function CorrectedPOSSystem() {
       setShowSessionDialog(true)
       console.log('POS: Session closed successfully')
       
-      toast({
-        title: 'Day Closed',
+      toast.success("Day Closed", {
         description: 'The day has been closed successfully',
       })
     } catch (error: any) {
       console.error('POS: Error closing session:', error)
       setSessionError(error.message || 'Failed to close session')
-      toast({
-        title: 'Error',
+      toast.error("Error", {
         description: error.message || 'Failed to close session',
-        variant: 'destructive',
       })
     } finally {
       setSessionClosing(false)
@@ -2284,10 +2261,8 @@ export function CorrectedPOSSystem() {
   // Generate QR codes for all tables
   const generateQRCodes = () => {
     if (!sessionId) {
-      toast({
-        title: "No Open Session",
+      toast.error("No Open Session", {
         description: "Please open the day before generating QR codes",
-        variant: "destructive",
       })
       return
     }
@@ -2337,7 +2312,7 @@ export function CorrectedPOSSystem() {
         })
         .eq('id', orderItem.id)
       if (error) throw new Error(error.message)
-      toast({ title: 'Item Updated', description: `${item.name} updated in order.` })
+      toast.success("Item Updated", { description: `${item.name} updated in order.` })
       setEditingExistingItem(null)
       await loadTableOrders()
       setExistingOrderItems((prev) => prev.map((ci, idx) => idx === editingExistingItem.index ? {
@@ -2348,7 +2323,7 @@ export function CorrectedPOSSystem() {
         total_price: item.unit_price * editItemQuantity,
       } : ci))
     } catch (error: any) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' })
+      toast.error("Error", { description: error.message })
     }
   }
 
@@ -2371,11 +2346,11 @@ export function CorrectedPOSSystem() {
         .delete()
         .eq('id', orderItem.id)
       if (error) throw new Error(error.message)
-      toast({ title: 'Item Removed', description: `${item.name} removed from order.` })
+      toast.success("Item Removed", { description: `${item.name} removed from order.` })
       setExistingOrderItems((prev) => prev.filter((_, idx) => idx !== index))
       await loadTableOrders()
     } catch (error: any) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' })
+      toast.error("Error", { description: error.message })
     }
   }
 
@@ -2405,7 +2380,7 @@ export function CorrectedPOSSystem() {
         }
       )
       if (error) throw new Error(error)
-      toast({ title: 'Item Replaced', description: `${oldItem.name} replaced with ${replaceSelectedMenuItem.name}.` })
+      toast.success("Item Replaced", { description: `${oldItem.name} replaced with ${replaceSelectedMenuItem.name}.` })
       setReplacingExistingItem(null)
       // Always reload table orders to get updated totals
       await loadTableOrders()
@@ -2421,7 +2396,7 @@ export function CorrectedPOSSystem() {
         customization: '',
       } : ci))
     } catch (error: any) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' })
+      toast.error("Error", { description: error.message })
     }
   }
 
@@ -2450,7 +2425,7 @@ export function CorrectedPOSSystem() {
   // Add new customer
   const handleAddCustomer = async () => {
     if (!newCustomerName.trim() || !newCustomerPin.trim()) {
-      toast({ title: 'Missing Info', description: 'Name and PIN are required', variant: 'destructive' })
+      toast.error("Missing Info", { description: 'Name and PIN are required' })
       return
     }
     setCustomerLoading(true)
@@ -2462,14 +2437,14 @@ export function CorrectedPOSSystem() {
     setCustomerLoading(false)
     if (error) {
       console.log(error)
-      toast({ title: 'Error', description: error.message, variant: 'destructive' })
+      toast.error("Error", { description: error.message })
       return
     }
     setSelectedCustomer(data)
     setShowCustomerDialog(false)
     setNewCustomerName("")
     setNewCustomerPin("")
-    toast({ title: 'Customer Added', description: `Added ${data.name}` })
+    toast.success("Customer Added", { description: `Added ${data.name}` })
   }
 
   // Handler to cancel a take-away order
@@ -2479,9 +2454,9 @@ export function CorrectedPOSSystem() {
       const { error } = await tableOrdersService.updateOrderStatus(order.id, 'cancelled');
       if (error) throw new Error(error);
       await loadTakeAwayOrders();
-      toast({ title: 'Order Cancelled', description: `Take-away order #${order.id.slice(-6)} has been cancelled.` });
+      toast.success("Order Cancelled", { description: `Take-away order #${order.id.slice(-6)} has been cancelled.` });
     } catch (err: any) {
-      toast({ title: 'Error', description: err.message || 'Failed to cancel take-away order', variant: 'destructive' });
+      toast.error("Error", { description: err.message || 'Failed to cancel take-away order' });
     }
   }
 
@@ -2489,10 +2464,8 @@ export function CorrectedPOSSystem() {
   const handleApplyDiscount = () => {
     // For BOGO, we don't need to validate discountValue
     if (discountType !== 'bogo' && (!discountValue || parseFloat(discountValue) <= 0)) {
-      toast({
-        title: "Invalid Discount",
+      toast.error("Invalid Discount", {
         description: "Please enter a valid discount value",
-        variant: "destructive"
       })
       return
     }
@@ -2502,19 +2475,15 @@ export function CorrectedPOSSystem() {
 
     // Validate discount value for non-BOGO types
     if (discountType === 'percentage' && (value <= 0 || value > 100)) {
-      toast({
-        title: "Invalid Percentage",
+      toast.error("Invalid Percentage", {
         description: "Percentage must be between 0 and 100",
-        variant: "destructive"
       })
       return
     }
 
     if (discountType === 'fixed' && value > subtotal) {
-      toast({
-        title: "Invalid Fixed Amount",
+      toast.error("Invalid Fixed Amount", {
         description: "Fixed discount cannot exceed order total",
-        variant: "destructive"
       })
       return
     }
@@ -2537,8 +2506,7 @@ export function CorrectedPOSSystem() {
     setDiscountValue('')
     setDiscountReason('')
 
-    toast({
-      title: "Discount Applied",
+    toast.success("Discount Applied", {
       description: `${discountType === 'percentage' ? value + '%' : discountType === 'bogo' ? 'BOGO' : 'Ksh ' + value} discount applied`,
     })
   }
@@ -2549,8 +2517,7 @@ export function CorrectedPOSSystem() {
     setDiscountValue('')
     setDiscountReason('')
     setDiscountType('percentage')
-    toast({
-      title: "Discount Removed",
+    toast.success("Discount Removed", {
       description: "Discount has been removed from the order",
     })
   }
@@ -3290,15 +3257,21 @@ export function CorrectedPOSSystem() {
                     <span>Ksh {(getFinalTotal() + existingOrderItems.reduce((sum, item) => sum + item.total_price, 0)).toFixed(2)}</span>
                 </div>
                 <div className="mb-2">
-  <Button variant="outline" onClick={() => setShowCustomerDialog(true)} className="w-full">
-    {selectedCustomer ? `Customer: ${selectedCustomer.name}` : 'Add Customer'}
-  </Button>
+  {selectedCustomer ? (
+    <div className="flex items-center gap-2">
+      <Button variant="outline" onClick={() => setShowCustomerDialog(true)} className="flex-1">
+        {`Customer: ${selectedCustomer.name}`}
+      </Button>
+      <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setSelectedCustomer(null)}>
+        Remove
+      </Button>
+    </div>
+  ) : (
+    <Button variant="outline" onClick={() => setShowCustomerDialog(true)} className="w-full">
+      Add Customer
+    </Button>
+  )}
 </div>
-{selectedCustomer && (
-  <div className="text-xs text-muted-foreground mb-2">
-    <span className="font-semibold">Customer:</span> {selectedCustomer.name}
-  </div>
-)}
                   {/* Discount Section */}
                   <div className="mb-2">
                     {appliedDiscount ? (
